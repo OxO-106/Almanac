@@ -150,3 +150,4 @@ details.later { margin-top: 8px; color: var(--muted); } details.later summary { 
 details.later ul { margin-top: 8px; color: var(--fg); }
 @media (max-width: 700px) { .chat { height: calc(100vh - 110px); } .msg { max-width: 92%; } }
 .msg ul { margin: 4px 0; padding-left: 18px; list-style: disc; } .msg code { font-size: 13px; background: var(--rule); padding: 0 4px; border-radius: 4px; }
+.capacity { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; } .capacity input { width: 64px; font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--rule); border-radius: 6px; padding: 4px 8px; }

@@ -1,9 +1,11 @@
 """Goals, Projects, Tasks, Events, Deadlines and Courses: CRUD and Today."""
 
+import json
 from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Request, Response
 
+from . import db
 from .clock import local
 from .db import WRITE
 
@@ -65,6 +67,7 @@ KINDS = {
                 "until": _date, "skip": _dates, "location": str, "provisional": bool, "window": _window}, {"title", "start"}),
     "deadlines": ({"title": str, "course_id": int, "project_id": int, "due": _date_or_time,
                    "provisional": bool, "window": _window}, {"title"}),
+    "memories": ({"text": str, "topic": str}, {"text"}),
     "terms": ({"name": str, "starts": _date, "instruction_begins": _date, "week1": _date, "instruction_ends": _date,
                "finals_start": _date, "ends": _date, "holidays": _holidays},
               {"name", "starts", "instruction_begins", "week1", "instruction_ends", "ends"}),
@@ -125,6 +128,34 @@ def today(request: Request):
         "events": occurrences(q("select * from events"), day, day),
         "deadlines": q("select * from deadlines where substr(due, 1, 10) = ? order by due", day),
     }
+
+
+CAPACITY = {"weekday": 6, "weekend": 10}  # soft hours of planned work per day
+
+
+def capacity(con) -> dict:
+    return {**CAPACITY, **db.settings(con).get("capacity", {})}
+
+
+@router.get("/capacity")
+def get_capacity(request: Request):
+    return capacity(request.app.state.db)
+
+
+@router.put("/capacity")
+async def put_capacity(request: Request):
+    body = await request.json()
+    try:
+        cap = {k: float(body[k]) for k in CAPACITY}
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(422, "weekday and weekend hours are required")
+    if not all(0 <= v <= 16 for v in cap.values()):
+        raise HTTPException(422, "hours must be between 0 and 16")
+    cap = {k: int(v) if v == int(v) else v for k, v in cap.items()}
+    with WRITE:
+        request.app.state.db.execute("insert into settings (key, value) values ('capacity', ?) "
+                                     "on conflict(key) do update set value = excluded.value", (json.dumps(cap),))
+    return cap
 
 
 @router.get("/calendar")

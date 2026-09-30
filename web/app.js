@@ -38,6 +38,7 @@ const KINDS = {
     ["end", "datetime", "End"], ["repeat", "days", "Repeats weekly on"], ["until", "date", "Until"], ["location", "text", "Location"]] },
   deadlines: { one: "Deadline", fields: [["title", "text", "Title"], ["course_id", "courses", "Course"], ["project_id", "projects", "Project"], ["due", "datetime", "Due"]] },
   courses: { one: "Course", fields: [["number", "text", "Number (e.g. CS 239)"], ["instructor", "text", "Instructor"], ["title", "text", "Title"]] },
+  memories: { one: "Memory", fields: [["text", "area", "What to remember"], ["topic", "text", "Topic (e.g. work habits, people)"]] },
   terms: { one: "Term", fields: [["name", "text", "Name"], ["starts", "date", "Quarter begins"], ["instruction_begins", "date", "Instruction begins"],
     ["week1", "date", "Monday of Week 1"], ["instruction_ends", "date", "Instruction ends"], ["finals_start", "date", "Finals begin"],
     ["ends", "date", "Quarter ends"], ["holidays", "area", "Holidays (one per line: YYYY-MM-DD name)"]] },
@@ -240,7 +241,7 @@ function describeOp(o, inbox) {
   const k = KINDS[o.kind], d = o.data || {};
   if (o.op === "delete") return `Delete ${k.one.toLowerCase()} #${o.id}`;
   const verb = o.op === "create" ? "New" : "Change";
-  const name = (o.kind === "courses" && d.number ? `${d.number} · ${d.instructor || "?"}` : d.title) || `#${o.id}`;
+  const name = (o.kind === "courses" && d.number ? `${d.number} · ${d.instructor || "?"}` : d.title || d.text) || `#${o.id}`;
   const when = d.do_date ? `do ${fmtDay(d.do_date)}` : d.due ? `due ${fmtWhen(d.due, d.window)}` : d.start ? (d.repeat ? `${d.repeat.replaceAll(",", "/")} ${fmtTime(d.start)}${d.end ? "–" + fmtTime(d.end) : ""} until ${fmtDay(d.until)}${d.skip ? `, not ${d.skip.split(",").map(fmtDay).join(", ")}` : ""}` : fmtWhen(d.start, d.window)) : d.deadline ? `by ${fmtWhen(d.deadline)}` : "";
   const course = typeof d.course_id === "number" ? courseName(d.course_id) : isRef(d.course_id) ? "course pending above" : "";
   const changed = o.op === "update" ? Object.keys(d).join(", ") : "";
@@ -364,6 +365,32 @@ views.inbox = async () => {
     <ul>${waiting.map(card).join("")}</ul></details>` : "";
   return `<h1>Inbox</h1><p class="sub">Nothing changes in your plan until you accept it.</p>
     ${uploads}${proposals || `<p class="empty">Nothing to review.</p>`}${later}`;
+};
+
+// ---- memory ------------------------------------------------------------------
+
+async function saveCapacity(e) {
+  e.preventDefault();
+  const f = e.target.elements;
+  try { await send("PUT", "/api/capacity", { weekday: Number(f.weekday.value), weekend: Number(f.weekend.value) }); toast("Saved."); }
+  catch (err) { toast(esc(detail(err))); }
+}
+
+views.memory = async () => {
+  const [mems, cap] = await Promise.all([api("/api/memories"), api("/api/capacity")]);
+  const byTopic = {};
+  for (const m of mems) (byTopic[m.topic || "Other"] ??= []).push(m);
+  return `<header class="head"><div><h1>Memory</h1><p class="sub">Everything the assistant knows about you. Nothing is remembered without your OK.</p></div>
+      <button class="primary" onclick='openEditor("memories")'>Add</button></header>
+    <section><h3>Daily capacity</h3>
+      <form class="capacity" onsubmit="saveCapacity(event)">
+        <label>Weekdays <input name="weekday" type="number" min="0" max="16" step="0.5" value="${cap.weekday}"> h</label>
+        <label>Weekends <input name="weekend" type="number" min="0" max="16" step="0.5" value="${cap.weekend}"> h</label>
+        <button>Save</button></form>
+      <p class="hint">A soft limit on planned work per day. Plans warn when a day goes over; they don't block you.</p></section>
+    ${Object.entries(byTopic).map(([t, ms]) => `<section><h3>${esc(t)}</h3><ul>${ms.map(m =>
+      `<li class="row"><a class="title" onclick='edit("memories", ${m.id})'>${esc(m.text)}</a></li>`).join("")}</ul></section>`).join("")
+      || `<p class="empty">Nothing yet. Things you tell the assistant in Chat will be suggested here for your OK.</p>`}`;
 };
 
 // ---- chat --------------------------------------------------------------------

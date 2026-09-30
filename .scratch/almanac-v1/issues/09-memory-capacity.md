@@ -4,8 +4,8 @@
 
 **Blocked by:** 04 (Inbox: Proposals and Questions)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Memory CRUD and Memory Proposals
-- [ ] Capacity weekday/weekend values editable
-- [ ] API tests for Memory Proposal accept and Capacity update
+- [x] Memory CRUD and Memory Proposals
+- [x] Capacity weekday/weekend values editable
+- [x] API tests for Memory Proposal accept and Capacity update

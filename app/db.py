@@ -36,6 +36,8 @@ create table if not exists sources (
 create table if not exists questions (
   id integer primary key, source_id integer references sources on delete set null, text text not null, quote text,
   answer text, status text not null default 'open', created_at text not null, answered_at text);
+create table if not exists memories (
+  id integer primary key, text text not null, topic text);
 create table if not exists chat_messages (
   id integer primary key, role text not null, text text not null, question_id integer references questions on delete set null,
   quote text, created_at text not null);
