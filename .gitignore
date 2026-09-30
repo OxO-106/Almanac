@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+.pytest_cache/
+data/
+*.db
+*.db-*
+backups/
+*.log
+# course materials stay local (one is a copy of a login-only Bruin Learn page)
+seed/*.pdf
+seed/*.docx

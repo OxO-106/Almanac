@@ -1,0 +1,660 @@
+"""Documents → Proposals and Questions.
+
+The model only reads and quotes: it reports what the document states, with a
+verbatim quote and dates as written. Code checks every quote against the
+text, turns dates into calendar dates, and queues Proposals for review."""
+
+import io
+import json
+import re
+import unicodedata
+import zipfile
+from datetime import date, timedelta
+
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, UploadFile
+
+from . import inbox, plan
+from .clock import local
+from .plan import current_term
+from .db import WRITE
+
+router = APIRouter(prefix="/api")
+
+# ---- text extraction ----------------------------------------------------------
+
+
+def _drop_running_lines(pages: list[str]) -> str:
+    """Join pages, removing running headers and footers (a web page printed to
+    PDF repeats its title, URL, print time and "3/14" on every page); they
+    otherwise split sentences at page breaks and look like dates."""
+    shape = lambda line: re.sub(r"\d+", "#", line.strip().lower())
+    counts = {}
+    for p in pages:
+        for s in {shape(l) for l in p.splitlines() if l.strip()}:
+            counts[s] = counts.get(s, 0) + 1
+    running = {s for s, n in counts.items() if len(pages) >= 3 and n > len(pages) / 2}
+    return "\n".join(l for p in pages for l in p.splitlines() if shape(l) not in running)
+
+
+def _pymupdf(data):
+    import pymupdf
+    with pymupdf.open(stream=data, filetype="pdf") as doc:
+        return _drop_running_lines([page.get_text() for page in doc])
+
+
+def _pypdf(data):
+    from pypdf import PdfReader
+    return _drop_running_lines([page.extract_text() or "" for page in PdfReader(io.BytesIO(data)).pages])
+
+
+def _python_docx(data):
+    import docx
+    d = docx.Document(io.BytesIO(data))
+    rows = ["\t".join(c.text for c in r.cells) for t in d.tables for r in t.rows]
+    return "\n".join([p.text for p in d.paragraphs] + rows)
+
+
+def _docx_xml(data):
+    xml = zipfile.ZipFile(io.BytesIO(data)).read("word/document.xml").decode("utf-8")
+    return re.sub(r"<[^>]+>", "", re.sub(r"</w:p>", "\n", xml))
+
+
+def _plain(data):
+    for enc in ("utf-8-sig", "cp1252"):
+        try:
+            return data.decode(enc)
+        except UnicodeDecodeError as e:
+            err = e
+    raise err
+
+
+EXTRACTORS = {
+    ".pdf": [("PyMuPDF", _pymupdf), ("pypdf", _pypdf)],
+    ".docx": [("python-docx", _python_docx), ("raw XML", _docx_xml)],
+    ".txt": [("text", _plain)], ".md": [("text", _plain)],
+}
+
+
+def extract(filename: str, data: bytes) -> str:
+    """Text of the document. Tries each parser in turn; if all fail, the error
+    lists what each one actually said (never a guessed cause)."""
+    ext = filename[filename.rfind("."):].lower() if "." in filename else ""
+    if ext not in EXTRACTORS:
+        raise ValueError(f"Can't read {ext or 'this'} files yet. Upload a PDF, DOCX or TXT.")
+    errors = []
+    for name, fn in EXTRACTORS[ext]:
+        try:
+            text = fn(data)
+        except Exception as e:
+            errors.append(f"{name}: {type(e).__name__}: {e}")
+            continue
+        if text.strip():
+            return text
+        errors.append(f"{name}: no text found (the file may be a scanned image)")
+    raise ValueError("Couldn't read the file. " + " | ".join(errors))
+
+
+# ---- model passes -------------------------------------------------------------
+
+RULES = """You read a university course document for a student and report what it states. Rules:
+- Report only what the document states explicitly. Never guess, infer or fill in a date, time, room, team or assignment.
+- "quote": copy one short passage (under 200 characters) exactly as it appears in the document, word for word, that states the item. Do not paraphrase or fix typos.
+- Dates: report them as written. A calendar date → {"type":"date","month":M,"day":D} (add "year" only if written). With a time → {"type":"datetime",...,"time":"HH:MM"} in 24-hour time. "Week N" (optionally a weekday) → {"type":"week","week":N,"weekday":"MO".."SU"}. A date stated relative to another item ("two days before the final") → {"type":"relative","relative_to":"<that item>","offset_days":-2}. Not stated → {"type":"unknown"}.
+- Set "provisional": true when the document calls the schedule provisional, tentative or subject to change."""
+
+COURSE_PROMPT = RULES + """
+Task: list the course(s) this document is for: course number as department and number only (e.g. "CS 239", "COM SCI 269"; not a term or section code), instructor's full name, title, and the regular class meetings (days as MO,TU,WE,TH,FR,SA,SU; start and end as HH:MM 24-hour; location). If the instructor or a meeting time is not written, leave it empty; do not guess. Quote the line that names the course."""
+
+ITEMS_PROMPT = RULES + """
+Task: list everything in this part of the document the student must attend, submit or do:
+- "deadline": something due or submitted by a moment (registration, report, sign-up).
+- "event": a scheduled session the student attends that is not a regular lecture (exam, tutorial, presentation day, check-in, guest lecture).
+- "task": work to do before a moment (e.g. read the assigned paper before its lecture).
+- "project": a multi-part deliverable spanning weeks (a course project, a presentation to prepare).
+- "question": a fact only the student can supply that decides WHEN something happens or WHETHER a task exists for them (which paper they present and so on which date, their team, their presentation slot, a choice between options such as an exam or a project). Not questions about the content of their work. Write the question to ask them, addressed to "you", as a full sentence ending in "?", in "question".
+Also set "question" on any other item whose date depends on the student's choice or assignment.
+The quote must contain the date you report. When the date is in a heading or table row above the item, quote from the date to the item and mark the skipped middle with "...", e.g. "Lecture 2: Thursday, October 1 ... P2. ReAct".
+- "no_class": a specific date the document says there is no class (holiday, break).
+Do not list regular lectures, grading percentages, or policies."""
+
+WHEN = {"type": "object", "properties": {
+    "type": {"type": "string", "enum": ["date", "datetime", "week", "relative", "unknown"]},
+    "year": {"type": "integer"}, "month": {"type": "integer"}, "day": {"type": "integer"}, "time": {"type": "string"},
+    "week": {"type": "integer"}, "weekday": {"type": "string"},
+    "relative_to": {"type": "string"}, "offset_days": {"type": "integer"}}, "required": ["type"]}
+
+COURSE_SCHEMA = {"type": "object", "properties": {"courses": {"type": "array", "items": {"type": "object", "properties": {
+    "number": {"type": "string"}, "instructor": {"type": "string"}, "title": {"type": "string"}, "quote": {"type": "string"},
+    "meetings": {"type": "array", "items": {"type": "object", "properties": {
+        "days": {"type": "string"}, "start": {"type": "string"}, "end": {"type": "string"}, "location": {"type": "string"},
+        "quote": {"type": "string"}}, "required": ["days", "quote"]}}},
+    "required": ["number", "instructor", "quote"]}}}, "required": ["courses"]}
+
+ITEMS_SCHEMA = {"type": "object", "properties": {"items": {"type": "array", "items": {"type": "object", "properties": {
+    "kind": {"type": "string", "enum": ["deadline", "event", "task", "project", "question", "no_class"]},
+    "title": {"type": "string"}, "course": {"type": "string"}, "quote": {"type": "string"},
+    "when": WHEN, "provisional": {"type": "boolean"}, "question": {"type": "string"}},
+    "required": ["kind", "title", "quote", "when"]}}}, "required": ["items"]}
+
+CHUNK = 8000  # characters per items pass; the whole doc would overflow the answer budget
+
+
+def _ask_model(llm, prompt, schema, context, text):
+    raw = llm.chat([{"role": "system", "content": prompt},
+                    {"role": "user", "content": f"{context}\n\nDocument:\n\"\"\"\n{text}\n\"\"\""}],
+                   schema=schema, timeout=900)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        raise ValueError(f"The model returned something that isn't valid JSON: {raw[:200]!r}")
+
+
+def chunks(text, size=CHUNK):
+    out, cur = [], ""
+    for para in re.split(r"(?<=\n)", text):
+        if cur and len(cur) + len(para) > size:
+            out.append(cur)
+            cur = ""
+        cur += para
+    return out + [cur] if cur.strip() else out
+
+
+# ---- checking and resolving ---------------------------------------------------
+
+def _norm(s: str) -> str:
+    s = unicodedata.normalize("NFKC", s)
+    s = s.translate(str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"',
+                                   "–": "-", "—": "-", " ": " "}))
+    return re.sub(r"\s+", " ", s).strip().lower()
+
+
+_words = lambda s: re.findall(r"\w+", _norm(s))
+
+
+def _match_at(q, t, start):
+    """End index if words q match t from `start`, allowing a few skipped words
+    (models drop table cells), else -1. The span may be at most
+    len + max(4, len/2) words, so words gathered from different places fail."""
+    if start >= len(t) or t[start] != q[0]:
+        return -1
+    limit, pos = start + len(q) + max(4, len(q) // 2), start
+    for w in q[1:]:
+        try:
+            pos = t.index(w, pos + 1, limit)
+        except ValueError:
+            return -1
+    return pos + 1
+
+
+ELLIPSIS_GAP = 30  # words a "..." may skip: a table row's cells, not the next row
+
+
+def quoted(quote: str, text: str) -> bool:
+    """The quote's words appear in the document in order and close together.
+    Pieces joined by "..." may be up to ELLIPSIS_GAP words apart."""
+    t = _words(text)
+    parts = [p for p in (_words(x) for x in re.split(r"\.\.\.|…", quote or "")) if p]
+    if not parts or sum(map(len, parts)) < 2:
+        return False
+
+    def rest(pieces, frm):
+        if not pieces:
+            return True
+        return any((end := _match_at(pieces[0], t, s)) >= 0 and rest(pieces[1:], end)
+                   for s in range(frm, min(frm + ELLIPSIS_GAP + 1, len(t))))
+
+    return any((end := _match_at(parts[0], t, s)) >= 0 and rest(parts[1:], end) for s in range(len(t)))
+
+
+def locate(quote: str, text: str):
+    """(start, end) character offsets of the quote in the text, else None."""
+    spans = [(m.group(), m.start(), m.end()) for m in re.finditer(r"\w+", _norm_keep_len(text))]
+    t = [w for w, _, _ in spans]
+    parts = [p for p in (_words(x) for x in re.split(r"\.\.\.|…", quote or "")) if p]
+    if not parts:
+        return None
+    for s in range(len(t)):
+        end = _match_at(parts[0], t, s)
+        for p in parts[1:]:
+            if end < 0:
+                break
+            end = next((e for s2 in range(end, min(end + ELLIPSIS_GAP + 1, len(t))) if (e := _match_at(p, t, s2)) >= 0), -1)
+        if end >= 0:
+            return spans[s][1], spans[end - 1][2]
+    return None
+
+
+def _norm_keep_len(s: str) -> str:
+    """Lower-case with typographic marks unified, same length as the input,
+    so word offsets point into the original text."""
+    return s.translate(str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"',
+                                      "–": "-", "—": "-", " ": " "})).lower()
+
+
+MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
+          "november", "december"]
+
+
+def date_in_quote(when: dict, quote: str) -> bool:
+    """An explicit date counts only if the quote itself states it."""
+    w, q = _words(quote), _norm(quote)
+    m, d = when.get("month"), when.get("day")
+    if not (m and d and 1 <= m <= 12):
+        return False
+    month_named = any(x in w for x in (MONTHS[m - 1], MONTHS[m - 1][:3], MONTHS[m - 1][:4]))
+    numeric = re.search(rf"\b0?{m}[/.-]0?{d}\b", q) is not None
+    return numeric or (month_named and str(d) in w)
+
+
+def time_in_quote(time: str, quote: str) -> bool:
+    """"16:00" is stated by "4:00 p.m.", "4pm", "4 PM" or "16:00" in the quote."""
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", (time or "")[:5])
+    if not m:
+        return False
+    h, mm, q = int(m.group(1)), m.group(2), _norm(quote).replace(".", "")
+    h12, ampm = (h % 12 or 12), ("pm" if h >= 12 else "am")
+    minutes = rf"(:{mm})?" if mm == "00" else rf":{mm}"
+    return bool(re.search(rf"\b{h}:{mm}\b", q) or re.search(rf"\b{h12}{minutes}\s*{ampm}\b", q)
+                # the start of a range whose am/pm is written once: "4:00-5:50 p.m."
+                or re.search(rf"\b{h12}{minutes}\s*-\s*\d{{1,2}}(:\d{{2}})?\s*{ampm}\b", q)
+                or (h == 12 and mm == "00" and "noon" in q))
+
+
+DAY_NAMES = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+                "eleven", "twelve", "thirteen", "fourteen"]
+
+
+def _explicit(when, today):
+    try:
+        year = when.get("year") or today.year
+        d = date(year, when["month"], when["day"])
+        if not when.get("year") and d < today - timedelta(days=60):
+            d = date(year + 1, when["month"], when["day"])
+    except (ValueError, KeyError, TypeError):
+        return None
+    return d
+
+
+class When:
+    """What code could establish about an item's date from its quote."""
+    def __init__(self, value=None, window=None, provisional=False, ask=None):
+        self.value, self.window, self.provisional, self.ask = value, window, provisional, ask
+
+
+def resolve(it: dict, today: date, term: dict | None, known: dict) -> When:
+    """Turn the model's report of a date into a calendar date, trusting only
+    what the quote states. `known`: lower-case title → date of items resolved
+    from the same document (for "two days before Phase 1")."""
+    when, quote = it.get("when") or {}, it["quote"]
+    t, words = when.get("type"), _words(quote)
+    if t in ("date", "datetime"):
+        if not date_in_quote(when, quote) or not (d := _explicit(when, today)):
+            return When()
+        time = when.get("time") if t == "datetime" and time_in_quote(when.get("time"), quote) else None
+        return When(d.isoformat() + (f"T{time[:5]}" if time else ""))
+    if t == "week" and term and isinstance(when.get("week"), int):
+        n = when["week"]
+        if not re.search(rf"\bweek\s*{n}\b", _norm(quote)):
+            return When()
+        monday = date.fromisoformat(term["week1"]) + timedelta(weeks=n - 1)
+        wd = (when.get("weekday") or "").upper()[:2]
+        if wd in ("MO", "TU", "WE", "TH", "FR", "SA", "SU"):
+            i = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"].index(wd)
+            if DAY_NAMES[i] in words or DAY_NAMES[i][:3] in words:
+                return When((monday + timedelta(days=i)).isoformat(), provisional=True)
+        friday = monday + timedelta(days=4)
+        return When(monday.isoformat(), f"{monday}/{friday}", True,
+                    f"Which day in Week {n} ({monday:%b} {monday.day} – {friday:%b} {friday.day}) is “{it['title']}”? "
+                    "The document only gives the week.")
+    if t == "relative" and isinstance(when.get("offset_days"), int):
+        target = (when.get("relative_to") or "").lower().strip()
+        base = known.get(target) or next((v for k, v in known.items() if target and (target in k or k in target)), None)
+        off = when["offset_days"]
+        stated = off == 0 or str(abs(off)) in words or (abs(off) < len(NUMBER_WORDS) and NUMBER_WORDS[abs(off)] in words) \
+            or (abs(off) == 7 and "week" in words)
+        if base and stated:
+            return When((date.fromisoformat(base[:10]) + timedelta(days=off)).isoformat())
+    return When()
+
+
+# ---- ingest -------------------------------------------------------------------
+
+def ingest(con, llm, clock, source_id: int, filename: str, data: bytes):
+    try:
+        text = extract(filename, data)
+        with WRITE:
+            con.execute("update sources set text = ? where id = ?", (text, source_id))
+        prior = _supersede(con, source_id)
+        _propose_all(con, llm, clock, source_id, text, prior)
+        with WRITE:
+            con.execute("update sources set status = 'done' where id = ?", (source_id,))
+    except Exception as e:
+        msg = str(e) if isinstance(e, ValueError) else f"The model call failed: {type(e).__name__}: {e}"
+        with WRITE:  # withdraw the half-finished result so a retry starts clean
+            con.execute("delete from proposals where source_id = ? and status = 'pending'", (source_id,))
+            con.execute("delete from questions where source_id = ? and status = 'open'", (source_id,))
+            con.execute("update sources set status = 'failed', error = ? where id = ?", (msg, source_id))
+
+
+def _supersede(con, source_id) -> dict:
+    """If this upload is a new version of a document, withdraw the old
+    version's pending proposals and return what earlier versions put in the
+    plan: (kind, lower-case title) → current row."""
+    lineage = con.execute("select lineage from sources where id = ?", (source_id,)).fetchone()["lineage"]
+    if not lineage:
+        return {}
+    old = [r["id"] for r in con.execute("select id from sources where (id = ? or lineage = ?) and id != ?",
+                                        (lineage, lineage, source_id))]
+    marks = ",".join("?" * len(old))
+    with WRITE:
+        con.execute(f"delete from proposals where status = 'pending' and source_id in ({marks})", old)
+        con.execute(f"delete from questions where status = 'open' and source_id in ({marks})", old)
+        con.execute(f"update sources set replaced_by = ? where id in ({marks}) and replaced_by is null", (source_id, *old))
+    prior = {}
+    for p in con.execute(f"select ops, applied from proposals where status = 'accepted' and source_id in ({marks})", old):
+        for op, id in zip(json.loads(p["ops"]), json.loads(p["applied"])):
+            if op["op"] != "create" or op["kind"] in ("courses", "terms"):
+                continue
+            row = con.execute(f"select * from {op['kind']} where id = ?", (id,)).fetchone()
+            if row:
+                prior[(op["kind"], row["title"].lower())] = dict(row)
+    return prior
+
+
+def _propose_all(con, llm, clock, source_id, text, prior=None):
+    prior = prior or {}
+    matched = set()
+    today = local(clock.now()).date()
+    context = f"Today is {today:%A, %B %d, %Y}."
+    dropped = []
+
+    def keep(x, title):
+        if quoted(x.get("quote"), text):
+            return True
+        dropped.append({"title": title, "quote": x.get("quote"), "reason": "quote not found in the document"})
+        return False
+
+    # Pass A: which course(s). Reuse a known Course (same number and instructor).
+    courses, meetings = {}, []
+    for c in _ask_model(llm, COURSE_PROMPT, COURSE_SCHEMA, context, text[:CHUNK])["courses"]:
+        c["number"] = course_number(c.get("number") or "")
+        if not c["number"]:
+            continue
+        instructor = (c.get("instructor") or "").strip()
+        name = f"{c['number']} · {instructor or 'instructor not stated'}"
+        if not keep(c, name):
+            continue
+        if not instructor:
+            # Course identity needs the instructor; ask rather than guess.
+            q = inbox.ask(con, clock, source_id, f"Who teaches {c['number']} in “{source_title(con, source_id)}”? "
+                          "The document doesn't name the instructor.", c["quote"])
+            data = {"number": c["number"], "instructor": "Not stated", **({"title": c["title"]} if c.get("title") else {})}
+            p = inbox.propose(con, clock, source_id, f"Add course {c['number']} (edit in the instructor)",
+                              [{"op": "create", "kind": "courses", "data": data}], c["quote"], q["id"])
+            p = p.get("existing", p)
+            if p.get("status", "pending") == "pending":
+                courses[c["number"]] = f"$p{p['id']}.0"
+            continue
+        known = con.execute("select id from courses where lower(replace(number, ' ', '')) = lower(replace(?, ' ', '')) "
+                            "and lower(instructor) = lower(?)", (c["number"], c["instructor"])).fetchone()
+        short = f"{c['number']} · {instructor.split()[-1]}"
+        if known:
+            courses[c["number"]] = known["id"]
+        else:
+            data = {k: c[k] for k in ("number", "instructor", "title") if c.get(k)}
+            same_number = con.execute("select number, instructor from courses where lower(replace(number, ' ', '')) = "
+                                      "lower(replace(?, ' ', ''))", (c["number"],)).fetchone()
+            q = same_number and inbox.ask(
+                con, clock, source_id, f"You already have {same_number['number']} · {same_number['instructor']}. "
+                f"Is {name} a different course? If it's the same one, reject this and correct the instructor instead.",
+                c["quote"])
+            p = inbox.propose(con, clock, source_id, f"Add course {name}",
+                              [{"op": "create", "kind": "courses", "data": data}], c["quote"], q["id"] if q else None)
+            p = p.get("existing", p)  # already pending from an earlier upload: link to that one
+            if p.get("status") == "pending":
+                courses[c["number"]] = f"$p{p['id']}.0"
+        for m in c.get("meetings") or []:
+            if quoted(m.get("quote"), text):
+                meetings.append((courses.get(c["number"]), short, m))
+    only = next(iter(courses.values())) if len(courses) == 1 else None
+
+    # Pass B: items, a chunk at a time.
+    items = []
+    for part in chunks(text):
+        items += [it for it in _ask_model(llm, ITEMS_PROMPT, ITEMS_SCHEMA, context, part)["items"] if keep(it, it["title"])]
+
+    # Resolve absolute dates first so relative ones ("two days before Phase 1") can use them.
+    term = current_term(con, today)
+    known, resolved = {}, {}
+    for rnd in ("absolute", "relative"):
+        for i, it in enumerate(items):
+            if ((it.get("when") or {}).get("type") == "relative") == (rnd == "relative"):
+                resolved[i] = resolve(it, today, term, known)
+                if resolved[i].value:
+                    known.setdefault(it["title"].lower(), resolved[i].value)
+    for i, it in enumerate(items):
+        # Only schedule entries (deadlines, sessions): general instructions such
+        # as "read the papers" sit under headings they don't belong to.
+        if not resolved[i].value and it["kind"] in ("deadline", "event") \
+                and (it.get("when") or {}).get("type") != "relative":
+            resolved[i] = _repair(it, text, today, term, known) or resolved[i]
+
+    no_class, seen = [], []
+    for i, it in enumerate(items):
+        if _duplicate(it, resolved[i], seen):
+            continue
+        if it["kind"] == "no_class":
+            if resolved[i].value and not resolved[i].window:
+                no_class.append(resolved[i].value[:10])
+            continue
+        course = courses.get(course_number(it.get("course") or "")) or only
+        _propose_item(con, clock, source_id, it, course, resolved[i], prior, matched)
+
+    for course, short, m in meetings:
+        _propose_meetings(con, clock, source_id, course, short, m, term, no_class, prior, matched)
+
+    # Whatever earlier versions added that this version no longer mentions.
+    title = source_title(con, source_id)
+    for (kind, _), row in prior.items():
+        if (kind, row["title"].lower()) not in matched:
+            inbox.propose(con, clock, source_id, f"Remove “{row['title']}”? It's not in the new version of {title}.",
+                          [{"op": "delete", "kind": kind, "id": row["id"]}])
+
+    with WRITE:
+        con.execute("update sources set dropped = ? where id = ?", (json.dumps(dropped), source_id))
+
+
+HEADING_LINES = 15  # how far above an item its date heading may be (one table row)
+_MONTH_RE = "|".join(m[:3] + r"\w*" for m in MONTHS)
+# A date that starts a line (a table row or heading), optionally after a short
+# label such as "Lecture 2:". Dates inside prose sentences don't qualify.
+DATE_HEADING = re.compile(
+    rf"^[^\w\n]*(?:[A-Za-z]+\s+\d{{1,2}}\s*:\s*)?"
+    rf"(?:(?:(?:mon|tue|wed|thu|fri|sat|sun)\w*,?\s+)?(?P<month>{_MONTH_RE})\.?\s+(?P<day>\d{{1,2}})\b(?!\s*,?\s*\d{{4}}\s*,?\s*\d{{1,2}}:)"
+    rf"|week\s+(?P<week>\d{{1,2}})\b)", re.I | re.M)
+
+
+def _repair(it, text, today, term, known):
+    """An item whose own quote states no date takes the nearest date heading
+    above it (schedules put the date on the row or heading, not beside every
+    item). Deterministic on purpose: a model asked to pick a date from the
+    passage picked the wrong row's date and a print timestamp. The quote shown
+    for review then starts with that heading, so the reason is visible."""
+    at = locate(it["quote"], text)
+    if not at:
+        return None
+    above = text[:at[0]].split("\n")
+    passage = "\n".join(above[-HEADING_LINES:])
+    heading = None
+    for m in DATE_HEADING.finditer(passage):
+        heading = m
+    if not heading:
+        return None
+    if heading.group("week"):
+        when = {"type": "week", "week": int(heading.group("week"))}
+    else:
+        month = next(i for i, name in enumerate(MONTHS, 1) if heading.group("month").lower()[:3] == name[:3])
+        when = {"type": "date", "month": month, "day": int(heading.group("day"))}
+    quote = heading.group(0).strip(" \t-•*·")
+    w = resolve({"title": it["title"], "quote": quote, "when": when}, today, term, known)
+    if not w.value:
+        return None
+    it["quote"] = f"{quote.strip()} … {it['quote'].strip()}"
+    return w
+
+
+COMPARED = ("due", "start", "end", "deadline", "window", "repeat", "until", "skip", "location", "provisional")
+
+
+def _emit(con, clock, source_id, kind, data, quote, question_id, prior, matched, summary=None):
+    """Propose `data` as a new item, or, if an earlier version of this
+    document already put the same item in the plan, only what changed."""
+    key = (kind, data["title"].lower())
+    old = prior.get(key)
+    if not old:
+        return inbox.propose(con, clock, source_id, summary or data["title"],
+                             [{"op": "create", "kind": kind, "data": data}], quote, question_id)
+    matched.add(key)
+    changed = {f: data[f] for f in COMPARED if f in data and data[f] != old.get(f)
+               and not (f == "provisional" and bool(data[f]) == bool(old.get(f)))}
+    if changed:
+        what = "; ".join(f"{f} {old.get(f) or 'none'} → {v}" for f, v in changed.items())
+        inbox.propose(con, clock, source_id, f"Update “{old['title']}”: {what}",
+                      [{"op": "update", "kind": kind, "id": old["id"], "data": changed}], quote, question_id)
+
+
+STOP = {"the", "a", "an", "and", "or", "of", "for", "to", "in", "on", "due", "your", "with"}
+
+
+def _duplicate(it, when, seen) -> bool:
+    """The same kind of item on the same date with overlapping title words is
+    one item reported twice (a model lists "Phase 1 due" and "Phase 1
+    application, traces and draft requirements" from the same schedule)."""
+    words = {w for w in _words(it["title"]) if w not in STOP}
+    key = (it["kind"], (when.value or "")[:10])
+    for k, other in seen:
+        if k == key and key[1] and words and other and len(words & other) / min(len(words), len(other)) >= 0.5:
+            return True
+    seen.append((key, words))
+    return False
+
+
+def _propose_meetings(con, clock, source_id, course, short, m, term, no_class, prior, matched):
+    """Regular class meetings → one weekly Event over the term's instruction
+    weeks, skipping holidays on those days and the document's no-class days."""
+    days = [d for d in (m.get("days") or "").upper().replace(" ", "").split(",") if d in plan.DAYS]
+    start = m.get("start") if time_in_quote(m.get("start"), m["quote"]) else None
+    end = m.get("end") if time_in_quote(m.get("end"), m["quote"]) else None
+    if not days or not term:
+        return
+    if not start:
+        inbox.ask(con, clock, source_id, f"What time does {short} meet on {'/'.join(days)}? The document doesn't say.", m["quote"])
+        return
+    first = date.fromisoformat(term["week1"]) - timedelta(days=7)
+    while first.isoformat() < term["instruction_begins"] or plan.DAYS[first.weekday()] not in days:
+        first += timedelta(days=1)
+    holidays = [h[:10] for h in term["holidays"].splitlines()
+                if plan.DAYS[date.fromisoformat(h[:10]).weekday()] in days]
+    data = {"title": f"{short.split(' · ')[0]} class", "start": f"{first}T{start[:5]}", "repeat": ",".join(days),
+            "until": term["instruction_ends"]}
+    if end:
+        data["end"] = f"{first}T{end[:5]}"
+    if m.get("location"):
+        data["location"] = m["location"]
+    if course is not None:
+        data["course_id"] = course
+    if skip := sorted(set(holidays + no_class)):
+        data["skip"] = ",".join(skip)
+    _emit(con, clock, source_id, "events", data, m["quote"], None, prior, matched, f"{short} class meetings")
+
+
+KIND = {"deadline": ("deadlines", "due"), "event": ("events", "start"), "task": ("tasks", "due"),
+        "project": ("projects", "deadline")}
+
+
+def source_title(con, source_id) -> str:
+    return con.execute("select title from sources where id = ?", (source_id,)).fetchone()["title"]
+
+
+def course_number(s: str) -> str:
+    """"CS239" and "cs  239" → "CS 239"."""
+    return re.sub(r"\s+", " ", re.sub(r"([A-Za-z])(\d)", r"\1 \2", s)).strip()
+
+
+def _propose_item(con, clock, source_id, it, course, when: When, prior, matched):
+    kind, field = KIND.get(it["kind"], (None, None))
+    text = it.get("question") or (it["title"] if it["kind"] == "question" else "")
+    if not text and kind in ("deadlines", "events", "projects") and not when.value:
+        # A deliverable or session without a stated date must be asked about.
+        # An undated task is just proposed undated.
+        text = f"When is “{it['title']}”{'' if kind == 'events' else ' due'}? The document doesn't say."
+    question = inbox.ask(con, clock, source_id, text, it["quote"]) if text else None
+    if when.ask:  # e.g. which day of the week: worth asking, but the item stands without it
+        inbox.ask(con, clock, source_id, when.ask, it["quote"])
+    if not kind:
+        return
+    data = {"title": it["title"]}
+    if when.value:
+        data[field] = when.value
+    if when.window and kind != "projects":
+        data["window"] = when.window
+    if course is not None:
+        data["course_id"] = course
+    if it.get("provisional") or when.provisional:
+        data["provisional"] = True
+    if kind == "events" and "start" not in data:
+        # An Event needs a time; without one it's a Deadline-like marker until answered.
+        kind = "deadlines"
+    _emit(con, clock, source_id, kind, data, it["quote"], question["id"] if question else None, prior, matched)
+
+
+# ---- HTTP ---------------------------------------------------------------------
+
+def _doc_name(filename: str) -> str:
+    """"CS239 (1).pdf" and "cs239.pdf" name the same document."""
+    stem = filename.rsplit(".", 1)[0]
+    return re.sub(r"\s*\(\d+\)$", "", stem).strip().lower()
+
+
+@router.post("/uploads", status_code=202)
+async def upload(file: UploadFile, background: BackgroundTasks, request: Request, replaces: int | None = None):
+    """Upload a document; `replaces` (or the same file name) makes it a new
+    version of an earlier upload."""
+    s = request.app.state
+    data = await file.read()
+    now = local(s.clock.now()).strftime("%Y-%m-%dT%H:%M")
+    if replaces is None:
+        prev = next((r for r in s.db.execute("select id, title from sources where kind = 'document' and replaced_by is null "
+                                             "and status = 'done' order by id desc") if _doc_name(r["title"]) == _doc_name(file.filename)), None)
+    else:
+        prev = s.db.execute("select id from sources where id = ?", (replaces,)).fetchone()
+        if not prev:
+            raise HTTPException(404, "The upload to replace doesn't exist.")
+    lineage = None
+    if prev:
+        lineage = s.db.execute("select coalesce(lineage, id) from sources where id = ?", (prev["id"],)).fetchone()[0]
+    with WRITE:
+        cur = s.db.execute("insert into sources (kind, title, text, status, created_at, lineage) "
+                           "values ('document', ?, '', 'processing', ?, ?)", (file.filename, now, lineage))
+    background.add_task(ingest, s.db, s.llm, s.clock, cur.lastrowid, file.filename, data)
+    return {"id": cur.lastrowid, "status": "processing"}
+
+
+def _source(con, id):
+    r = con.execute("select id, kind, title, status, error, dropped, created_at, lineage from sources where id = ?", (id,)).fetchone()
+    if not r:
+        raise HTTPException(404)
+    return {**dict(r), "dropped": json.loads(r["dropped"] or "[]")}
+
+
+@router.get("/sources")
+def list_sources(request: Request):
+    con = request.app.state.db
+    return [_source(con, r["id"]) for r in con.execute(
+        "select id from sources where kind = 'document' and replaced_by is null order by id desc")]
+
+
+@router.get("/sources/{id}")
+def get_source(id: int, request: Request):
+    return _source(request.app.state.db, id)

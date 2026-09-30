@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Almanac</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<nav id="nav">
+  <div class="brand">Almanac</div>
+  <a href="#today" data-view="today">Today</a>
+  <a href="#inbox" data-view="inbox">Inbox <span class="badge" hidden></span></a>
+  <a href="#calendar" data-view="calendar">Calendar</a>
+  <a href="#plan" data-view="plan">Plan</a>
+</nav>
+<main id="view"></main>
+<dialog id="editor"></dialog>
+<div id="toast" role="status" hidden onclick="this.hidden = true"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,82 @@
+{
+  "_about": "Hand labels for the extraction eval (scripts/eval.py). Each item matches a proposal whose title contains every word in `all` (any alternative separated by |) and none of `none`. `date` is the correct date field (due/start/deadline) or `window`. `required` items count toward recall; `allowed` items are fine extras that must still have the right date if dated. `questions` must be asked (matched by words in the question text). Dates were read off the documents by hand; see each `quote`.",
+  "UCLA CS239 _ Large Language Models for Code Intelligence _ Fall 2026.pdf": {
+    "courses": [{"number": "CS 239", "instructor": "Robin Ding"}],
+    "meetings": [{"repeat": "MO,WE", "start": "16:00", "end": "17:50", "quote": "Mondays and Wednesdays, 4:00–5:50 p.m."}],
+    "required": [
+      {"all": ["regist|sign"], "date": "2026-10-05", "quote": "Select a paper and register using the paper presentation sign-up sheet by October 5."},
+      {"all": ["team"], "none": ["presentation"], "date": "2026-10-09", "quote": "Fri Oct 9 No Class — Project Team List Due"},
+      {"all": ["proposal"], "none": ["one", "report"], "date": "2026-10-14", "quote": "Wed Oct 14 Course project proposal"},
+      {"all": ["one-pager|one page|one-page|one pager"], "date": "2026-10-21", "quote": "Wed Oct 21 ... Proposal one-pager Due"},
+      {"all": ["mid"], "date": "2026-11-04", "quote": "Wed Nov 4 Mid-term project report"},
+      {"all": ["mid"], "date": "2026-11-09", "quote": "Mon Nov 9 First half Mid-term project report"},
+      {"all": ["mid|midterm"], "date": "2026-11-11", "quote": "Wed Nov 11 No class — Midterm report due"},
+      {"all": ["final"], "date": "2026-11-30", "quote": "Mon Nov 30 Final project report"},
+      {"all": ["final"], "date": "2026-12-02", "quote": "Wed Dec 2 Final project report"}
+    ],
+    "allowed": [
+      {"all": ["guest"], "date": "2026-09-30"},
+      {"all": ["select|choose|pick"], "date": "2026-10-05"},
+      {"all": ["proposal"], "date": "2026-10-14"},
+      {"all": ["paper|present"], "date": null},
+      {"all": ["proposal|report|mid|final|present|paper|team"], "date": null}
+    ],
+    "questions": [
+      {"all": ["paper"], "why": "which paper they present decides the presentation date"},
+      {"all": ["team"], "why": "project team (3-5 students)"},
+      {"all": ["final|report"], "all2": ["due|when"], "why": "the six-page final report has no stated due date"}
+    ],
+    "wrong_dates": [{"all": ["final"], "date": "2026-11-23", "why": "Nov 23 is a cyber-security lecture, the row above"}]
+  },
+  "CS 239 Fall 2026 Course Schedule & Reading List.pdf": {
+    "courses": [{"number": "CS 239", "instructor": null}],
+    "meetings": [],
+    "required": [
+      {"all": ["tutorial|framework"], "date": "2026-10-15", "quote": "Thursday, October 15 — Tutorial: Multi-Agent Frameworks"},
+      {"all": ["phase 1|phase1"], "date": "2026-10-29", "quote": "Thursday, October 29 — Mid-Project Check-in: Phase 1 Due"},
+      {"all": ["polic|phase 2|check"], "date": "2026-11-12", "quote": "Nov 12 — encoding policies.md as rules + early Phase 2"},
+      {"all": ["final"], "date": "2026-12-03", "quote": "Thursday, December 3 — Final Project Presentations"}
+    ],
+    "allowed": [
+      {"all": ["P1.|SWE-bench"], "date": "2026-09-29"},
+      {"all": ["P2.|ReAct"], "date": "2026-10-01"},
+      {"all": ["P3.|Reflexion"], "date": "2026-10-06"},
+      {"all": ["P4.|Tree of Thoughts"], "date": "2026-10-08"},
+      {"all": ["P5.|SWE-agent"], "date": "2026-10-13"},
+      {"all": ["P6.|AutoCodeRover"], "date": "2026-10-20"},
+      {"all": ["P7.|Demystifying"], "date": "2026-10-22"},
+      {"all": ["P8.|IRIS"], "date": "2026-10-27"},
+      {"all": ["P9.|Agentic Verification"], "date": "2026-11-03"},
+      {"all": ["P10.|Program Repair"], "date": "2026-11-05"},
+      {"all": ["P11.|AgentSpec"], "date": "2026-11-10"},
+      {"all": ["P12.|Prompt Injection"], "date": "2026-11-12"},
+      {"all": ["P13.|Plan to Action"], "date": "2026-11-17"},
+      {"all": ["P14.|MetaGPT"], "date": "2026-11-19"},
+      {"all": ["P15.|AgentSquare"], "date": "2026-12-01"},
+      {"all": ["integrity"], "date": null},
+      {"all": ["phase|project|present|paper|read|polic|team|demo|requirement|trace"], "date": null}
+    ],
+    "questions": [
+      {"all": ["teach|instructor"], "why": "the document never names the instructor"},
+      {"all": ["main paper|assigned|which paper|present"], "why": "presentations are assigned; decides the Nov 5 (or other) date"},
+      {"all": ["team"], "why": "team presentation slot/topic is chosen at sign-up"}
+    ],
+    "wrong_dates": []
+  },
+  "26F-COM SCI-269-SEM-3 Seminar_ Current Topics in Artificial Intelligence (cross-listed).pdf": {
+    "courses": [{"number": "COM SCI 269", "instructor": "Stefano Soatto"}],
+    "meetings": [],
+    "required": [
+      {"all": ["gating"], "window": "2026-09-28/2026-10-02", "quote": "Week 1: Introduction, gating test"},
+      {"all": ["midterm|practicum"], "window": "2026-10-26/2026-10-30", "quote": "Week 5 ... AI Functions practicum (midterm assessment)"},
+      {"all": ["presentation|final"], "window": "2026-11-23/2026-11-27", "quote": "Week 9: Project presentations and final assessments."}
+    ],
+    "allowed": [
+      {"all": ["project|final|oral|agent|book"], "date": null}
+    ],
+    "questions": [
+      {"all": ["project|oral|final"], "why": "the oral final can be replaced by an optional project: the student's choice"}
+    ],
+    "wrong_dates": []
+  }
+}
