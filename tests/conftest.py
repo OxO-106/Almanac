@@ -37,6 +37,8 @@ class FakeLLM:
 
     def chat(self, messages, schema=None, **kw):
         self.requests.append({"messages": messages, "schema": schema})
+        if not self.replies and schema and "questions" in schema.get("properties", {}):
+            return '{"questions": []}'  # the questions pass, when a test doesn't script it
         return self.replies.pop(0)
 
 

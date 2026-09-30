@@ -136,6 +136,20 @@ ITEMS_SCHEMA = {"type": "object", "properties": {"items": {"type": "array", "ite
     "when": WHEN, "provisional": {"type": "boolean"}, "question": {"type": "string"}},
     "required": ["kind", "title", "quote", "when"]}}}, "required": ["items"]}
 
+QUESTIONS_PROMPT = RULES + """
+Task: a careful personal assistant is turning this course document into the student's plan. List the questions it must ask the student before the plan is complete: facts only the student knows that decide WHEN something happens for them or WHETHER a task applies to them. For example: which paper or topic they were assigned or chose (and so which date they present), which team they are on and their part, which presentation or demo slot they signed up for, which option they take when the document offers a choice (exam or project), and a due date or time the document leaves out for something they must hand in or attend.
+Do not ask about course content, grading, or policies. Address the student as "you", one full sentence ending in "?" per question, each with a quote from the document that makes the question necessary. At most 6 questions, most important first."""
+
+QUESTIONS_SCHEMA = {"type": "object", "properties": {"questions": {"type": "array", "items": {"type": "object", "properties": {
+    "question": {"type": "string"}, "quote": {"type": "string"}}, "required": ["question", "quote"]}}}, "required": ["questions"]}
+QUESTIONS_CHARS = 60000
+
+
+def capitalize(s: str) -> str:
+    """"gating test" → "Gating test"; "iOS demo" stays."""
+    return s[:1].upper() + s[1:] if s[:1].islower() and not s[1:2].isupper() else s
+
+
 CHUNK = 8000  # characters per items pass; the whole doc would overflow the answer budget
 
 
@@ -428,6 +442,17 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
     items = []
     for part in chunks(text):
         items += [it for it in _ask_model(llm, ITEMS_PROMPT, ITEMS_SCHEMA, context, part)["items"] if keep(it, it["title"])]
+    # Regular lectures ("Lecture 10: Thursday, November 5 — …") come with the
+    # class-meeting Event; models list them anyway.
+    items = [it for it in items if not (it["kind"] == "event" and re.match(r"\s*lecture\s*\d+\b", it["title"], re.I))]
+    for it in items:
+        it["title"] = capitalize(it["title"].strip())
+
+    # Pass C: what only the student can tell us. Its own pass so asking doesn't
+    # depend on the item pass remembering to (models differ a lot there).
+    for q in _ask_model(llm, QUESTIONS_PROMPT, QUESTIONS_SCHEMA, context, text[:QUESTIONS_CHARS])["questions"]:
+        if (q.get("question") or "").strip() and keep(q, q["question"]):
+            inbox.ask(con, clock, source_id, capitalize(q["question"].strip()), q["quote"])
 
     # Resolve absolute dates first so relative ones ("two days before Phase 1") can use them.
     term = current_term(con, today)
@@ -594,7 +619,7 @@ def course_number(s: str) -> str:
 
 def _propose_item(con, clock, source_id, it, course, when: When, prior, matched):
     kind, field = KIND.get(it["kind"], (None, None))
-    text = it.get("question") or (it["title"] if it["kind"] == "question" else "")
+    text = capitalize((it.get("question") or (it["title"] if it["kind"] == "question" else "")).strip())
     if not text and kind in ("deadlines", "events", "projects") and not when.value:
         # A deliverable or session without a stated date must be asked about.
         # An undated task is just proposed undated.
@@ -647,7 +672,7 @@ async def upload(file: UploadFile, background: BackgroundTasks, request: Request
     with WRITE:
         cur = s.db.execute("insert into sources (kind, title, text, status, created_at, lineage) "
                            "values ('document', ?, '', 'processing', ?, ?)", (file.filename, now, lineage))
-    background.add_task(ingest, s.db, s.llm, s.clock, cur.lastrowid, file.filename, data)
+    background.add_task(ingest, s.db, s.reader, s.clock, cur.lastrowid, file.filename, data)
     return {"id": cur.lastrowid, "status": "processing"}
 
 

@@ -1,7 +1,7 @@
 """Extraction eval: run the real model over seed/ and score it against the
 hand labels in seed/expected.json.
 
-    .venv\\Scripts\\python scripts\\eval.py [--model qwen3.5:9b-q8_0] [--runs 3] [--only "CS 239"]
+    .venv\\Scripts\\python scripts\\eval.py [--model qwen3.5:9b-q8_0 (default: the document reader model)] [--runs 3] [--only "CS 239"]
 
 A proposal is "supported" when a label matching its title gives its date.
 Dated proposals that no label supports are listed as possible wrong dates:
@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from app import db, ingest  # noqa: E402
-from app.llm import Ollama  # noqa: E402
+from app.llm import DEFAULT_READER, Ollama  # noqa: E402
 
 
 VERBOSE = False
@@ -115,7 +115,7 @@ def main():
     args = ap.parse_args()
     global VERBOSE
     VERBOSE = args.verbose
-    llm = Ollama(lambda: {"ai": {"model": args.model}} if args.model else {})
+    llm = Ollama(lambda: {"ai": {"reader_model": args.model}} if args.model else {}, "reader_model", DEFAULT_READER)
     labels = json.loads((ROOT / "seed" / "expected.json").read_text(encoding="utf-8"))
     print(f"model: {llm.status()['model']}   runs: {args.runs}\n")
 

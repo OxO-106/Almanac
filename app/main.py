@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from . import chat, db, inbox, ingest, plan
 from .clock import SystemClock, local
 from .config import DB_PATH, WEB_DIR
-from .llm import Ollama
+from .llm import DEFAULT_READER, Ollama
 
 
 def create_app(db_path: Path = DB_PATH, llm=None, clock=None) -> FastAPI:
@@ -15,6 +15,7 @@ def create_app(db_path: Path = DB_PATH, llm=None, clock=None) -> FastAPI:
     con = db.connect(db_path)
     app.state.db = con
     app.state.llm = llm or Ollama(lambda: db.settings(con))
+    app.state.reader = llm or Ollama(lambda: db.settings(con), "reader_model", DEFAULT_READER)
     app.state.clock = clock or SystemClock()
 
     @app.get("/api/health")

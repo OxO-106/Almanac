@@ -171,6 +171,29 @@ def test_a_course_title_given_as_the_number_falls_back_to_the_file_name(client, 
     assert "File name: 26F-COM SCI-269-SEM-3" in llm.requests[0]["messages"][-1]["content"]
 
 
+def test_titles_start_with_a_capital(client, llm):
+    llm.replies = [course_reply(), items_reply(item(title="paper registration"), item(title="iOS demo"))]
+    upload(client, "cs239.txt", SYLLABUS.encode())
+    assert [p["summary"] for p in inbox(client)["proposals"]][1:] == ["Paper registration", "iOS demo"]
+    assert inbox(client)["proposals"][1]["ops"][0]["data"]["title"] == "Paper registration"
+
+
+def test_a_separate_pass_asks_what_only_the_student_can_answer(client, llm):
+    q = json.dumps({"questions": [
+        {"question": "Which paper did you register to present?", "quote": "Select a paper and register"},
+        {"question": "Invented?", "quote": "This sentence is not in the document"}]})
+    llm.replies = [course_reply(), items_reply(), q]
+    upload(client, "cs239.txt", SYLLABUS.encode())
+    assert [x["text"] for x in inbox(client)["questions"]] == ["Which paper did you register to present?"]
+
+
+def test_regular_lectures_are_not_proposed_as_events(client, llm):
+    lecture = item(kind="event", title="Lecture 10: Thursday, November 5 — Industrial-Scale Repair", quote="Wed Nov 11 No class")
+    llm.replies = [course_reply(), items_reply(lecture, item())]
+    upload(client, "cs239.txt", SYLLABUS.encode())
+    assert [p["summary"] for p in inbox(client)["proposals"]][1:] == ["Paper registration"]
+
+
 def test_course_numbers_are_normalised(client, llm):
     llm.replies = [course_reply([{"number": "CS239", "instructor": "Robin Ding", "quote": "Instructor: Robin Ding", "meetings": []}]),
                    items_reply()]

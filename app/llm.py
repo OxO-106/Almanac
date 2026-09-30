@@ -11,17 +11,37 @@ KEEP_ALIVE = "30m"
 TIMEOUT = httpx.Timeout(180, connect=10)
 NUM_CTX = 32768  # must match Papercut's
 DEFAULT_MODEL = "qwen3.5:9b-q8_0"
+# Reading documents uses a larger model: uploads are rare background jobs where
+# finding every deadline matters more than speed (see scripts/eval.py). It
+# doesn't fit on the GPU beside Papercut's model, so Ollama swaps them.
+DEFAULT_READER = "qwen3.5:35b-a3b"
 # 127.0.0.1, not localhost: Windows tries IPv6 first and Ollama listens on IPv4.
 DEFAULT_URL = "http://127.0.0.1:11434"
 
 
 class Ollama:
-    def __init__(self, settings: Callable[[], dict] = dict):
-        self._settings = settings
+    """key: the settings entry under "ai" naming the model ("model" for chat,
+    "reader_model" for documents). A reader model that isn't downloaded falls
+    back to the chat model."""
+
+    def __init__(self, settings: Callable[[], dict] = dict, key: str = "model", default: str = DEFAULT_MODEL):
+        self._settings, self._key, self._default = settings, key, default
 
     def _cfg(self):
         s = self._settings().get("ai", {})
-        return (s.get("model") or DEFAULT_MODEL), (s.get("url") or DEFAULT_URL).rstrip("/")
+        url = (s.get("url") or DEFAULT_URL).rstrip("/")
+        model = s.get(self._key) or self._default
+        if self._key != "model" and not self._installed(url, model):
+            model = s.get("model") or DEFAULT_MODEL
+        return model, url
+
+    @staticmethod
+    def _installed(url, model):
+        try:
+            names = {m["name"] for m in httpx.get(f"{url}/api/tags", timeout=3).json().get("models", [])}
+        except Exception:
+            return True  # let the real call report that Ollama is down
+        return model in names or f"{model}:latest" in names
 
     def status(self) -> dict:
         model, url = self._cfg()
