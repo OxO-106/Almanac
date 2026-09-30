@@ -21,3 +21,12 @@
 | + running headers/footers stripped, same-day duplicates merged | 13/16 (81%) | 6/7 | 1 | 6 |
 
 The pipeline's checks hold (no invented date survives; every question a careful reader would ask is asked), but the 9B model's recall is unstable: a small change to the input text makes it find different items (Kim's tutorial appears, Ding's Oct 9/Oct 21/Nov 4 disappear). Next: compare qwen3.5:35b-a3b (24 GB download, needs the user's go-ahead).
+
+**2026-09-30: model comparison** (same pipeline; course numbers now fall back to the file name)
+
+| Model | Required items with the right date | Questions asked | Wrong/unsupported dates | Noise | Time (3 syllabi) |
+|---|---|---|---|---|---|
+| qwen3.5:9b-q8_0 | 13/16 (81%) | 6/7 | 1 | 6 | 95 s |
+| qwen3.5:35b-a3b | 15/16 (93%) | 4/7 | 0 real (5 are correct regular-lecture dates) | 10 | 137 s, 58% on GPU |
+
+35B finds more deadlines but asks fewer of the questions a careful reader must ask, lists regular lectures, and doesn't fit on the GPU next to Papercut's 9B (Ollama swaps).

@@ -377,8 +377,13 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
 
     # Pass A: which course(s). Reuse a known Course (same number and instructor).
     courses, meetings = {}, []
-    for c in _ask_model(llm, COURSE_PROMPT, COURSE_SCHEMA, context, text[:CHUNK])["courses"]:
+    title = source_title(con, source_id)
+    for c in _ask_model(llm, COURSE_PROMPT, COURSE_SCHEMA, f"{context}\nFile name: {title}", text[:CHUNK])["courses"]:
         c["number"] = course_number(c.get("number") or "")
+        if not re.search(r"[A-Za-z].*\d", c["number"]):
+            # Not a course number (e.g. the course title). Canvas pages often
+            # state it only in the file name: "26F-COM SCI-269-SEM-3 …".
+            c["number"] = number_in(title) or number_in(text[:2000]) or ""
         if not c["number"]:
             continue
         instructor = (c.get("instructor") or "").strip()
@@ -455,7 +460,6 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
         _propose_meetings(con, clock, source_id, course, short, m, term, no_class, prior, matched)
 
     # Whatever earlier versions added that this version no longer mentions.
-    title = source_title(con, source_id)
     for (kind, _), row in prior.items():
         if (kind, row["title"].lower()) not in matched:
             inbox.propose(con, clock, source_id, f"Remove “{row['title']}”? It's not in the new version of {title}.",
@@ -575,6 +579,12 @@ KIND = {"deadline": ("deadlines", "due"), "event": ("events", "start"), "task": 
 
 def source_title(con, source_id) -> str:
     return con.execute("select title from sources where id = ?", (source_id,)).fetchone()["title"]
+
+
+def number_in(s: str) -> str | None:
+    """A course number written in text: "COM SCI-269", "CS239", "CS 239" → normalised."""
+    m = re.search(r"\b([A-Z]{2,}(?:\s[A-Z]{2,})*)[\s-]?(\d{2,3}[A-Z]?)\b", s)
+    return course_number(f"{m.group(1)} {m.group(2)}") if m else None
 
 
 def course_number(s: str) -> str:

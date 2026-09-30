@@ -163,6 +163,14 @@ def test_a_time_not_written_in_the_quote_is_dropped_but_the_date_kept(client, ll
     assert dues == ["2026-10-29", "2026-10-05T16:00"]
 
 
+def test_a_course_title_given_as_the_number_falls_back_to_the_file_name(client, llm):
+    llm.replies = [course_reply([{"number": "Advanced Topics in AI: Agentic Learning", "instructor": "Robin Ding",
+                                  "quote": "Instructor: Robin Ding", "meetings": []}]), items_reply()]
+    upload(client, "26F-COM SCI-269-SEM-3 Seminar_ Current Topics.pdf".replace(".pdf", ".txt"), SYLLABUS.encode())
+    assert inbox(client)["proposals"][0]["ops"][0]["data"]["number"] == "COM SCI 269"
+    assert "File name: 26F-COM SCI-269-SEM-3" in llm.requests[0]["messages"][-1]["content"]
+
+
 def test_course_numbers_are_normalised(client, llm):
     llm.replies = [course_reply([{"number": "CS239", "instructor": "Robin Ding", "quote": "Instructor: Robin Ding", "meetings": []}]),
                    items_reply()]
