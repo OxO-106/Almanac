@@ -432,6 +432,31 @@ views.goals = async () => {
     ${b.projects.length ? `<section><h3>Other projects</h3><ul>${b.projects.map(projectCard).join("")}</ul></section>` : ""}`;
 };
 
+// ---- archive -----------------------------------------------------------------
+
+const KIND_NAME = { weekly: "Week", monthly: "Month", quarterly: "Quarter" };
+
+views.archive = async (id) => {
+  const list = await api("/api/overviews");
+  if (!list.length) return `<h1>Archive</h1><p class="empty">Your weekly overview arrives Sunday at 8pm; monthly on the last day of the month; quarterly at the end of each term.</p>`;
+  id = Number(id) || list[0].id;
+  const o = await api(`/api/overviews/${id}`);
+  const span = `${fmtDay(o.period_start)} – ${fmtDay(o.period_end)}`;
+  const items = (xs, f) => xs.length ? `<ul>${xs.map(x => `<li class="row">${f(x)}</li>`).join("")}</ul>` : `<p class="empty">None.</p>`;
+  return `<div class="archive"><aside><h3>Overviews</h3><ul>${list.map(x => `<li><a href="#archive/${x.id}" class="${x.id === id ? "on" : ""}">
+      ${KIND_NAME[x.kind]} · ${esc(fmtDay(x.period_start))} – ${esc(fmtDay(x.period_end))}</a></li>`).join("")}</ul></aside>
+    <article><h1>${KIND_NAME[o.kind]} in review</h1><p class="sub">${esc(span)}</p>
+      <blockquote class="assess">${esc(o.assessment)}</blockquote>
+      <section><h3>Time spent</h3>${items(o.hours, h => `<span class="title">${esc(h.name)}</span><span class="meta">${h.hours}h</span>`)}</section>
+      ${o.record ? `<section><h3>What you did this quarter</h3>${o.record.map(g => `<h4>${esc(g.goal)}</h4><ul>${g.done.map(t => `<li class="row">${esc(t)}</li>`).join("")}</ul>`).join("") || `<p class="empty">Nothing recorded.</p>`}</section>`
+        : `<section><h3>Done (${o.completed.length})</h3>${items(o.completed, t => `<span class="title">${esc(t.title)}</span><span class="meta">${esc(t.goal)}</span>`)}</section>
+      <section><h3>Slipped (${o.slipped.length})</h3>${items(o.slipped, t => `<span class="title">${esc(t.title)}</span><span class="meta">planned ${esc(fmtDay(t.do_date))}</span>`)}</section>`}
+      ${o.goals ? `<section><h3>Goals</h3>${items(o.goals, g => `<span class="title">${esc(g.goal)}</span><span class="meta">${g.done}/${g.total} tasks done</span>`)}</section>` : ""}
+      ${o.stalled_goals.length ? `<section><h3>No movement</h3>${items(o.stalled_goals, g => `<span class="title">${esc(g)}</span>`)}</section>` : ""}
+      ${o.next ? `<section><h3>Next week</h3>${items(o.next, x => `<span class="title">${esc(x.title)}</span><span class="meta">${esc(fmtWhen(x.at))}</span>`)}</section>` : ""}
+    </article></div>`;
+};
+
 // ---- memory ------------------------------------------------------------------
 
 async function saveCapacity(e) {
@@ -534,10 +559,10 @@ views.chat = async () => {
 
 async function render() {
   refreshBadge();
-  const name = location.hash.slice(1) || "today";
+  const [name, arg] = (location.hash.slice(1) || "today").split("/");
   document.querySelectorAll("#nav a").forEach(a => a.classList.toggle("active", a.dataset.view === name));
   try {
-    $("#view").innerHTML = await (views[name] || views.today)();
+    $("#view").innerHTML = await (views[name] || views.today)(arg);
   } catch (e) {
     $("#view").innerHTML = `<div class="notice">Couldn't load this page: ${esc(e.message)}</div>`;
   }

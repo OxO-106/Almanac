@@ -4,9 +4,9 @@
 
 **Blocked by:** 13 (Scheduler, notifications and Briefing), 15 (Timers and learned estimates)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Three Overview jobs on their schedules, separate even when coinciding
-- [ ] Numbers computed in code; the model writes only the prose assessment
-- [ ] Archive screen
-- [ ] API tests for scheduling and a Sunday that is also month end
+- [x] Three Overview jobs on their schedules, separate even when coinciding
+- [x] Numbers computed in code; the model writes only the prose assessment
+- [x] Archive screen
+- [x] API tests for scheduling and a Sunday that is also month end
