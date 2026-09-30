@@ -145,6 +145,41 @@ QUESTIONS_SCHEMA = {"type": "object", "properties": {"questions": {"type": "arra
 QUESTIONS_CHARS = 60000
 
 
+MERGE_PROMPT = """You help a personal assistant decide what to ask a student about one course document. Below are draft questions, numbered. Many ask the same thing in different words.
+- Merge drafts that ask the same thing into one question, worded clearly, addressed to "you", ending in "?".
+- Drop drafts that aren't needed to know WHEN something happens for the student or WHETHER a task applies to them (course content, grading, whether they already did something, reminders).
+- Keep at most 6 questions, most important first.
+Return each kept question with "from": the numbers of every draft it covers."""
+
+MERGE_SCHEMA = {"type": "object", "properties": {"merged": {"type": "array", "items": {"type": "object", "properties": {
+    "question": {"type": "string"}, "from": {"type": "array", "items": {"type": "integer"}}},
+    "required": ["question", "from"]}}}, "required": ["merged"]}
+
+
+def _consolidate(llm, context, drafts):
+    """Draft index → (question, quote) to ask, or None if merged away/dropped.
+    If the model call fails, exact duplicates are merged and the rest kept."""
+    exact = {}
+    final = [exact.setdefault(q.lower(), (q, quote)) for q, quote in drafts]
+    if len(drafts) < 2:
+        return final
+    listing = "\n".join(f"{i}. {q}" for i, (q, _) in enumerate(drafts))
+    try:
+        merged = json.loads(llm.chat([{"role": "system", "content": MERGE_PROMPT},
+                                      {"role": "user", "content": f"{context}\n\nDrafts:\n{listing}"}],
+                                     schema=MERGE_SCHEMA, timeout=900))["merged"]
+    except Exception:
+        return final
+    out = [None] * len(drafts)
+    for m in merged[:6]:
+        members = [i for i in m.get("from") or [] if isinstance(i, int) and 0 <= i < len(drafts)]
+        q = capitalize((m.get("question") or "").strip())
+        if members and q.endswith("?"):
+            for i in members:
+                out[i] = out[i] or (q, drafts[members[0]][1])
+    return out
+
+
 def capitalize(s: str) -> str:
     """"gating test" → "Gating test"; "iOS demo" stays."""
     return s[:1].upper() + s[1:] if s[:1].islower() and not s[1:2].isupper() else s
@@ -450,9 +485,34 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
 
     # Pass C: what only the student can tell us. Its own pass so asking doesn't
     # depend on the item pass remembering to (models differ a lot there).
+    # Questions from both passes are drafts: merged and trimmed before asking.
+    drafts, item_draft = [], {}
+
+    def draft(q, quote):
+        q = capitalize((q or "").strip())
+        if q.endswith("?") and quoted(quote, text):
+            drafts.append((q, quote))
+            return len(drafts) - 1
+
     for q in _ask_model(llm, QUESTIONS_PROMPT, QUESTIONS_SCHEMA, context, text[:QUESTIONS_CHARS])["questions"]:
-        if (q.get("question") or "").strip() and keep(q, q["question"]):
-            inbox.ask(con, clock, source_id, capitalize(q["question"].strip()), q["quote"])
+        if draft(q.get("question"), q.get("quote")) is None and q.get("question"):
+            dropped.append({"title": q["question"], "quote": q.get("quote"), "reason": "quote not found in the document"})
+    for i, it in enumerate(items):
+        if (d := draft(it.get("question") or (it["title"] if it["kind"] == "question" else ""), it["quote"])) is not None:
+            item_draft[i] = d
+    final = _consolidate(llm, context, drafts)
+    asked = {}
+
+    def ask_draft(d):
+        if d is None or final[d] is None:
+            return None
+        q, quote = final[d]
+        if q not in asked:
+            asked[q] = inbox.ask(con, clock, source_id, q, quote)
+        return asked[q]
+
+    for d in range(len(drafts)):
+        ask_draft(d)
 
     # Resolve absolute dates first so relative ones ("two days before Phase 1") can use them.
     term = current_term(con, today)
@@ -479,7 +539,7 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
                 no_class.append(resolved[i].value[:10])
             continue
         course = courses.get(course_number(it.get("course") or "")) or only
-        _propose_item(con, clock, source_id, it, course, resolved[i], prior, matched)
+        _propose_item(con, clock, source_id, it, course, resolved[i], prior, matched, ask_draft(item_draft.get(i)))
 
     for course, short, m in meetings:
         _propose_meetings(con, clock, source_id, course, short, m, term, no_class, prior, matched)
@@ -617,14 +677,14 @@ def course_number(s: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"([A-Za-z])(\d)", r"\1 \2", s)).strip()
 
 
-def _propose_item(con, clock, source_id, it, course, when: When, prior, matched):
+def _propose_item(con, clock, source_id, it, course, when: When, prior, matched, question=None):
+    """question: the (merged) question the item waits on, if the model drafted one."""
     kind, field = KIND.get(it["kind"], (None, None))
-    text = capitalize((it.get("question") or (it["title"] if it["kind"] == "question" else "")).strip())
-    if not text and kind in ("deadlines", "events", "projects") and not when.value:
+    if not question and kind in ("deadlines", "events", "projects") and not when.value:
         # A deliverable or session without a stated date must be asked about.
         # An undated task is just proposed undated.
-        text = f"When is “{it['title']}”{'' if kind == 'events' else ' due'}? The document doesn't say."
-    question = inbox.ask(con, clock, source_id, text, it["quote"]) if text else None
+        question = inbox.ask(con, clock, source_id, f"When is “{it['title']}”{'' if kind == 'events' else ' due'}? "
+                             "The document doesn't say.", it["quote"])
     if when.ask:  # e.g. which day of the week: worth asking, but the item stands without it
         inbox.ask(con, clock, source_id, when.ask, it["quote"])
     if not kind:

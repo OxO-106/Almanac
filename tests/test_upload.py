@@ -69,10 +69,11 @@ def test_a_quote_shortened_with_an_ellipsis_must_have_every_piece_in_order(clien
     assert [d["title"] for d in src["dropped"]] == ["Fake"]
 
 
-def test_a_question_item_without_question_text_still_reaches_the_inbox(client, llm):
+def test_a_label_that_is_not_a_question_is_not_asked(client, llm):
+    # e.g. "Gating test eligibility": the questions pass asks properly instead.
     llm.replies = [course_reply(), items_reply(item(kind="question", title="Which paper to present", when={"type": "unknown"}))]
     upload(client, "cs239.txt", SYLLABUS.encode())
-    assert [q["text"] for q in inbox(client)["questions"]] == ["Which paper to present"]
+    assert inbox(client)["questions"] == []
 
 
 TABLE = """Date Topic Reading List Due
@@ -192,6 +193,23 @@ def test_regular_lectures_are_not_proposed_as_events(client, llm):
     llm.replies = [course_reply(), items_reply(lecture, item())]
     upload(client, "cs239.txt", SYLLABUS.encode())
     assert [p["summary"] for p in inbox(client)["proposals"]][1:] == ["Paper registration"]
+
+
+def test_duplicate_questions_are_merged_and_unneeded_ones_dropped(client, llm):
+    drafts = json.dumps({"questions": [
+        {"question": "Which paper did you register to present?", "quote": "Select a paper and register"},
+        {"question": "Which paper will you present in class?", "quote": "Select a paper and register"},
+        {"question": "Do you like the course?", "quote": "Select a paper and register"},
+        {"question": "Gating test eligibility", "quote": "Select a paper and register"}]})
+    blocked = item(kind="task", title="Prepare presentation", question="What paper are you presenting?", when={"type": "unknown"})
+    merged = json.dumps({"merged": [{"question": "Which paper are you presenting?", "from": [0, 1, 3]}]})
+    llm.replies = [course_reply(), items_reply(blocked), drafts, merged]
+    upload(client, "cs239.txt", SYLLABUS.encode())
+    box = inbox(client)
+    assert [q["text"] for q in box["questions"]] == ["Which paper are you presenting?"]
+    assert "3. What paper are you presenting?" in llm.requests[-1]["messages"][-1]["content"]  # the item's own draft
+    assert "Gating test eligibility" not in llm.requests[-1]["messages"][-1]["content"]  # not a question
+    assert next(p for p in box["proposals"] if p["summary"] == "Prepare presentation")["blocked_by"] == "Which paper are you presenting?"
 
 
 def test_course_numbers_are_normalised(client, llm):
