@@ -13,7 +13,7 @@ def create(kind, **data):
 
 
 def inbox(client):
-    return client.get("/api/inbox").json()
+    return {**client.get("/api/inbox").json(), "questions": client.get("/api/questions").json()}
 
 
 def test_accepting_a_proposal_applies_it_and_clears_it_from_the_inbox(client):
@@ -111,7 +111,7 @@ def test_questions_block_their_proposals_until_answered(client):
                                             "quote": "Each student presents one paper."}).json()
     p = propose(client, src, [create("tasks", title="Prepare presentation")], quote="Each student presents one paper.",
                 question_id=q["id"])
-    assert inbox(client)["count"] == 2
+    assert inbox(client)["count"] == 1  # questions are asked in chat, not counted here
     assert client.post(f"/api/proposals/{p['id']}/accept").status_code == 409
 
     client.post(f"/api/questions/{q['id']}/answer", json={"answer": "P10, on Nov 5"})

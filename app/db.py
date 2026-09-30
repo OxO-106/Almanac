@@ -36,6 +36,9 @@ create table if not exists sources (
 create table if not exists questions (
   id integer primary key, source_id integer references sources on delete set null, text text not null, quote text,
   answer text, status text not null default 'open', created_at text not null, answered_at text);
+create table if not exists chat_messages (
+  id integer primary key, role text not null, text text not null, question_id integer references questions on delete set null,
+  quote text, created_at text not null);
 create table if not exists proposals (
   id integer primary key, source_id integer references sources on delete set null,
   question_id integer references questions on delete set null, summary text not null, quote text,
@@ -54,6 +57,7 @@ COLUMNS = [
     ("sources", "lineage", "integer"),
     ("sources", "replaced_by", "integer"),
     ("events", "skip", "text"),  # comma-separated dates a recurring event doesn't happen
+    ("questions", "snoozed_until", "text"),  # UTC; "skip for now" in chat
     # "2026-10-26/2026-10-30": the source gives only this range (e.g. "Week 5");
     # the item's date field then holds the range start.
     ("tasks", "window", "text"),

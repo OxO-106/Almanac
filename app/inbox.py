@@ -134,9 +134,12 @@ def inbox(request: Request):
         p["source"] = sources.get(p["source_id"])
         p["blocked_by"] = open_q.get(p["question_id"], {}).get("text")
         proposals.append(p)
-    for q in questions:
-        q["source"] = sources.get(q["source_id"])
-    return {"proposals": proposals, "questions": questions, "count": len(proposals) + len(questions)}
+    return {"proposals": proposals, "count": len(proposals)}  # questions are asked in chat
+
+
+@router.get("/questions")
+def open_questions(request: Request):
+    return [dict(r) for r in request.app.state.db.execute("select * from questions where status = 'open' order by id")]
 
 
 @router.post("/sources")

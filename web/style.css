@@ -130,3 +130,23 @@ dialog { max-height: calc(100vh - 40px); }
   main { padding: 20px 16px; }
 }
 .linkish { color: var(--accent); font-size: 13px; cursor: pointer; white-space: nowrap; }
+
+/* chat */
+main:has(.chat) { display: flex; }
+.chat { display: flex; flex-direction: column; flex: 1; max-width: 760px; min-height: 0; height: calc(100vh - 64px); }
+.chatlog { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 8px 0 16px; }
+.msg { max-width: 80%; padding: 10px 14px; border-radius: 14px; line-height: 1.5; }
+.msg.user { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+.msg.assistant { align-self: flex-start; background: var(--bar-bg); border: 1px solid var(--rule); border-bottom-left-radius: 4px; }
+.msg blockquote { margin: 8px 0 0; font-size: 14px; }
+.msg.typing span { display: inline-block; width: 6px; height: 6px; margin: 0 2px; border-radius: 50%; background: var(--muted); animation: blink 1.2s infinite; }
+.msg.typing span:nth-child(2) { animation-delay: .2s; } .msg.typing span:nth-child(3) { animation-delay: .4s; }
+@keyframes blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
+.chips { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.chips button { font-size: 13px; padding: 4px 12px; border-radius: 14px; }
+.chatbar { display: flex; gap: 8px; align-items: flex-end; border-top: 1px solid var(--rule); padding-top: 12px; }
+.chatbar textarea { flex: 1; resize: none; font: 15px/1.5 var(--font-ui); color: var(--fg); background: var(--bg); border: 1px solid var(--rule); border-radius: 10px; padding: 9px 12px; max-height: 160px; field-sizing: content; }
+details.later { margin-top: 8px; color: var(--muted); } details.later summary { cursor: pointer; padding: 6px 0; }
+details.later ul { margin-top: 8px; color: var(--fg); }
+@media (max-width: 700px) { .chat { height: calc(100vh - 110px); } .msg { max-width: 92%; } }
+.msg ul { margin: 4px 0; padding-left: 18px; list-style: disc; } .msg code { font-size: 13px; background: var(--rule); padding: 0 4px; border-radius: 4px; }

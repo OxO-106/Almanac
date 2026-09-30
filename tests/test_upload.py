@@ -36,7 +36,7 @@ def upload(client, name, data, mime="text/plain"):
 
 
 def inbox(client):
-    return client.get("/api/inbox").json()
+    return {**client.get("/api/inbox").json(), "questions": client.get("/api/questions").json()}
 
 
 def test_syllabus_items_become_proposals_with_their_quotes(client, llm):

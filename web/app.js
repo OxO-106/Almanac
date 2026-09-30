@@ -251,10 +251,12 @@ function describeOp(o, inbox) {
 
 async function refreshBadge() {
   try {
-    const { count } = await api("/api/inbox");
-    const b = $("#nav [data-view=inbox] .badge");
-    b.textContent = count || "";
-    b.hidden = !count;
+    const [{ count }, { questions }] = await Promise.all([api("/api/inbox"), api("/api/chat/badge")]);
+    for (const [view, n] of [["inbox", count], ["chat", questions]]) {
+      const b = $(`#nav [data-view=${view}] .badge`);
+      b.textContent = n || "";
+      b.hidden = !n;
+    }
   } catch { }
 }
 
@@ -277,14 +279,6 @@ async function proposalAction(id, action) {
 async function acceptAll(sourceId) {
   const r = await api(`/api/sources/${sourceId}/accept-all`, { method: "POST" });
   if (r.skipped.length) toast(`Accepted ${r.accepted}. Skipped:<br>` + r.skipped.map(s => `• ${esc(s.summary)}: ${esc(s.reason)}`).join("<br>"));
-  render();
-}
-
-async function answerQuestion(e, id) {
-  e.preventDefault();
-  const answer = e.target.elements.answer.value.trim();
-  if (!answer) return;
-  await send("POST", `/api/questions/${id}/answer`, { answer });
   render();
 }
 
@@ -349,31 +343,71 @@ views.inbox = async () => {
       <b>Upload a syllabus or document</b><span>PDF, DOCX or TXT. Drop files here or click to choose.</span></label>
     ${sources.length ? `<ul>${sources.slice(0, 5).map(uploadRow).join("")}</ul>` : ""}</section>`;
   inboxCache = box.proposals;
+  const ready = box.proposals.filter(p => !p.blocked_by), waiting = box.proposals.filter(p => p.blocked_by);
   const groups = {};
-  for (const p of box.proposals) (groups[p.source?.id ?? 0] ??= { source: p.source, items: [] }).items.push(p);
-  const questions = box.questions.map(q => `<li class="card question">
-      <p class="q">${esc(q.text)}</p>
-      ${q.quote ? `<blockquote>${esc(q.quote)}</blockquote>` : ""}
-      ${q.source ? `<p class="from">From ${esc(q.source.title)}</p>` : ""}
-      <form onsubmit="answerQuestion(event, ${q.id})"><input name="answer" placeholder="Your answer" autocomplete="off"><button class="primary">Answer</button></form>
-    </li>`).join("");
+  for (const p of ready) (groups[p.source?.id ?? 0] ??= { source: p.source, items: [] }).items.push(p);
+  const card = p => `<li class="card ${p.blocked_by ? "blocked" : ""}">
+    <p class="summary">${esc(p.summary)}</p>
+    <ul class="ops">${p.ops.map(o => `<li>${describeOp(o)}</li>`).join("")}</ul>
+    ${p.quote ? `<blockquote>${esc(p.quote)}</blockquote>` : ""}
+    ${p.blocked_by ? `<p class="waiting">Waiting on your answer in <a href="#chat">Chat</a>: ${esc(p.blocked_by)}</p>` : ""}
+    <div class="actions">
+      <button class="primary" ${p.blocked_by ? "disabled" : ""} onclick="proposalAction(${p.id}, 'accept')">Accept</button>
+      <button ${p.blocked_by ? "disabled" : ""} onclick="editProposal(${p.id})">Edit</button>
+      <button onclick="proposalAction(${p.id}, 'reject')">Reject</button>
+    </div></li>`;
   const proposals = Object.values(groups).map(g => `<section>
       <div class="grouphead"><h3>${esc(g.source?.title || "Other")}</h3>
         ${g.source && g.items.length > 1 ? `<button onclick="acceptAll(${g.source.id})">Accept all ${g.items.length}</button>` : ""}</div>
-      <ul>${g.items.map(p => `<li class="card ${p.blocked_by ? "blocked" : ""}">
-        <p class="summary">${esc(p.summary)}</p>
-        <ul class="ops">${p.ops.map(o => `<li>${describeOp(o)}</li>`).join("")}</ul>
-        ${p.quote ? `<blockquote>${esc(p.quote)}</blockquote>` : ""}
-        ${p.blocked_by ? `<p class="waiting">Waiting on your answer: ${esc(p.blocked_by)}</p>` : ""}
-        <div class="actions">
-          <button class="primary" ${p.blocked_by ? "disabled" : ""} onclick="proposalAction(${p.id}, 'accept')">Accept</button>
-          <button ${p.blocked_by ? "disabled" : ""} onclick="editProposal(${p.id})">Edit</button>
-          <button onclick="proposalAction(${p.id}, 'reject')">Reject</button>
-        </div></li>`).join("")}</ul></section>`).join("");
+      <ul>${g.items.map(card).join("")}</ul></section>`).join("");
+  const later = waiting.length ? `<details class="later"><summary>${waiting.length} more waiting on your answers in Chat</summary>
+    <ul>${waiting.map(card).join("")}</ul></details>` : "";
   return `<h1>Inbox</h1><p class="sub">Nothing changes in your plan until you accept it.</p>
-    ${uploads}
-    ${box.questions.length ? `<section><h3>Questions for you</h3><ul>${questions}</ul></section>` : ""}
-    ${proposals || (box.questions.length ? "" : `<p class="empty">All caught up.</p>`)}`;
+    ${uploads}${proposals || `<p class="empty">Nothing to review.</p>`}${later}`;
+};
+
+// ---- chat --------------------------------------------------------------------
+
+async function chatSend(e) {
+  e.preventDefault();
+  const box = e.target.elements.text, text = box.value.trim();
+  if (!text) return;
+  box.value = "";
+  const log = $(".chatlog");
+  log.insertAdjacentHTML("beforeend", `<div class="msg user">${esc(text)}</div><div class="msg assistant typing"><span></span><span></span><span></span></div>`);
+  log.scrollTop = log.scrollHeight;
+  try { await send("POST", "/api/chat", { text }); } catch (err) { toast(esc(detail(err))); }
+  render();
+}
+
+async function chatAction(action) {
+  await api(`/api/chat/${action}`, { method: "POST" });
+  render();
+}
+
+// Just enough markdown for chat replies: **bold**, *italic*, `code`, "- " lists.
+const md = s => esc(s)
+  .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<i>$2</i>").replace(/`([^`]+)`/g, "<code>$1</code>")
+  .replace(/(^|\n)[-•] (.*)(?=\n|$)/g, "$1<li>$2</li>").replace(/(<li>.*<\/li>)(?!\n?<li>)/gs, "<ul>$1</ul>")
+  .replace(/\n/g, "<br>").replace(/<br>(<\/?(ul|li))/g, "$1").replace(/(<\/(ul|li)>)<br>/g, "$1");
+
+views.chat = async () => {
+  const c = await api("/api/chat");
+  const msgs = c.messages.map(m => `<div class="msg ${m.role}">${m.role === "assistant" ? md(m.text) : esc(m.text).replace(/\n/g, "<br>")}
+    ${m.quote && c.current?.id === m.id ? `<blockquote>${esc(m.quote)}</blockquote>` : ""}</div>`).join("");
+  const chips = c.current ? `<div class="chips">
+      <button onclick="chatAction('skip')">Skip for now</button>
+      <button onclick="chatAction('dismiss')">Not relevant to me</button>
+      ${c.waiting ? `<span class="meta">${c.waiting} more question${c.waiting > 1 ? "s" : ""} after this</span>` : ""}</div>` : "";
+  setTimeout(() => { const l = $(".chatlog"); if (l) l.scrollTop = l.scrollHeight; $("#chatinput")?.focus(); });
+  return `<div class="chat">
+    <h1>Chat</h1>
+    <div class="chatlog">${msgs || `<p class="empty">Tell me what's going on: classes, plans, things you keep meaning to do.</p>`}</div>
+    ${chips}
+    <form class="chatbar" onsubmit="chatSend(event)">
+      <textarea id="chatinput" name="text" rows="1" placeholder="${c.current ? "Your answer…" : "Message Almanac…"}"
+        onkeydown="if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); this.form.requestSubmit(); }"></textarea>
+      <button class="primary">Send</button></form></div>`;
 };
 
 async function render() {
