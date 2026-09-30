@@ -159,3 +159,4 @@ button.small { font-size: 12px; padding: 2px 10px; }
 .bar span { display: block; height: 100%; background: var(--ok); }
 .focus { margin: 0 0 6px; color: var(--muted); font-size: 14px; }
 .head > span { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; } .goal .grouphead > span { display: flex; gap: 6px; }
+.briefing { margin-bottom: 24px; } .briefing p { margin: 4px 0; } .briefing h3 { margin-bottom: 8px; }

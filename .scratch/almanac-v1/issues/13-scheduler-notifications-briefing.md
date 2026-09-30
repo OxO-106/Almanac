@@ -4,9 +4,9 @@
 
 **Blocked by:** 04 (Inbox: Proposals and Questions)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Job runner with last-run tracking and catch-up coalescing (no stale notification bursts)
-- [ ] Briefing at 9am; built on next start if the PC was off
-- [ ] Browser notifications on PC and laptop; tray toast on PC
-- [ ] API tests advancing the clock across 9am and across a simulated overnight shutdown
+- [x] Job runner with last-run tracking and catch-up coalescing (no stale notification bursts)
+- [x] Briefing at 9am; built on next start if the PC was off
+- [x] Browser notifications on PC and laptop (tray toast on PC comes with ticket 17's tray icon)
+- [x] API tests advancing the clock across 9am and across a simulated overnight shutdown

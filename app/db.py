@@ -38,6 +38,11 @@ create table if not exists questions (
   answer text, status text not null default 'open', created_at text not null, answered_at text);
 create table if not exists memories (
   id integer primary key, text text not null, topic text);
+create table if not exists jobs (name text primary key, last_run text not null);
+create table if not exists notifications (id integer primary key, kind text not null, title text not null, body text,
+  url text, created_at text not null);
+create table if not exists briefings (date text primary key, data text not null);
+create table if not exists catchup (id integer primary key, text text not null, consumed integer not null default 0);
 create table if not exists chat_summaries (id integer primary key, upto integer not null, text text not null, created_at text not null);
 create table if not exists chat_messages (
   id integer primary key, role text not null, text text not null, question_id integer references questions on delete set null,

@@ -128,12 +128,21 @@ async function edit(kind, id) { openEditor(kind, await api(`/api/${kind}/${id}`)
 
 const views = {
   async today() {
-    const [h, t] = await Promise.all([api("/api/health"), api("/api/today"), loadLookups()]);
+    const [h, t, b] = await Promise.all([api("/api/health"), api("/api/today"), api("/api/briefing"), loadLookups()]);
     const date = asDate(t.date).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+    const canNotify = "Notification" in window && Notification.permission === "default";
+    const briefing = b ? `<section class="card briefing"><h3>Morning briefing</h3>
+        ${b.catchup.length ? `<p><b>While Almanac was off:</b> ${b.catchup.map(esc).join("; ")}</p>` : ""}
+        ${b.coming_up.length ? `<p><b>Coming up:</b> ${b.coming_up.map(d => `${esc(d.title)} (${esc(fmtWhen(d.due, d.window))})`).join(", ")}</p>` : ""}
+        ${b.carried_over.length ? `<p><b>Carried over:</b> ${b.carried_over.map(x => esc(x.title)).join(", ")}</p>` : ""}
+        ${b.questions ? `<p><a href="#chat">${b.questions} question${b.questions > 1 ? "s" : ""} waiting in Chat</a></p>` : ""}
+        ${!b.catchup.length && !b.coming_up.length && !b.carried_over.length && !b.questions ? "<p>A clear runway. Nothing urgent.</p>" : ""}</section>` : "";
     return `
       <header class="head"><div><h1>Today</h1><p class="sub">${esc(date)}</p></div>
         <button class="primary" onclick='openEditor("tasks", null, {do_date: "${t.date}"})'>Add task</button></header>
       ${h.ai.ready ? "" : `<div class="notice">The assistant is unavailable: ${esc(h.ai.message)}</div>`}
+      ${canNotify ? `<p class="hint"><a class="linkish" onclick="Notification.requestPermission().then(render)">Turn on notifications</a> on this device for the morning briefing and check-ins.</p>` : ""}
+      ${briefing}
       ${t.overdue.length ? section("Carried over", t.overdue.map(taskRow), "") : ""}
       ${section("To do today", t.tasks.map(taskRow), "Nothing planned for today.")}
       ${section("Schedule", t.events.map(eventRow), "No events today.")}
@@ -532,6 +541,31 @@ async function render() {
     $("#view").innerHTML = `<div class="notice">Couldn't load this page: ${esc(e.message)}</div>`;
   }
 }
+
+// ---- notifications -----------------------------------------------------------
+// The server keeps a list; each device remembers the last one it showed.
+
+async function pollNotifications() {
+  let seen = null;
+  try { seen = localStorage.getItem("seenNotification"); } catch { }
+  try {
+    const list = await api(`/api/notifications?after=${seen ?? 0}`);
+    if (seen !== null) {
+      for (const n of list) {
+        if ("Notification" in window && Notification.permission === "granted") {
+          const note = new Notification(n.title, { body: n.body || "", tag: `almanac-${n.id}` });
+          note.onclick = () => { window.focus(); location.hash = n.url || "#today"; };
+        } else toast(`<b>${esc(n.title)}</b><br>${esc(n.body || "")}`);
+      }
+    }
+    // first visit on a device: start from now instead of replaying history
+    const last = list.length ? list[list.length - 1].id : seen ?? (await api("/api/notifications?after=0")).slice(-1)[0]?.id ?? 0;
+    try { localStorage.setItem("seenNotification", String(last)); } catch { }
+    if (list.length) refreshBadge();
+  } catch { }
+}
+setInterval(pollNotifications, 30000);
+pollNotifications();
 
 addEventListener("hashchange", render);
 render();

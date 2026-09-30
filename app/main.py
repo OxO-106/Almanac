@@ -1,17 +1,26 @@
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import chat, db, goals, inbox, ingest, plan, planner
+from . import chat, db, goals, inbox, ingest, plan, planner, scheduler
 from .clock import SystemClock, local
 from .config import DB_PATH, WEB_DIR
 from .llm import DEFAULT_READER, Ollama
 
 
 def create_app(db_path: Path = DB_PATH, llm=None, clock=None) -> FastAPI:
-    app = FastAPI(title="Almanac")
+    @asynccontextmanager
+    async def lifespan(app):
+        # Real time only: tests move a fake clock and tick by hand.
+        stop = scheduler.start(app.state) if isinstance(app.state.clock, SystemClock) else None
+        yield
+        if stop:
+            stop.set()
+
+    app = FastAPI(title="Almanac", lifespan=lifespan)
     con = db.connect(db_path)
     app.state.db = con
     app.state.llm = llm or Ollama(lambda: db.settings(con))
@@ -36,6 +45,7 @@ def create_app(db_path: Path = DB_PATH, llm=None, clock=None) -> FastAPI:
     app.include_router(chat.router)
     app.include_router(planner.router)
     app.include_router(goals.router)
+    app.include_router(scheduler.router)
     app.include_router(plan.router)
 
     @app.get("/")
