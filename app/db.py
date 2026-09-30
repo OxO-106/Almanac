@@ -65,7 +65,8 @@ COLUMNS = [
     ("sources", "lineage", "integer"),
     ("sources", "replaced_by", "integer"),
     ("events", "skip", "text"),  # comma-separated dates a recurring event doesn't happen
-    ("questions", "snoozed_until", "text"),  # UTC; "skip for now" in chat
+    ("questions", "snoozed_until", "text"),
+    ("projects", "slips", "integer not null default 0"),  # times a Replan was needed  # UTC; "skip for now" in chat
     # "2026-10-26/2026-10-30": the source gives only this range (e.g. "Week 5");
     # the item's date field then holds the range start.
     ("tasks", "window", "text"),

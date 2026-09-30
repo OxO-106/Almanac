@@ -4,10 +4,10 @@
 
 **Blocked by:** 10 (Chat), 11 (Backward planner), 13 (Scheduler, notifications and Briefing)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] 8pm and 11pm Check-ins, 11pm only for open Tasks
-- [ ] Missed do date → Replan Proposal respecting slack and Capacity
-- [ ] Second slip → chat check-in message
-- [ ] Team Tasks check in on the user's part
-- [ ] API tests driving the clock through 8pm, 10:30pm, 11pm
+- [x] 8pm and 11pm Check-ins, 11pm only for open Tasks
+- [x] Missed do date → Replan Proposal respecting slack and Capacity
+- [x] Second slip → chat check-in message
+- [x] Team Tasks check in on the user's part
+- [x] API tests driving the clock through 8pm, 10:30pm, 11pm

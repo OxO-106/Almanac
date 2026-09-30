@@ -5,7 +5,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import chat, db, goals, inbox, ingest, plan, planner, scheduler
+from . import chat, checkins, db, goals, inbox, ingest, plan, planner, scheduler  # noqa: F401 (checkins registers jobs)
 from .clock import SystemClock, local
 from .config import DB_PATH, WEB_DIR
 from .llm import DEFAULT_READER, Ollama

@@ -48,17 +48,23 @@ def notify(con, clock, kind, title, body, url="#today"):
 
 
 def tick(state) -> list[str]:
-    con, now, ran = state.db, _now(state), []
+    con, now, ran, pending = state.db, _now(state), [], []
     for job in JOBS:
         row = con.execute("select last_run from jobs where name = ?", (job.name,)).fetchone()
-        # never run: start from today's midnight, so today's missed run still happens
-        last = datetime.fromisoformat(row["last_run"]) if row else datetime(now.year, now.month, now.day)
+        if not row:  # first tick ever: count from today's midnight, so today's runs still happen
+            with WRITE:
+                con.execute("insert into jobs (name, last_run) values (?, ?)",
+                            (job.name, datetime(now.year, now.month, now.day).isoformat(timespec="minutes")))
+            row = con.execute("select last_run from jobs where name = ?", (job.name,)).fetchone()
+        last = datetime.fromisoformat(row["last_run"])
         due, d = [], last.date()
         while d <= now.date():
             due += [t for t in job.times(d) if last < t <= now]
             d += timedelta(days=1)
-        if not due:
-            continue
+        if due:
+            pending.append((due[-1], job, due))
+    # in the order they were due: last night's missed check-in before this morning's briefing
+    for _, job, due in sorted(pending, key=lambda p: p[0]):
         with WRITE:
             con.execute("insert into jobs (name, last_run) values (?, ?) on conflict(name) do update set last_run = excluded.last_run",
                         (job.name, now.isoformat(timespec="minutes")))
