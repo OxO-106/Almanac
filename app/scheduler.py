@@ -7,6 +7,7 @@ GRACE late sends no notification (no burst of stale alerts on start-up); jobs
 that care can record what was missed for the next Briefing."""
 
 import json
+import sqlite3
 import threading
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -160,3 +161,23 @@ def get_briefing(request: Request):
 def get_notifications(request: Request, after: int = 0):
     return [dict(r) for r in request.app.state.db.execute(
         "select * from notifications where id > ? order by id limit 50", (after,))]
+
+
+# ---- nightly backup -----------------------------------------------------------
+
+BACKUPS_KEPT = 14
+
+
+def _backup_job(state, scheduled, late, missed):
+    folder = state.db_path.parent / "backups"
+    folder.mkdir(exist_ok=True)
+    target = folder / f"almanac-{_now(state).date().isoformat()}.db"
+    dest = sqlite3.connect(target)
+    with WRITE:
+        state.db.backup(dest)
+    dest.close()
+    for old in sorted(folder.glob("almanac-*.db"))[:-BACKUPS_KEPT]:
+        old.unlink()
+
+
+JOBS.append(Job("backup", daily(22, 45), _backup_job))  # before the PC's usual midnight shutdown

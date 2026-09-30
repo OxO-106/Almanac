@@ -23,6 +23,7 @@ def create_app(db_path: Path = DB_PATH, llm=None, clock=None) -> FastAPI:
     app = FastAPI(title="Almanac", lifespan=lifespan)
     con = db.connect(db_path)
     app.state.db = con
+    app.state.db_path = Path(db_path)
     app.state.llm = llm or Ollama(lambda: db.settings(con))
     app.state.reader = llm or Ollama(lambda: db.settings(con), "reader_model", DEFAULT_READER)
     app.state.clock = clock or SystemClock()

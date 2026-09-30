@@ -8,15 +8,25 @@ Design: [`.scratch/almanac-v1/spec.md`](.scratch/almanac-v1/spec.md) · vocabula
 
 ## Run
 
-Requires Python 3.12 and Ollama with `qwen3.5:9b-q8_0` pulled.
+**Start menu → Almanac.** It starts Ollama, the Almanac server (this PC only, port 8001, log in `almanac.log`), the tray icon and Tailscale Serve, then opens Almanac in an Edge app window. `stop-almanac.bat` or the tray icon stops it. Run `start-almanac.ps1` from a console to see each step.
+
+**Tray icon:** coloured while the server runs, grey when stopped. Almanac's notifications (9am briefing, 8pm/11pm check-ins, timer, overviews) pop up from it as Windows notifications. Right-click to copy the laptop link.
+
+**Laptop:** https://&lt;this PC&gt;.&lt;tailnet&gt;.ts.net:8443 over [Tailscale](https://tailscale.com), reachable only by your own devices (Papercut keeps the default port). `tailscale serve --https=8443 off` stops sharing it.
+
+**Models:** chat uses `qwen3.5:9b-q8_0` (shared with Papercut); reading documents uses `qwen3.5:35b-a3b` if it is pulled, else the 9B. Both run through Ollama on this PC.
+
+## Setup from scratch
+
+Requires Python 3.12, Ollama with the models above, and (for the laptop) Tailscale.
 
 ```
 py -3.12 -m venv .venv
 .venv\Scripts\pip install -r requirements.txt
-.venv\Scripts\python -m uvicorn --factory app.main:create_app --host 127.0.0.1 --port 8001
+powershell -ExecutionPolicy Bypass -File scripts\install-start-menu.ps1
 ```
 
-Open http://127.0.0.1:8001. Data lives in `data/almanac.db` (set `ALMANAC_DB` to move it).
+Data lives in `data/almanac.db` (set `ALMANAC_DB` to move it), backed up nightly at 10:45pm to `data/backups/` (last 14 kept).
 
 ## Test
 

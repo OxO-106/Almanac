@@ -4,9 +4,9 @@
 
 **Blocked by:** 13 (Scheduler, notifications and Briefing)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Start-menu entry, tray icon, start/stop scripts
-- [ ] Tailscale Serve on a separate HTTPS port
-- [ ] Nightly backup job with retention
-- [ ] README with run and setup steps
+- [x] Start-menu entry, tray icon, start/stop scripts
+- [x] Tailscale Serve on a separate HTTPS port
+- [x] Nightly backup job with retention
+- [x] README with run and setup steps
