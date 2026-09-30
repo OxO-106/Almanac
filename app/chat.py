@@ -2,14 +2,21 @@
 
 Open Questions are asked here one at a time, most important first (the ones
 holding up the most proposals), instead of piling up as a list. A reply to a
-question answers it; otherwise the message goes to the model."""
+question answers it, and fills in what was waiting on it where the answer
+states a date. Anything else goes to the model: its reply streams back, then
+a second pass turns what the student said into Proposals, with the student's
+own words as the quote, checked the same way as a syllabus."""
 
-from datetime import timedelta
+import json
+from datetime import date, timedelta
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 
+from . import inbox, ingest
 from .clock import local
 from .db import WRITE
+from .plan import current_term
 
 router = APIRouter(prefix="/api/chat")
 HISTORY = 20  # messages of context sent to the model
@@ -19,10 +26,10 @@ def _utc(clock) -> str:
     return clock.now().isoformat(timespec="seconds")
 
 
-def _say(con, clock, role, text, question_id=None, quote=None):
+def _say(con, clock, role, text, question_id=None, quote=None) -> int:
     with WRITE:
-        con.execute("insert into chat_messages (role, text, question_id, quote, created_at) values (?,?,?,?,?)",
-                    (role, text, question_id, quote, local(clock.now()).strftime("%Y-%m-%dT%H:%M")))
+        return con.execute("insert into chat_messages (role, text, question_id, quote, created_at) values (?,?,?,?,?)",
+                           (role, text, question_id, quote, local(clock.now()).strftime("%Y-%m-%dT%H:%M"))).lastrowid
 
 
 def _eligible(con, clock) -> list[dict]:
@@ -52,7 +59,7 @@ def _ask_next(con, clock):
         name = (q.get("source_title") or "").rsplit(".", 1)[0].replace("_", " ").strip()
         name = " ".join(name.split())
         name = name if len(name) <= 40 else name[:38].rstrip() + "…"
-        about = f"Quick question about “{name}”: " if name else ""
+        about = f"Quick question about “{name}”: " if name and q.get("source_kind", "document") != "chat" else ""
         _say(con, clock, "assistant", about + q["text"], q["id"], q["quote"])
 
 
@@ -65,29 +72,205 @@ def state(con, clock) -> dict:
             "waiting": waiting}
 
 
-def _answer(con, clock, question_id, text):
+# ---- answering a question -----------------------------------------------------
+
+ANSWER_PROMPT = """The student answered a question the assistant asked. For each numbered item waiting on the answer, report the date the answer gives for it, as written. A calendar date → {"type":"date","month":M,"day":D} (with "time":"HH:MM" and type "datetime" if a time is given). A weekday → {"type":"weekday","weekday":"MO".."SU"} (add "next_week": true for "next <day>"). "tomorrow", "in 3 days" → {"type":"in_days","days":N}. If the answer gives no date for an item, {"type":"unknown"}."""
+
+ANSWER_SCHEMA = {"type": "object", "properties": {"items": {"type": "array", "items": {"type": "object", "properties": {
+    "n": {"type": "integer"}, "when": ingest.WHEN}, "required": ["n", "when"]}}}, "required": ["items"]}
+
+DATE_FIELD = {"deadlines": "due", "tasks": "due", "events": "start", "projects": "deadline"}
+
+
+def _fmt(value: str) -> str:
+    d = date.fromisoformat(value[:10])
+    return f"{d:%a %b} {d.day}" + (f", {value[11:16]}" if len(value) > 10 else "")
+
+
+def _answer(con, llm, clock, question, text):
     with WRITE:
         con.execute("update questions set answer = ?, status = 'answered', answered_at = ? where id = ?",
-                    (text, local(clock.now()).strftime("%Y-%m-%dT%H:%M"), question_id))
-    n = con.execute("select count(*) from proposals where question_id = ? and status = 'pending'", (question_id,)).fetchone()[0]
-    ack = "Thanks, noted." if not n else \
-        f"Thanks. {n} item{'s that were' if n > 1 else ' that was'} waiting on this {'are' if n > 1 else 'is'} ready in your Inbox."
+                    (text, local(clock.now()).strftime("%Y-%m-%dT%H:%M"), question["id"]))
+    waiting = [inbox._proposal(con, r["id"]) for r in con.execute(
+        "select id from proposals where question_id = ? and status = 'pending' order by id", (question["id"],))]
+    undated = [(p, o) for p in waiting for o in p["ops"][:1]
+               if o["op"] == "create" and o["kind"] in DATE_FIELD and not o["data"].get(DATE_FIELD[o["kind"]])]
+    filled = []
+    if undated:
+        today = local(clock.now()).date()
+        listing = "\n".join(f"{i}. {o['data']['title']}" for i, (_, o) in enumerate(undated))
+        try:
+            got = json.loads(llm.chat([{"role": "system", "content": ANSWER_PROMPT},
+                                       {"role": "user", "content": f"Today is {today:%A, %B %d, %Y}.\nQuestion: {question['text']}\n"
+                                                                   f"Answer: {text}\n\nItems:\n{listing}"}],
+                                      schema=ANSWER_SCHEMA, timeout=300))["items"]
+        except Exception:
+            got = []
+        for g in got:
+            if not (isinstance(g.get("n"), int) and 0 <= g["n"] < len(undated)):
+                continue
+            p, o = undated[g["n"]]
+            # the date must be in the student's own words, like any other quote
+            w = ingest.resolve({"title": o["data"]["title"], "quote": text, "when": g.get("when")},
+                               today, current_term(con, today), {})
+            if w.value:
+                o["data"][DATE_FIELD[o["kind"]]] = w.value
+                with WRITE:
+                    con.execute("update proposals set ops = ? where id = ?", (json.dumps(p["ops"]), p["id"]))
+                filled.append(f"{o['data']['title']}: {_fmt(w.value)}")
+    n = len(waiting)
+    ack = "Thanks, noted." if not n else "Thanks. " + (f"{'; '.join(filled)}. " if filled else "") + \
+        f"{n} item{'s that were' if n > 1 else ' that was'} waiting on this {'are' if n > 1 else 'is'} ready in your Inbox."
     _say(con, clock, "assistant", ack)
 
 
-def _system(con, clock) -> str:
+# ---- free conversation --------------------------------------------------------
+
+ACTIONS_PROMPT = """You turn what a student just told their personal assistant into suggestions for their plan. Only what the student's latest message says; nothing from earlier messages, nothing invented. Types:
+- "task": something they need to do. "event": something at a set time they attend. "deadline": something due by a moment.
+- "goal": a long-term outcome they want (set "why" and "horizon": quarter, year or multi-year if they said). "project": a bounded piece of work toward a goal.
+- "memory": a lasting fact about the student worth remembering (habits, preferences, constraints, people); "title" is the fact, "topic" a short label.
+- "progress": they finished (or undid) one of their open tasks listed below; "title" is that task's title, "done": true.
+- "question": something the assistant must ask to plan it properly (e.g. a due date they didn't give); "title" is the question.
+"quote": the student's exact words (copied from their message) that state it. Dates, as said: a calendar date → {"type":"date","month":M,"day":D}; "Friday" → {"type":"weekday","weekday":"FR"}; "next Friday" → add "next_week": true; "tomorrow", "in 3 days", "in two weeks" → {"type":"in_days","days":N}; anything else (e.g. "before Thanksgiving") → {"type":"unknown"}.
+If the message is just conversation, return no actions."""
+
+ACTIONS_SCHEMA = {"type": "object", "properties": {"actions": {"type": "array", "items": {"type": "object", "properties": {
+    "type": {"type": "string", "enum": ["task", "event", "deadline", "goal", "project", "memory", "progress", "question"]},
+    "title": {"type": "string"}, "quote": {"type": "string"}, "when": ingest.WHEN, "done": {"type": "boolean"},
+    "why": {"type": "string"}, "horizon": {"type": "string"}, "topic": {"type": "string"}},
+    "required": ["type", "title", "quote"]}}}, "required": ["actions"]}
+
+
+def _context(con, clock) -> str:
     now = local(clock.now())
-    upcoming = [dict(r) for r in con.execute(
-        "select title, due as at from deadlines where substr(due, 1, 10) between ? and ? "
-        "union all select title, do_date from tasks where status = 'open' and do_date between ? and ? order by at limit 15",
-        (now.date().isoformat(), (now.date() + timedelta(days=14)).isoformat()) * 2)]
-    plan = "\n".join(f"- {u['at']}: {u['title']}" for u in upcoming) or "- nothing yet"
-    return (f"You are Almanac, a personal assistant for a university student. Today is {now:%A, %B %d, %Y}, "
-            f"{now:%H:%M} in Los Angeles. Be brief and warm. Never invent facts about their courses or dates; "
-            f"if you don't know, ask.\n\nComing up in the next two weeks:\n{plan}")
+    q = lambda sql, *a: [dict(r) for r in con.execute(sql, a)]
+    upcoming = q("select title, due as at from deadlines where substr(due, 1, 10) between ? and ? "
+                 "union all select title, do_date from tasks where status = 'open' and do_date between ? and ? order by at limit 15",
+                 now.date().isoformat(), (now.date() + timedelta(days=14)).isoformat(),
+                 now.date().isoformat(), (now.date() + timedelta(days=14)).isoformat())
+    open_tasks = q("select title from tasks where status = 'open' order by coalesce(do_date, due, '9999'), id limit 40")
+    goals = q("select title from goals where status = 'active'")
+    memories = q("select text from memories order by id limit 40")
+    lines = lambda rows, f: "\n".join(f"- {f(r)}" for r in rows) or "- none"
+    return (f"Today is {now:%A, %B %d, %Y}, {now:%H:%M} in Los Angeles.\n\n"
+            f"Coming up in the next two weeks:\n{lines(upcoming, lambda r: f'{r['at']}: {r['title']}')}\n\n"
+            f"Open tasks:\n{lines(open_tasks, lambda r: r['title'])}\n\nGoals:\n{lines(goals, lambda r: r['title'])}\n\n"
+            f"What you know about the student:\n{lines(memories, lambda r: r['text'])}")
+
+
+def _messages(con, clock, text):
+    history = [{"role": r["role"], "content": r["text"]} for r in
+               con.execute("select role, text from chat_messages order by id desc limit ?", (HISTORY + 1,))][::-1][:-1]
+    system = ("You are Almanac, a personal assistant for a university student. Be brief and warm. Never invent facts "
+              "about their courses or dates; if you don't know, ask. When they mention things to do, plans or goals, say "
+              "you'll add suggestions to their Inbox for them to confirm; don't claim anything is already scheduled.\n\n"
+              + _context(con, clock))
+    return [{"role": "system", "content": system}, *history, {"role": "user", "content": text}]
+
+
+def _chat_source(con, clock, text) -> int:
+    """One chat Source per day; its text grows with the day's messages."""
+    today = local(clock.now())
+    title = f"Chat, {today:%b} {today.day}"
+    with WRITE:
+        row = con.execute("select id from sources where kind = 'chat' and title = ?", (title,)).fetchone()
+        if row:
+            con.execute("update sources set text = text || char(10) || ? where id = ?", (text, row["id"]))
+            return row["id"]
+        return con.execute("insert into sources (kind, title, text, status, created_at) values ('chat', ?, ?, 'done', ?)",
+                           (title, text, today.strftime("%Y-%m-%dT%H:%M"))).lastrowid
+
+
+def _match_task(con, title):
+    """The open task a progress report is about (most title words in common)."""
+    want = set(ingest._words(title)) - ingest.STOP
+    best, score = None, 0.0
+    for r in con.execute("select id, title from tasks where status = 'open'"):
+        have = set(ingest._words(r["title"])) - ingest.STOP
+        s = len(want & have) / max(1, len(want))
+        if s > score:
+            best, score = r, s
+    return best if score >= 0.5 else None
+
+
+def _actions(con, llm, clock, text, reply_id) -> int | None:
+    """Suggestions from the student's message. Returns how many were proposed,
+    or None if the model call failed (e.g. Ollama busy with another app)."""
+    try:
+        acts = json.loads(llm.chat([{"role": "system", "content": ACTIONS_PROMPT + "\n\n" + _context(con, clock)},
+                                    {"role": "user", "content": text}], schema=ACTIONS_SCHEMA, timeout=300))["actions"]
+    except Exception:
+        return None
+    today = local(clock.now()).date()
+    term = current_term(con, today)
+    source = None
+    n = 0
+    for a in acts:
+        title = ingest.capitalize((a.get("title") or "").strip())
+        if not title or not ingest.quoted(a.get("quote"), text):
+            continue
+        source = source or _chat_source(con, clock, text)
+        kind = a.get("type")
+        if kind == "question":
+            q = inbox.ask(con, clock, source, title, a["quote"])
+            with WRITE:  # the reply just asked it: the student's next message answers it
+                con.execute("update chat_messages set question_id = ? where id = ?", (q["id"], reply_id))
+            continue
+        if kind == "progress":
+            task = _match_task(con, title)
+            if not task:
+                continue
+            op = {"op": "update", "kind": "tasks", "id": task["id"], "data": {"status": "done" if a.get("done", True) else "open"}}
+            summary = f"Mark “{task['title']}” {'done' if a.get('done', True) else 'not done'}"
+        elif kind == "memory":
+            op = {"op": "create", "kind": "memories", "data": {"text": title, **({"topic": a["topic"]} if a.get("topic") else {})}}
+            summary = f"Remember: {title}"
+        elif kind == "goal":
+            op = {"op": "create", "kind": "goals",
+                  "data": {"title": title, **{k: a[k] for k in ("why", "horizon") if a.get(k)}}}
+            summary = title
+        else:
+            table = {"task": "tasks", "event": "events", "deadline": "deadlines", "project": "projects"}.get(kind)
+            if not table:
+                continue
+            w = ingest.resolve({"title": title, "quote": a["quote"], "when": a.get("when")}, today, term, {})
+            data = {"title": title}
+            if w.value:
+                data[DATE_FIELD[table]] = w.value
+            if table == "events" and "start" not in data:
+                table = "tasks"  # an event without a time is something to do on no set date
+            op, summary = {"op": "create", "kind": table, "data": data}, title
+        p = inbox.propose(con, clock, source, summary, [op], a["quote"])
+        n += "id" in p
+    return n
+
+
+def _reply(con, llm, clock, text):
+    """Handle one message; yields ("token", text) pieces then ("done", proposed)."""
+    cur = _current(con, clock)
+    _say(con, clock, "user", text)
+    if cur:
+        _answer(con, llm, clock, {"id": cur["question_id"], "text": cur["text"]}, text)
+        yield "done", 0
+        return
+    messages = _messages(con, clock, text)
+    parts = []
+    for piece in llm.stream(messages, temperature=0.4):
+        parts.append(piece)
+        yield "token", piece
+    reply_id = _say(con, clock, "assistant", "".join(parts).strip())
+    yield "done", _actions(con, llm, clock, text, reply_id)
 
 
 # ---- HTTP --------------------------------------------------------------------
+
+def _text(body):
+    text = (body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(422, "empty message")
+    return text
+
 
 @router.get("")
 def get_chat(request: Request):
@@ -96,21 +279,38 @@ def get_chat(request: Request):
 
 @router.post("")
 async def post(request: Request):
+    """Whole reply at once (the UI streams from /stream)."""
     s = request.app.state
-    text = ((await request.json()).get("text") or "").strip()
-    if not text:
-        raise HTTPException(422, "empty message")
-    cur = _current(s.db, s.clock)
-    history = [{"role": r["role"], "content": r["text"]} for r in
-               s.db.execute("select role, text from chat_messages order by id desc limit ?", (HISTORY,))][::-1]
-    _say(s.db, s.clock, "user", text)
-    if cur:
-        _answer(s.db, s.clock, cur["question_id"], text)
-    else:
-        reply = s.llm.chat([{"role": "system", "content": _system(s.db, s.clock)}, *history,
-                            {"role": "user", "content": text}], temperature=0.4, timeout=300)
-        _say(s.db, s.clock, "assistant", reply.strip())
-    return state(s.db, s.clock)
+    text = _text(await request.json())
+    proposed = 0
+    for kind, value in _reply(s.db, _Whole(s.llm), s.clock, text):
+        proposed = value if kind == "done" else proposed
+    return {**state(s.db, s.clock), "proposed": proposed}
+
+
+class _Whole:
+    """Adapts a model so stream() returns the reply in one piece via chat()."""
+    def __init__(self, llm):
+        self._llm = llm
+
+    def stream(self, messages, **kw):
+        yield self._llm.chat(messages, temperature=kw.get("temperature", 0.4), timeout=300)
+
+    def __getattr__(self, name):
+        return getattr(self._llm, name)
+
+
+@router.post("/stream")
+async def post_stream(request: Request):
+    s = request.app.state
+    text = _text(await request.json())
+
+    def events():
+        for kind, value in _reply(s.db, s.llm, s.clock, text):
+            yield "data: " + json.dumps({"type": kind, "text": value} if kind == "token" else
+                                        {"type": kind, "proposed": value}) + "\n\n"
+
+    return StreamingResponse(events(), media_type="text/event-stream")
 
 
 @router.post("/skip")

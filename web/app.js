@@ -403,7 +403,32 @@ async function chatSend(e) {
   const log = $(".chatlog");
   log.insertAdjacentHTML("beforeend", `<div class="msg user">${esc(text)}</div><div class="msg assistant typing"><span></span><span></span><span></span></div>`);
   log.scrollTop = log.scrollHeight;
-  try { await send("POST", "/api/chat", { text }); } catch (err) { toast(esc(detail(err))); }
+  const bubble = log.lastElementChild;
+  let reply = "", proposed = 0;
+  try {
+    const r = await fetch("/api/chat/stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
+    if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+    const reader = r.body.getReader(), dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const events = buf.split("\n\n");
+      buf = events.pop();
+      for (const ev of events) {
+        const e = JSON.parse(ev.replace(/^data: /, ""));
+        if (e.type === "token") {
+          reply += e.text;
+          bubble.classList.remove("typing");
+          bubble.innerHTML = md(reply);
+          log.scrollTop = log.scrollHeight;
+        } else if (e.type === "done") proposed = e.proposed;
+      }
+    }
+  } catch (err) { toast(esc(detail(err))); }
+  if (proposed === null) toast("I couldn't pick out suggestions from that message: the model didn't answer in time (another app may be using it). Try again in a bit.");
+  else if (proposed) toast(`Added ${proposed} suggestion${proposed > 1 ? "s" : ""} to your <a href="#inbox">Inbox</a>.`);
   render();
 }
 

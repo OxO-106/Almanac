@@ -118,7 +118,8 @@ The quote must contain the date you report. When the date is in a heading or tab
 Do not list regular lectures, grading percentages, or policies."""
 
 WHEN = {"type": "object", "properties": {
-    "type": {"type": "string", "enum": ["date", "datetime", "week", "relative", "unknown"]},
+    "type": {"type": "string", "enum": ["date", "datetime", "week", "relative", "weekday", "in_days", "unknown"]},
+    "next_week": {"type": "boolean"}, "days": {"type": "integer"},
     "year": {"type": "integer"}, "month": {"type": "integer"}, "day": {"type": "integer"}, "time": {"type": "string"},
     "week": {"type": "integer"}, "weekday": {"type": "string"},
     "relative_to": {"type": "string"}, "offset_days": {"type": "integer"}}, "required": ["type"]}
@@ -325,6 +326,10 @@ def _explicit(when, today):
     return d
 
 
+def _number_said(n: int, words) -> bool:
+    return str(n) in words or (n < len(NUMBER_WORDS) and NUMBER_WORDS[n] in words) or (n == 1 and ("a" in words or "an" in words))
+
+
 class When:
     """What code could establish about an item's date from its quote."""
     def __init__(self, value=None, window=None, provisional=False, ask=None):
@@ -356,6 +361,25 @@ def resolve(it: dict, today: date, term: dict | None, known: dict) -> When:
         return When(monday.isoformat(), f"{monday}/{friday}", True,
                     f"Which day in Week {n} ({monday:%b} {monday.day} – {friday:%b} {friday.day}) is “{it['title']}”? "
                     "The document only gives the week.")
+    if t == "weekday" and (when.get("weekday") or "").upper()[:2] in plan.DAYS:
+        # "by Friday" = the coming Friday (today counts); "next Friday" = next week's.
+        i = plan.DAYS.index(when["weekday"].upper()[:2])
+        if not (DAY_NAMES[i] in words or DAY_NAMES[i][:3] in words):
+            return When()
+        if when.get("next_week"):
+            if "next" not in words:
+                return When()
+            d = today - timedelta(days=today.weekday()) + timedelta(weeks=1, days=i)
+        else:
+            d = today + timedelta(days=(i - today.weekday()) % 7)
+        return When(d.isoformat())
+    if t == "in_days" and isinstance(when.get("days"), int) and 0 <= when["days"] <= 366:
+        n = when["days"]
+        said = {0: {"today", "tonight"}, 1: {"tomorrow"}}.get(n, set()) & set(words) or \
+            (_number_said(n, words) and ("day" in words or "days" in words)) or \
+            (n % 7 == 0 and _number_said(n // 7, words) and ("week" in words or "weeks" in words)) or \
+            (n == 7 and "week" in words)
+        return When((today + timedelta(days=n)).isoformat()) if said else When()
     if t == "relative" and isinstance(when.get("offset_days"), int):
         target = (when.get("relative_to") or "").lower().strip()
         base = known.get(target) or next((v for k, v in known.items() if target and (target in k or k in target)), None)

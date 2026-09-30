@@ -99,7 +99,7 @@ def test_with_no_question_waiting_a_message_goes_to_the_assistant(client, llm):
     llm.replies = ["Sounds like a busy week! Want me to help plan it?"]
     c = say(client, "I have a lot going on this week")
     assert assistant_texts(c)[-1] == "Sounds like a busy week! Want me to help plan it?"
-    sent = llm.requests[-1]["messages"]
+    sent = llm.requests[0]["messages"]  # [1] is the actions pass
     assert sent[-1] == {"role": "user", "content": "I have a lot going on this week"}
     assert "Wednesday, September 30, 2026" in sent[0]["content"]
 

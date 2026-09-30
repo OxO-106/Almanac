@@ -4,10 +4,10 @@
 
 **Blocked by:** 04 (Inbox: Proposals and Questions), 09 (Memory page and Capacity)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Streaming chat endpoint and Chat screen
-- [ ] Actions become Proposals/Questions, never direct writes
-- [ ] Brain-dump message produces Proposals; ambiguity produces Questions
-- [ ] Progress updates in chat become Proposals
-- [ ] API tests with scripted LLM for each action type
+- [x] Streaming chat endpoint and Chat screen
+- [x] Actions become Proposals/Questions, never direct writes
+- [x] Brain-dump message produces Proposals; ambiguity produces Questions
+- [x] Progress updates in chat become Proposals
+- [x] API tests with scripted LLM for each action type

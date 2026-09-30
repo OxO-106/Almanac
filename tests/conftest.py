@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -37,9 +38,19 @@ class FakeLLM:
 
     def chat(self, messages, schema=None, **kw):
         self.requests.append({"messages": messages, "schema": schema})
-        if not self.replies and schema and "questions" in schema.get("properties", {}):
-            return '{"questions": []}'  # the questions pass, when a test doesn't script it
+        if not self.replies and schema:
+            # passes a test doesn't script: the questions pass, chat actions
+            for key in ("questions", "actions"):
+                if key in schema.get("properties", {}):
+                    return json.dumps({key: []})
         return self.replies.pop(0)
+
+    def stream(self, messages, **kw):
+        self.requests.append({"messages": messages, "schema": None})
+        text = self.replies.pop(0)
+        half = len(text) // 2
+        yield text[:half]
+        yield text[half:]
 
 
 @pytest.fixture
