@@ -4,7 +4,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import chat, db, inbox, ingest, plan, planner
+from . import chat, db, goals, inbox, ingest, plan, planner
 from .clock import SystemClock, local
 from .config import DB_PATH, WEB_DIR
 from .llm import DEFAULT_READER, Ollama
@@ -35,6 +35,7 @@ def create_app(db_path: Path = DB_PATH, llm=None, clock=None) -> FastAPI:
     app.include_router(ingest.router)
     app.include_router(chat.router)
     app.include_router(planner.router)
+    app.include_router(goals.router)
     app.include_router(plan.router)
 
     @app.get("/")

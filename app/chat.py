@@ -13,7 +13,7 @@ from datetime import date, timedelta
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from . import inbox, ingest
+from . import goals, inbox, ingest
 from .clock import local
 from .db import WRITE
 from .plan import current_term
@@ -159,13 +159,45 @@ def _context(con, clock) -> str:
             f"What you know about the student:\n{lines(memories, lambda r: r['text'])}")
 
 
-def _messages(con, clock, text):
-    history = [{"role": r["role"], "content": r["text"]} for r in
-               con.execute("select role, text from chat_messages order by id desc limit ?", (HISTORY + 1,))][::-1][:-1]
+KEEP = 10             # recent messages always sent verbatim
+SUMMARY_BUDGET = 8000  # characters of older messages before they're folded into the summary
+SUMMARY_PROMPT = ("Summarize the earlier conversation between a student and their personal assistant for the assistant's "
+                  "own memory: plans, commitments, dates, feelings and decisions they mentioned, and anything left open. "
+                  "Keep facts exactly as stated; don't add any. Under 250 words.")
+
+
+def _summary(con, llm, clock):
+    """(summary text, id of the last message it covers). Folds older messages
+    into the summary once they pass SUMMARY_BUDGET, so long chats stay
+    within the model's context."""
+    last = con.execute("select text, upto from chat_summaries order by id desc limit 1").fetchone()
+    text, upto = (last["text"], last["upto"]) if last else ("", 0)
+    rows = con.execute("select id, role, text from chat_messages where id > ? order by id", (upto,)).fetchall()
+    older = rows[:-(KEEP + 1)]  # the newest row is the message being answered
+    if sum(len(r["text"]) for r in older) > SUMMARY_BUDGET:
+        transcript = "\n".join(f"{r['role']}: {r['text']}" for r in older)
+        try:
+            new = llm.chat([{"role": "system", "content": SUMMARY_PROMPT},
+                            {"role": "user", "content": (f"Summary so far:\n{text}\n\n" if text else "") + transcript}],
+                           temperature=0, timeout=600).strip()
+        except Exception:
+            return text, upto  # try again next message; recent history still goes out
+        text, upto = new, older[-1]["id"]
+        with WRITE:
+            con.execute("insert into chat_summaries (upto, text, created_at) values (?, ?, ?)",
+                        (upto, text, _utc(clock)))
+    return text, upto
+
+
+def _messages(con, llm, clock, text, focus=None):
+    summary, upto = _summary(con, llm, clock)
+    history = [{"role": r["role"], "content": r["text"]} for r in con.execute(
+        "select role, text from chat_messages where id > ? order by id desc limit ?", (upto, HISTORY + 1))][::-1][:-1]
     system = ("You are Almanac, a personal assistant for a university student. Be brief and warm. Never invent facts "
               "about their courses or dates; if you don't know, ask. When they mention things to do, plans or goals, say "
               "you'll add suggestions to their Inbox for them to confirm; don't claim anything is already scheduled.\n\n"
-              + _context(con, clock))
+              + _context(con, clock) + goals.focus_text(con, focus)
+              + (f"\n\nEarlier in this conversation (summary):\n{summary}" if summary else ""))
     return [{"role": "system", "content": system}, *history, {"role": "user", "content": text}]
 
 
@@ -246,7 +278,7 @@ def _actions(con, llm, clock, text, reply_id) -> int | None:
     return n
 
 
-def _reply(con, llm, clock, text):
+def _reply(con, llm, clock, text, focus=None):
     """Handle one message; yields ("token", text) pieces then ("done", proposed)."""
     cur = _current(con, clock)
     _say(con, clock, "user", text)
@@ -254,7 +286,7 @@ def _reply(con, llm, clock, text):
         _answer(con, llm, clock, {"id": cur["question_id"], "text": cur["text"]}, text)
         yield "done", 0
         return
-    messages = _messages(con, clock, text)
+    messages = _messages(con, llm, clock, text, focus)
     parts = []
     for piece in llm.stream(messages, temperature=0.4):
         parts.append(piece)
@@ -281,9 +313,10 @@ def get_chat(request: Request):
 async def post(request: Request):
     """Whole reply at once (the UI streams from /stream)."""
     s = request.app.state
-    text = _text(await request.json())
+    body = await request.json()
+    text = _text(body)
     proposed = 0
-    for kind, value in _reply(s.db, _Whole(s.llm), s.clock, text):
+    for kind, value in _reply(s.db, _Whole(s.llm), s.clock, text, body.get("focus")):
         proposed = value if kind == "done" else proposed
     return {**state(s.db, s.clock), "proposed": proposed}
 
@@ -303,10 +336,11 @@ class _Whole:
 @router.post("/stream")
 async def post_stream(request: Request):
     s = request.app.state
-    text = _text(await request.json())
+    body = await request.json()
+    text = _text(body)
 
     def events():
-        for kind, value in _reply(s.db, s.llm, s.clock, text):
+        for kind, value in _reply(s.db, s.llm, s.clock, text, body.get("focus")):
             yield "data: " + json.dumps({"type": kind, "text": value} if kind == "token" else
                                         {"type": kind, "proposed": value}) + "\n\n"
 

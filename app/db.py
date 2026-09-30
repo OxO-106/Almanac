@@ -38,6 +38,7 @@ create table if not exists questions (
   answer text, status text not null default 'open', created_at text not null, answered_at text);
 create table if not exists memories (
   id integer primary key, text text not null, topic text);
+create table if not exists chat_summaries (id integer primary key, upto integer not null, text text not null, created_at text not null);
 create table if not exists chat_messages (
   id integer primary key, role text not null, text text not null, question_id integer references questions on delete set null,
   quote text, created_at text not null);

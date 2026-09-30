@@ -378,6 +378,50 @@ async function planProject(id, button) {
   render();
 }
 
+// ---- goals -------------------------------------------------------------------
+
+function discuss(kind, id, title) {
+  try { sessionStorage.setItem("chatFocus", JSON.stringify({ kind, id, title })); } catch { }
+  location.hash = "#chat";
+}
+
+async function suggestNextSteps(button) {
+  button.disabled = true;
+  button.textContent = "Thinking…";
+  try {
+    const r = await api("/api/goals/next-steps", { method: "POST" });
+    toast(r.proposed ? `Suggested ${r.proposed} next step${r.proposed > 1 ? "s" : ""}. Review in your <a href="#inbox">Inbox</a>.`
+                     : "Every goal already has something to do (or a suggestion waiting).");
+  } catch (e) { toast(esc(detail(e))); }
+  render();
+}
+
+const projectCard = p => {
+  const total = p.open + p.done, pct = total ? Math.round(100 * p.done / total) : 0;
+  return `<li class="card project">
+    <div class="grouphead"><a class="title" onclick='edit("projects", ${p.id})'><b>${esc(p.title)}</b></a>${tag(p.course_id)}
+      <span class="meta">${p.deadline ? "by " + esc(fmtWhen(p.deadline)) : ""}</span></div>
+    <div class="bar"><span style="width:${pct}%"></span></div>
+    <p class="from">${p.done}/${total} done${p.next ? ` · next: <b>${esc(p.next.title)}</b>${p.next.do_date ? " (" + esc(fmtDay(p.next.do_date)) + ")" : ""}` : total ? "" : " · no tasks yet"}</p>
+    <div class="actions">
+      ${p.deadline ? `<button class="small" onclick="planProject(${p.id}, this)">Plan it</button>` : ""}
+      <button class="small" onclick='discuss("projects", ${p.id}, ${JSON.stringify(p.title).replace(/'/g, "&#39;")})'>Discuss</button>
+    </div></li>`;
+};
+
+views.goals = async () => {
+  const [b] = await Promise.all([api("/api/board"), loadLookups()]);
+  const goals = b.goals.map(g => `<section class="goal">
+      <div class="grouphead"><div><h2>${esc(g.title)}</h2><p class="from">${[g.horizon, g.why && "why: " + g.why].filter(Boolean).map(esc).join(" · ")}</p></div>
+        <span><button class="small" onclick='discuss("goals", ${g.id}, ${JSON.stringify(g.title).replace(/'/g, "&#39;")})'>Discuss</button>
+        <button class="small" onclick='openEditor("projects", null, {goal_id: ${g.id}})'>Add project</button></span></div>
+      ${g.projects.length ? `<ul>${g.projects.map(projectCard).join("")}</ul>` : `<p class="empty">No projects yet.</p>`}</section>`).join("");
+  return `<header class="head"><div><h1>Goals</h1><p class="sub">Every active goal should always have a next step.</p></div>
+      <span><button onclick="suggestNextSteps(this)">Suggest next steps</button> <button class="primary" onclick='openEditor("goals")'>Add goal</button></span></header>
+    ${goals || `<p class="empty">No goals yet. Tell the assistant in Chat what you're working toward, or add one.</p>`}
+    ${b.projects.length ? `<section><h3>Other projects</h3><ul>${b.projects.map(projectCard).join("")}</ul></section>` : ""}`;
+};
+
 // ---- memory ------------------------------------------------------------------
 
 async function saveCapacity(e) {
@@ -417,7 +461,7 @@ async function chatSend(e) {
   const bubble = log.lastElementChild;
   let reply = "", proposed = 0;
   try {
-    const r = await fetch("/api/chat/stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
+    const r = await fetch("/api/chat/stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, focus: chatFocus() }) });
     if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
     const reader = r.body.getReader(), dec = new TextDecoder();
     let buf = "";
@@ -454,8 +498,12 @@ const md = s => esc(s)
   .replace(/(^|\n)[-•] (.*)(?=\n|$)/g, "$1<li>$2</li>").replace(/(<li>.*<\/li>)(?!\n?<li>)/gs, "<ul>$1</ul>")
   .replace(/\n/g, "<br>").replace(/<br>(<\/?(ul|li))/g, "$1").replace(/(<\/(ul|li)>)<br>/g, "$1");
 
+const chatFocus = () => { try { return JSON.parse(sessionStorage.getItem("chatFocus")); } catch { return null; } };
+function unfocus() { try { sessionStorage.removeItem("chatFocus"); } catch { } render(); }
+
 views.chat = async () => {
   const c = await api("/api/chat");
+  const focus = chatFocus();
   const msgs = c.messages.map(m => `<div class="msg ${m.role}">${m.role === "assistant" ? md(m.text) : esc(m.text).replace(/\n/g, "<br>")}
     ${m.quote && c.current?.id === m.id ? `<blockquote>${esc(m.quote)}</blockquote>` : ""}</div>`).join("");
   const chips = c.current ? `<div class="chips">
@@ -465,6 +513,7 @@ views.chat = async () => {
   setTimeout(() => { const l = $(".chatlog"); if (l) l.scrollTop = l.scrollHeight; $("#chatinput")?.focus(); });
   return `<div class="chat">
     <h1>Chat</h1>
+    ${focus ? `<p class="focus">About: <b>${esc(focus.title)}</b> <button class="small" onclick="unfocus()" aria-label="Stop focusing">✕</button></p>` : ""}
     <div class="chatlog">${msgs || `<p class="empty">Tell me what's going on: classes, plans, things you keep meaning to do.</p>`}</div>
     ${chips}
     <form class="chatbar" onsubmit="chatSend(event)">

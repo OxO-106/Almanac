@@ -4,10 +4,10 @@
 
 **Blocked by:** 10 (Chat), 11 (Backward planner)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Board view
-- [ ] Next-step guarantee as Proposals
-- [ ] Focused chat context
-- [ ] Chat summarisation keeps long histories within context
-- [ ] API tests for next-step Proposal and summarisation trigger
+- [x] Board view
+- [x] Next-step guarantee as Proposals
+- [x] Focused chat context
+- [x] Chat summarisation keeps long histories within context
+- [x] API tests for next-step Proposal and summarisation trigger
