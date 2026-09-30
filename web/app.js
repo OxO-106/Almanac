@@ -151,7 +151,8 @@ const views = {
       deadlines: d => `<li class="row"><a class="title" onclick='edit("deadlines", ${d.id})'>${esc(d.title)}</a>${tag(d.course_id)}${prov(d)}
         <span class="meta">${esc(fmtWhen(d.due, d.window)) || "date unknown"}</span></li>`,
       projects: p => `<li class="row"><a class="title" onclick='edit("projects", ${p.id})'>${esc(p.title)}</a>${tag(p.course_id)}
-        <span class="meta">${p.deadline ? "by " + esc(fmtWhen(p.deadline)) : ""}</span></li>`,
+        <span class="meta">${p.deadline ? "by " + esc(fmtWhen(p.deadline)) : ""}</span>
+        ${p.deadline ? `<button class="small" onclick="planProject(${p.id}, this)">Plan it</button>` : ""}</li>`,
       goals: g => `<li class="row"><a class="title" onclick='edit("goals", ${g.id})'>${esc(g.title)}</a>
         <span class="meta">${esc(g.horizon || "")}</span></li>`,
       courses: c => `<li class="row"><a class="title" onclick='edit("courses", ${c.id})'>${esc(c.number)} · ${esc(c.instructor)}</a>
@@ -358,7 +359,7 @@ views.inbox = async () => {
       <button onclick="proposalAction(${p.id}, 'reject')">Reject</button>
     </div></li>`;
   const proposals = Object.values(groups).map(g => `<section>
-      <div class="grouphead"><h3>${esc(g.source?.title || "Other")}</h3>
+      <div class="grouphead"><h3>${esc(g.source?.title || "Plans")}</h3>
         ${g.source && g.items.length > 1 ? `<button onclick="acceptAll(${g.source.id})">Accept all ${g.items.length}</button>` : ""}</div>
       <ul>${g.items.map(card).join("")}</ul></section>`).join("");
   const later = waiting.length ? `<details class="later"><summary>${waiting.length} more waiting on your answers in Chat</summary>
@@ -366,6 +367,16 @@ views.inbox = async () => {
   return `<h1>Inbox</h1><p class="sub">Nothing changes in your plan until you accept it.</p>
     ${uploads}${proposals || `<p class="empty">Nothing to review.</p>`}${later}`;
 };
+
+async function planProject(id, button) {
+  button.disabled = true;
+  button.textContent = "Planning…";
+  try {
+    const r = await send("POST", `/api/projects/${id}/plan`, {});
+    toast(`${esc(r.proposal.summary)}. Review it in your <a href="#inbox">Inbox</a>.` + (r.warnings.length ? `<br>${r.warnings.map(esc).join("<br>")}` : ""));
+  } catch (e) { toast(esc(detail(e))); }
+  render();
+}
 
 // ---- memory ------------------------------------------------------------------
 

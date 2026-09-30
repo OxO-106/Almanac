@@ -4,11 +4,11 @@
 
 **Blocked by:** 04 (Inbox: Proposals and Questions), 09 (Memory page and Capacity)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Deterministic placement given candidates, estimates, Capacity and existing load
-- [ ] Slack and team buffer rules, overridable
-- [ ] Clustering spreads do dates earlier by priority then ease
-- [ ] Over-Capacity days warned, not blocked
-- [ ] Team Projects create Tasks only for the user's part
-- [ ] API tests with fixed clock for the Nov 5 presentation case and a clustered week
+- [x] Deterministic placement given candidates, estimates, Capacity and existing load
+- [x] Slack and team buffer rules, overridable
+- [x] Clustering spreads do dates earlier by priority then ease
+- [x] Over-Capacity days warned, not blocked
+- [x] Team Projects create Tasks only for the user's part
+- [x] API tests with fixed clock for the Nov 5 presentation case and a clustered week
