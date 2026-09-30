@@ -8,6 +8,7 @@ time. A plan that can't fit is still proposed, with the overloaded days named.""
 
 import json
 import math
+import re
 from datetime import date, timedelta
 
 from fastapi import APIRouter, HTTPException, Request
@@ -105,6 +106,20 @@ async def plan_project(id: int, request: Request):
     steps = [st for st in steps if (st.get("title") or "").strip() and isinstance(st.get("hours"), (int, float))]
     if not steps:
         raise HTTPException(503, "The model didn't suggest any steps. Try again.")
+
+    # Page counts are facts about the paper: only ones the student stated count.
+    # With a known size and the student's own pace, the pace sets the hours.
+    from .timers import UNITS, rates  # timers builds on plan
+    pace = rates(s.db)
+    stated = re.search(r"(\d+)\s*pages?\b", f"{p['title']} {p['notes'] or ''}", re.I)
+    for st in steps:
+        if st.get("work_kind") in ("paper", "reading"):
+            st["size"] = int(stated.group(1)) if stated else None
+            if not stated:
+                inbox.ask(s.db, s.clock, None, f"How many pages is the paper for “{p['title']}”?")
+        mpu = (pace.get(st.get("work_kind")) or {}).get("minutes_per_unit")
+        if mpu and isinstance(st.get("size"), (int, float)) and st["size"] > 0 and st.get("work_kind") in UNITS:
+            st["hours"] = mpu * st["size"] / 60
 
     blocks, meta = [], []
     for st in steps:

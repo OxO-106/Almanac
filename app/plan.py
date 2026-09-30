@@ -250,12 +250,22 @@ async def create(kind: str, request: Request):
 
 @router.get("/{kind}/{id}")
 def get(kind: str, id: int, request: Request):
-    return _row(request.app.state.db, _kind(kind), id)
+    row = _row(request.app.state.db, _kind(kind), id)
+    if kind == "tasks":
+        from .timers import spent  # timers builds on plan
+        row["spent_min"] = spent(request.app.state.db, id)
+    return row
 
 
 @router.patch("/{kind}/{id}")
 async def update(kind: str, id: int, request: Request):
-    return change(request.app.state.db, kind, id, await request.json(), _now(request))
+    s = request.app.state
+    body = await request.json()
+    row = change(s.db, kind, id, body, _now(request))
+    if kind == "tasks" and body.get("status") == "done":
+        from .timers import after_done
+        after_done(s.db, s.clock, row)
+    return row
 
 
 @router.delete("/{kind}/{id}", status_code=204)

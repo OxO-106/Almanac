@@ -31,6 +31,7 @@ class Job:
 
 
 JOBS: list[Job] = []
+WATCHERS: list[Callable] = []  # run on every tick: watcher(app_state)
 
 
 def daily(hh: int, mm: int = 0):
@@ -48,6 +49,8 @@ def notify(con, clock, kind, title, body, url="#today"):
 
 
 def tick(state) -> list[str]:
+    for watch in WATCHERS:
+        watch(state)
     con, now, ran, pending = state.db, _now(state), [], []
     for job in JOBS:
         row = con.execute("select last_run from jobs where name = ?", (job.name,)).fetchone()

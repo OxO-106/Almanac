@@ -5,7 +5,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import chat, checkins, db, goals, inbox, ingest, plan, planner, scheduler  # noqa: F401 (checkins registers jobs)
+from . import chat, checkins, db, goals, inbox, ingest, plan, planner, scheduler, timers  # noqa: F401 (checkins registers jobs)
 from .clock import SystemClock, local
 from .config import DB_PATH, WEB_DIR
 from .llm import DEFAULT_READER, Ollama
@@ -46,6 +46,7 @@ def create_app(db_path: Path = DB_PATH, llm=None, clock=None) -> FastAPI:
     app.include_router(planner.router)
     app.include_router(goals.router)
     app.include_router(scheduler.router)
+    app.include_router(timers.router)
     app.include_router(plan.router)
 
     @app.get("/")

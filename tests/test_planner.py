@@ -41,7 +41,7 @@ def test_the_nov_5_presentation_is_planned_backward_with_slack(client, clock, ll
                          ("Make the slides (2/2)", "2026-10-30"), ("Rehearse", "2026-11-03")]  # 2 days before Nov 5
     op = r["proposal"]["ops"][0]
     assert op["kind"] == "tasks" and op["data"]["project_id"] == p["id"] and op["data"]["due"] == "2026-11-05T14:00"
-    assert (op["data"]["work_kind"], op["data"]["size"], op["data"]["estimate_min"]) == ("paper", 14, 180)
+    assert (op["data"]["work_kind"], op["data"].get("size"), op["data"]["estimate_min"]) == ("paper", None, 180)  # page count not stated
     assert r["warnings"] == []
     assert r["proposal"]["summary"] == "Plan for “Present P10 in CS 239 · Kim”: 6 steps, Wed Oct 14 – Tue Nov 3"
 

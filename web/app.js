@@ -113,6 +113,7 @@ async function toggleTask(id, done) {
 
 const taskRow = t => `<li class="row ${t.status === "done" ? "done" : ""}">
   <input type="checkbox" ${t.status === "done" ? "checked" : ""} onchange="toggleTask(${t.id}, this.checked)">
+  ${t.status === "done" ? "" : `<button class="play" title="Start a timer" aria-label="Start a timer on ${esc(t.title)}" onclick="startTimer(${t.id})">▶</button>`}
   <a class="title" onclick='edit("tasks", ${t.id})'>${esc(t.title)}</a>${tag(t.course_id)}${prov(t)}
   <span class="meta">${t.due ? "due " + esc(fmtWhen(t.due, t.window)) : ""}</span></li>`;
 const eventRow = e => `<li class="row"><span class="time">${esc(fmtTime(e.start))}</span>
@@ -541,6 +542,31 @@ async function render() {
     $("#view").innerHTML = `<div class="notice">Couldn't load this page: ${esc(e.message)}</div>`;
   }
 }
+
+// ---- timer -------------------------------------------------------------------
+
+async function startTimer(id) { await api(`/api/tasks/${id}/timer/start`, { method: "POST" }); showTimer(); }
+async function stopTimer() {
+  const r = await api("/api/timer/stop", { method: "POST" });
+  toast(`Stopped: ${r.minutes} min this time, ${r.spent_min} min on this task so far.`);
+  showTimer(); render();
+}
+async function keepTimer() { await api("/api/timer/keep", { method: "POST" }); showTimer(); }
+
+async function showTimer() {
+  let t = null;
+  try { t = await api("/api/timer"); } catch { }
+  const el = $("#timer");
+  el.hidden = !t;
+  if (!t) return;
+  const m = t.elapsed_min;
+  el.innerHTML = `<span class="dot"></span><span class="what">${esc(t.task.title)}</span>
+    <span class="elapsed">${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}</span>
+    ${t.asking ? `<button class="small" onclick="keepTimer()">Keep going</button>` : ""}
+    <button class="small" onclick="stopTimer()">Stop</button>`;
+}
+setInterval(showTimer, 30000);
+showTimer();
 
 // ---- notifications -----------------------------------------------------------
 // The server keeps a list; each device remembers the last one it showed.

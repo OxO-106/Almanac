@@ -4,10 +4,10 @@
 
 **Blocked by:** 09 (Memory page and Capacity), 13 (Scheduler, notifications and Briefing)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Session start/pause/stop, single running timer
-- [ ] 2-hour prompt and cap
-- [ ] Per-unit rates after 3 Sessions
-- [ ] Ratio Memory Proposal
-- [ ] API tests for the 2h prompt and the switch at the 3rd Session
+- [x] Session start/pause/stop, single running timer
+- [x] 2-hour prompt and cap
+- [x] Per-unit rates after 3 Sessions
+- [x] Ratio Memory Proposal
+- [x] API tests for the 2h prompt and the switch at the 3rd Session

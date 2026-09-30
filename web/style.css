@@ -160,3 +160,11 @@ button.small { font-size: 12px; padding: 2px 10px; }
 .focus { margin: 0 0 6px; color: var(--muted); font-size: 14px; }
 .head > span { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; } .goal .grouphead > span { display: flex; gap: 6px; }
 .briefing { margin-bottom: 24px; } .briefing p { margin: 4px 0; } .briefing h3 { margin-bottom: 8px; }
+.play { border: 0; padding: 0 4px; font-size: 11px; color: var(--muted); cursor: pointer; }
+.play:hover { color: var(--accent); }
+#timer { margin-top: auto; border: 1px solid var(--rule); border-radius: 8px; padding: 10px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 13px; }
+#timer[hidden] { display: none; }
+#timer .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); animation: blink 1.6s infinite; }
+#timer .what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#timer .elapsed { font-variant-numeric: tabular-nums; color: var(--muted); }
+@media (max-width: 700px) { #timer { margin: 0 0 0 8px; padding: 4px 8px; flex-wrap: nowrap; } }
