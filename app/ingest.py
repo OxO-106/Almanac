@@ -751,7 +751,7 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
             required.append(d)
         if d is not None:
             item_draft[i] = d
-        if w.ask:  # e.g. which day of the week: worth asking, but the item stands without it
+        if w.ask and kind != "tasks":  # which day of the week: worth asking for a session or deadline; a task just has the week
             week_draft[i] = draft(w.ask, it["quote"], False)
             required.append(week_draft[i])
     about = con.execute("select about from sources where id = ?", (source_id,)).fetchone()["about"]
@@ -967,7 +967,8 @@ def _propose_item(con, clock, source_id, it, course, when: When, prior, matched,
         return None
     data = {"title": it["title"]}
     if when.value:
-        data[field] = when.value
+        # a task "in Week 1" is due by the end of that week, not its Monday
+        data[field] = when.window[-10:] if kind == "tasks" and when.window else when.value
     if when.window and kind != "projects":
         data["window"] = when.window
     if course is not None:

@@ -465,6 +465,6 @@ def test_what_was_left_out_gets_a_second_look(client, llm):
     src = upload(client, "kim.txt", SECTION.encode())
     got = {p["summary"]: p["ops"][0]["data"] for p in inbox(client)["proposals"]}
     assert got["Project check-in"]["due"] == "2026-11-12"
-    assert got["Read UCLA's Academic Integrity Statement"]["due"] == "2026-09-28"  # "first week" = Week 1
+    assert got["Read UCLA's Academic Integrity Statement"]["due"] == "2026-10-02"  # "first week": by the end of Week 1
     assert [d["title"] for d in src["dropped"]] == ["Final exam"]
     assert "Items:\n0. Project check-in" in llm.requests[2]["messages"][-1]["content"]
