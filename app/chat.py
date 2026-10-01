@@ -10,6 +10,7 @@ own words as the quote, checked the same way as a syllabus."""
 import asyncio
 import json
 import queue
+import re
 import threading
 from datetime import date, timedelta
 
@@ -113,7 +114,40 @@ def _fmt(value: str) -> str:
     return f"{d:%a %b} {d.day}" + (f", {value[11:16]}" if len(value) > 10 else "")
 
 
+UNDECIDED = re.compile(
+    r"\s*(i\s+)?(not\s+(yet|sure|decided)|(have\s*n[o']?t|did\s*n[o']?t|have\s+not|did\s+not)\s+(decided?|chosen|choose|picked?|signed|joined|heard|figured)"
+    r"|(do\s*n[o']?t|do\s+not)\s+know|no\s+idea|no\s+clue|undecided|unsure|still\s+deciding|tbd|idk|dunno)\b", re.I)
+NUMBERS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "a": 1, "an": 1, "a couple of": 2, "a few": 3}
+
+
+def _later(text, urgent) -> int | None:
+    """Days to wait before asking again, if the answer is "not yet" / "don't
+    know": when they said ("tomorrow", "in 2 days", "next week"), else 3 days
+    if something is waiting on it, else a week."""
+    t = " ".join(text.lower().split())
+    if len(t.split()) > 12 or not UNDECIDED.match(t):
+        return None
+    if "tomorrow" in t:
+        return 1
+    if m := re.search(r"\b(\d+|one|two|three|four|five|six|seven|an?|a couple of|a few)\s+(day|week)s?\b", t):
+        n = int(m.group(1)) if m.group(1).isdigit() else NUMBERS[m.group(1)]
+        return min(n * (7 if m.group(2) == "week" else 1), 60)
+    if "next week" in t:
+        return 7
+    return 3 if urgent else 7
+
+
 def _answer(con, llm, clock, question, text):
+    blocking = con.execute("select count(*) from proposals where question_id = ? and status = 'pending'", (question["id"],)).fetchone()[0]
+    urgent = blocking or re.match(r"(when|which day|what (date|time))\b", question["text"], re.I)
+    if (days := _later(text, urgent)) is not None:
+        # Not decided yet: keep the question and ask again later, not "noted".
+        again = clock.now() + timedelta(days=days)
+        with WRITE:
+            con.execute("update questions set snoozed_until = ? where id = ?", (again.isoformat(timespec="seconds"), question["id"]))
+        on = local(again).date()
+        _say(con, clock, "assistant", "No problem. I'll ask again " + ("tomorrow." if days == 1 else f"on {on:%a, %b} {on.day}."))
+        return
     row = con.execute("select meta from questions where id = ?", (question["id"],)).fetchone()
     meta = json.loads(row["meta"]) if row and row["meta"] else {}
     if meta.get("type") == "canvas_section":
