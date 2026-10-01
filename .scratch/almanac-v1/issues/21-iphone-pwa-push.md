@@ -4,10 +4,10 @@
 
 **Blocked by:** 13 (Scheduler, notifications), 17 (Run like an app)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Service worker at the site root
-- [ ] VAPID keys generated once and stored locally
-- [ ] Subscribe from a device; every notification is pushed to subscribed devices; dead subscriptions removed
-- [ ] Phone layout checked at 375px
-- [ ] API tests with a fake push sender
+- [x] Service worker at the site root
+- [x] VAPID keys generated once and stored locally
+- [x] Subscribe from a device; every notification is pushed to subscribed devices; dead subscriptions removed
+- [x] Phone layout checked at 375px
+- [x] API tests with a fake push sender

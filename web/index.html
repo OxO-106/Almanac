@@ -2,7 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Almanac">
 <title>Almanac</title>
 <link rel="stylesheet" href="/static/style.css">
 <link rel="icon" href="/static/icons/favicon-32.png" type="image/png">
@@ -17,11 +20,12 @@
   <a href="#chat" data-view="chat">Chat <span class="badge" hidden></span></a>
   <a href="#inbox" data-view="inbox">Inbox <span class="badge" hidden></span></a>
   <a href="#calendar" data-view="calendar">Calendar</a>
-  <a href="#goals" data-view="goals">Goals</a>
-  <a href="#plan" data-view="plan">Plan</a>
-  <a href="#memory" data-view="memory">Memory</a>
-  <a href="#archive" data-view="archive">Archive</a>
-  <a href="#settings" data-view="settings">Settings</a>
+  <a href="#goals" data-view="goals" class="extra">Goals</a>
+  <a href="#plan" data-view="plan" class="extra">Plan</a>
+  <a href="#memory" data-view="memory" class="extra">Memory</a>
+  <a href="#archive" data-view="archive" class="extra">Archive</a>
+  <a href="#settings" data-view="settings" class="extra">Settings</a>
+  <a class="more" onclick="document.body.classList.toggle('sheet')">More</a>
   <div id="timer" hidden></div>
 </nav>
 <main id="view"></main>

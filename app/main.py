@@ -5,7 +5,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import canvas, chat, checkins, db, goals, inbox, ingest, overviews, plan, planner, scheduler, timers  # noqa: F401 (checkins registers jobs)
+from . import canvas, chat, checkins, db, goals, inbox, ingest, overviews, plan, planner, push, scheduler, timers  # noqa: F401 (checkins registers jobs)
 from .clock import SystemClock, local
 from .config import DB_PATH, WEB_DIR
 from .llm import DEFAULT_READER, Ollama
@@ -51,11 +51,17 @@ def create_app(db_path: Path = DB_PATH, llm=None, clock=None) -> FastAPI:
     app.include_router(timers.router)
     app.include_router(overviews.router)
     app.include_router(canvas.router)
+    app.include_router(push.router)
     app.include_router(plan.router)
 
     @app.get("/")
     def index():
         return FileResponse(WEB_DIR / "index.html")
+
+    @app.get("/sw.js")
+    def service_worker():
+        # at the root so its scope covers the whole app
+        return FileResponse(WEB_DIR / "sw.js", media_type="text/javascript")
 
     app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
     return app

@@ -131,7 +131,7 @@ const views = {
   async today() {
     const [h, t, b] = await Promise.all([api("/api/health"), api("/api/today"), api("/api/briefing"), loadLookups()]);
     const date = asDate(t.date).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
-    const canNotify = "Notification" in window && Notification.permission === "default";
+    const canNotify = !["localhost", "127.0.0.1"].includes(location.hostname) && !pushOn() && "Notification" in window && Notification.permission === "default";
     const briefing = b ? `<section class="card briefing"><h3>Morning briefing</h3>
         ${b.catchup.length ? `<p><b>While Almanac was off:</b> ${b.catchup.map(esc).join("; ")}</p>` : ""}
         ${b.coming_up.length ? `<p><b>Coming up:</b> ${b.coming_up.map(d => `${esc(d.title)} (${esc(fmtWhen(d.due, d.window))})`).join(", ")}</p>` : ""}
@@ -142,7 +142,7 @@ const views = {
       <header class="head"><div><h1>Today</h1><p class="sub">${esc(date)}</p></div>
         <button class="primary" onclick='openEditor("tasks", null, {do_date: "${t.date}"})'>Add task</button></header>
       ${h.ai.ready ? "" : `<div class="notice">The assistant is unavailable: ${esc(h.ai.message)}</div>`}
-      ${canNotify ? `<p class="hint"><a class="linkish" onclick="Notification.requestPermission().then(render)">Turn on notifications</a> on this device for the morning briefing and check-ins.</p>` : ""}
+      ${canNotify ? `<p class="hint"><a class="linkish" href="#settings">Turn on notifications</a> on this device for the morning briefing and check-ins.</p>` : ""}
       ${briefing}
       ${t.overdue.length ? section("Carried over", t.overdue.map(taskRow), "") : ""}
       ${section("To do today", t.tasks.map(taskRow), "Nothing planned for today.")}
@@ -499,9 +499,65 @@ views.settings = async () => {
       ${status}
       <form class="inline" onsubmit="saveCanvas(event)"><input name="url" type="url" placeholder="https://bruinlearn.ucla.edu/feeds/calendars/….ics" required>
         <button class="primary">${c.connected ? "Replace link" : "Connect"}</button></form></section>
+    ${pushSection()}
     <section class="card"><h3>Assistant</h3>
       <p class="from">Chat: ${esc(h.ai.model)} ${h.ai.ready ? "(ready)" : `(${esc(h.ai.message)})`}. Reading documents: the 35B model when it's downloaded. Everything runs on this PC.</p></section>`;
 };
+
+// ---- push (iPhone Home Screen app, laptop) ----------------------------------
+
+const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
+const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+const pushSupported = "serviceWorker" in navigator && "PushManager" in window;
+const pushOn = () => { try { return localStorage.getItem("pushOn") === "1"; } catch { return false; } };
+
+function pushSection() {
+  let body;
+  if (isIOS && !standalone) body = `<p>On iPhone, notifications work from the Home Screen app: tap <b>Share</b> → <b>Add to Home Screen</b>, open Almanac from there, and come back to Settings.</p>`;
+  else if (!pushSupported) body = `<p class="from">This browser can't receive push notifications. Open windows still show them.</p>`;
+  else if (pushOn()) body = `<p>On for this device. <button class="small" onclick="testPush(this)">Send a test</button>
+      <button class="small" onclick="pushOff()">Turn off</button></p>`;
+  else body = `<p>Get the morning briefing, check-ins and reminders here even when Almanac is closed.</p>
+      <button class="primary" onclick="pushOnDevice(this)">Turn on notifications</button>`;
+  return `<section class="card"><h3>Notifications on this device</h3>${body}</section>`;
+}
+
+const b64ToBytes = s => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)), c => c.charCodeAt(0));
+
+async function pushOnDevice(button) {
+  button.disabled = true;
+  try {
+    if (await Notification.requestPermission() !== "granted") throw new Error("Notifications were not allowed. You can allow them in this device's settings.");
+    const reg = await navigator.serviceWorker.register("/sw.js");
+    await navigator.serviceWorker.ready;
+    const { key } = await api("/api/push/key");
+    const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(key) });
+    await send("POST", "/api/push/subscribe", sub.toJSON());
+    try { localStorage.setItem("pushOn", "1"); } catch { }
+    await api("/api/push/test", { method: "POST" });
+    toast("Notifications are on. A test is on its way.");
+  } catch (e) { toast(esc(e.message || String(e))); }
+  render();
+}
+
+async function pushOff() {
+  try {
+    const reg = await navigator.serviceWorker.getRegistration();
+    const sub = await reg?.pushManager.getSubscription();
+    if (sub) { await send("POST", "/api/push/unsubscribe", { endpoint: sub.endpoint }); await sub.unsubscribe(); }
+  } catch { }
+  try { localStorage.removeItem("pushOn"); } catch { }
+  render();
+}
+
+async function testPush(button) {
+  button.disabled = true;
+  await api("/api/push/test", { method: "POST" });
+  toast("Sent. It should arrive in a few seconds.");
+  render();
+}
+
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => { });
 
 // ---- memory ------------------------------------------------------------------
 
@@ -604,9 +660,11 @@ views.chat = async () => {
 };
 
 async function render() {
+  document.body.classList.remove("sheet");
   refreshBadge();
   const [name, arg] = (location.hash.slice(1) || "today").split("/");
   document.querySelectorAll("#nav a").forEach(a => a.classList.toggle("active", a.dataset.view === name));
+  $("#nav .more").classList.toggle("active", !!$(`#nav a.extra[data-view="${name}"]`));
   try {
     $("#view").innerHTML = await (views[name] || views.today)(arg);
   } catch (e) {
@@ -649,7 +707,9 @@ async function pollNotifications() {
     const list = await api(`/api/notifications?after=${seen ?? 0}`);
     if (seen !== null) {
       for (const n of list) {
-        if ("Notification" in window && Notification.permission === "granted") {
+        // On this PC the tray icon pops notifications; a device with push gets them pushed.
+        const local = ["localhost", "127.0.0.1"].includes(location.hostname);
+        if (!local && !pushOn() && "Notification" in window && Notification.permission === "granted") {
           const note = new Notification(n.title, { body: n.body || "", tag: `almanac-${n.id}` });
           note.onclick = () => { window.focus(); location.hash = n.url || "#today"; };
         } else toast(`<b>${esc(n.title)}</b><br>${esc(n.body || "")}`);

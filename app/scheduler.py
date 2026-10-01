@@ -43,10 +43,15 @@ def _now(state) -> datetime:
     return local(state.clock.now()).replace(tzinfo=None, second=0, microsecond=0)
 
 
+ON_NOTIFY: list[Callable] = []  # also deliver elsewhere: hook(con, title, body, url), e.g. Web Push
+
+
 def notify(con, clock, kind, title, body, url="#today"):
     with WRITE:
         con.execute("insert into notifications (kind, title, body, url, created_at) values (?,?,?,?,?)",
                     (kind, title, body, url, local(clock.now()).strftime("%Y-%m-%dT%H:%M")))
+    for hook in ON_NOTIFY:
+        hook(con, title, body, url)
 
 
 def tick(state) -> list[str]:

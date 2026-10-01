@@ -45,6 +45,8 @@ create table if not exists overviews (id integer primary key, kind text not null
 create table if not exists canvas_sections (code text primary key, course_id integer references courses on delete cascade);
 create table if not exists canvas_items (uid text primary key, proposal_id integer, entity_kind text, entity_id integer,
   gone integer not null default 0);
+create table if not exists push_subscriptions (endpoint text primary key, p256dh text not null, auth text not null,
+  contact text not null);
 create table if not exists jobs (name text primary key, last_run text not null);
 create table if not exists notifications (id integer primary key, kind text not null, title text not null, body text,
   url text, created_at text not null);
