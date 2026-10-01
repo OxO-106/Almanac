@@ -1,6 +1,6 @@
 """Evening check-ins and the nightly Replan.
 
-8pm: ask about today's still-open tasks (notification + a chat message; the
+8pm, every day: ask what's new today, and about today's still-open tasks (notification + a chat message; the
 reply goes through chat's suggestions pass, so "finished the reading" becomes
 a proposal to tick it off). 11pm: ask once more about what's still open.
 10:30pm: any Project with a step whose do date has passed gets a Replan
@@ -15,6 +15,7 @@ from .db import WRITE
 from .scheduler import JOBS, Job, _now, daily, notify
 
 SLIPS_FOR_A_CHAT = 2
+WHATS_NEW = "Anything new today? New deadlines, plans, something mentioned in class: tell me and I'll suggest adding it."
 
 
 def _open_today(con, day: date):
@@ -32,6 +33,10 @@ def _checkin(final: bool):
         day = scheduled.date()
         titles = ", ".join(t["title"] for t in _open_today(con, day))
         if not titles:
+            # The 8pm check-in happens every day: what's new is worth asking even with nothing open.
+            if not final and not late:
+                notify(con, clock, "checkin", "Anything new today?", "New deadlines, plans, something mentioned in class?", "#chat")
+                _say(con, clock, f"It's 8pm. {WHATS_NEW}")
             return
         if late:  # the PC was off: tell the next briefing instead of pinging now (once for both check-ins)
             text = f"{day:%b} {day.day}: {titles} {'was' if ',' not in titles else 'were'} still open at the evening check-in."
@@ -44,9 +49,9 @@ def _checkin(final: bool):
             _say(con, clock, f"Last check for today: {titles} {'is' if ',' not in titles else 'are'} still open. "
                              "Done, or should I move it to another day?")
         else:
-            notify(con, clock, "checkin", "How did today go?", f"Still open: {titles}. Tell me what you finished.", "#chat")
+            notify(con, clock, "checkin", "How did today go?", f"Still open: {titles}. Anything new today?", "#chat")
             _say(con, clock, f"It's 8pm. How did today go? Still open from today's plan: {titles}. "
-                             "Tell me what you finished, or tick it off on Today.")
+                             f"Tell me what you finished, or tick it off on Today. And {WHATS_NEW[0].lower()}{WHATS_NEW[1:]}")
     return run
 
 

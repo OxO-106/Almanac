@@ -37,9 +37,10 @@ def test_8pm_checks_in_on_todays_open_tasks(client, clock):
     at(clock, "2026-10-05T20:00")
     assert "checkin" in tick(client)
     (n,) = notes(client, "checkin")
-    assert n["title"] == "How did today go?" and n["body"] == "Still open: Register paper. Tell me what you finished."
+    assert n["title"] == "How did today go?" and n["body"] == "Still open: Register paper. Anything new today?"
     assert assistant(client)[-1] == ("It's 8pm. How did today go? Still open from today's plan: Register paper. "
-                                     "Tell me what you finished, or tick it off on Today.")
+                                     "Tell me what you finished, or tick it off on Today. And anything new today? New deadlines, "
+                                     "plans, something mentioned in class: tell me and I'll suggest adding it.")
 
 
 def test_11pm_asks_again_only_about_what_is_still_open(client, clock):
@@ -56,12 +57,18 @@ def test_11pm_asks_again_only_about_what_is_still_open(client, clock):
     assert last["title"] == "Last check for today" and last["body"] == "Still open: Read P10. Done, or should I move it?"
 
 
-def test_nothing_open_means_no_check_in(client, clock):
+def test_with_nothing_open_8pm_still_asks_whats_new(client, clock):
     at(clock, "2026-10-05T19:59")
     tick(client)
     at(clock, "2026-10-05T20:00")
     tick(client)
-    assert notes(client, "checkin") == []
+    (n,) = notes(client, "checkin")
+    assert n["title"] == "Anything new today?" and n["body"] == "New deadlines, plans, something mentioned in class?"
+    assert assistant(client)[-1] == ("It's 8pm. Anything new today? New deadlines, plans, something mentioned in class: "
+                                     "tell me and I'll suggest adding it.")
+    at(clock, "2026-10-05T23:00")
+    tick(client)
+    assert len(notes(client, "checkin")) == 1  # 11pm only asks about open tasks
 
 
 def test_check_ins_missed_while_off_appear_in_the_next_briefing(client, clock):

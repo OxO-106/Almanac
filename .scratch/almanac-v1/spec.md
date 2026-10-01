@@ -2,7 +2,7 @@ Status: ready-for-agent
 
 # Almanac v1 (desktop)
 
-Covers build phases 1 (core) and 2 (rhythm and timers). Phases 3–5 (Canvas feed, iPhone PWA and push, Gmail and images) get their own specs.
+Covers build phases 1 (core) and 2 (rhythm and timers). Follow-up work (tickets 18–21): retrying uploads, a daily "what's new" check-in, the Canvas feed and the iPhone app with push. Gmail is dropped for now (2026-09-30).
 
 ## Problem Statement
 
@@ -206,7 +206,7 @@ Almanac is a personal assistant that runs on my PC, which I also use from my lap
 
 - Canvas (Bruin Learn) calendar feed and periodic re-fetch: phase 3.
 - iPhone PWA, Web Push through Apple, and a phone layout: phase 4.
-- Gmail (g.ucla.edu) reading and image/screenshot input: phase 5.
+- Gmail (g.ucla.edu): dropped for now at the student's request. Image/screenshot input: later.
 - Time-blocking tasks into specific hours. Plans are at the Milestone/day level.
 - Multiple users, sharing and sync with external calendars.
 - Any cloud LLM.
@@ -216,4 +216,4 @@ Almanac is a personal assistant that runs on my PC, which I also use from my lap
 - **Open data Questions** the app should raise itself on the first ingest of `seed/`: Kim's presentation paper and team slot, Kim's class time, Ding's registered paper and project team, Ding's final report due date, CS 269 gating test status and final format.
 - Planning and Check-ins assume the PC is on from morning until about 12am. Anything scheduled while it's off is caught up on the next start.
 - Model upgrade path: once the eval exists, try a ~30B mixture-of-experts Qwen model at Q4 (partly offloaded to RAM) against the 9B. Switch only if the eval shows a clear gain. Note that the switch makes Papercut and Almanac load different models.
-- Follow-up specs: phase 3 (Canvas), phase 4 (iPhone), phase 5 (Gmail and images).
+- Follow-up: tickets 18–21 (retry uploads, daily what's-new check-in, Canvas feed, iPhone app and push). Gmail dropped for now.

@@ -318,3 +318,20 @@ def test_a_model_failure_is_reported_on_the_upload(client, llm):
     src = upload(client, "cs239.txt", SYLLABUS.encode())
     assert src["status"] == "failed"
     assert "model" in src["error"].lower()
+
+
+def test_a_failed_upload_can_be_retried_without_choosing_the_file_again(client, llm):
+    llm.replies = ["not json"]  # the model fails the first time
+    src = upload(client, "cs239.txt", SYLLABUS.encode())
+    assert src["status"] == "failed"
+    llm.replies = [course_reply(), items_reply(item())]
+    r = client.post(f"/api/sources/{src['id']}/retry")
+    assert r.status_code == 202
+    assert client.get(f"/api/sources/{src['id']}").json()["status"] == "done"
+    assert [p["summary"] for p in inbox(client)["proposals"]] == ["Add course CS 239 · Robin Ding", "Paper registration"]
+
+
+def test_only_failed_uploads_can_be_retried(client, llm):
+    llm.replies = [course_reply(), items_reply()]
+    src = upload(client, "cs239.txt", SYLLABUS.encode())
+    assert client.post(f"/api/sources/{src['id']}/retry").status_code == 409

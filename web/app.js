@@ -332,14 +332,21 @@ async function uploadFiles(files, replaces = null) {
   render();
 }
 
+async function retryUpload(id, button) {
+  button.disabled = true;
+  try { await api(`/api/sources/${id}/retry`, { method: "POST" }); } catch (e) { toast(esc(detail(e))); }
+  render();
+}
+
 const uploadRow = s => {
   const status = s.status === "processing" ? `<span class="spin"></span> Reading…`
     : s.status === "failed" ? `<span class="bad">Failed</span>` : "Done";
   const dropped = s.dropped.length ? `<details><summary>${s.dropped.length} item${s.dropped.length > 1 ? "s" : ""} dropped</summary>
     <ul>${s.dropped.map(d => `<li><b>${esc(d.title)}</b>: ${esc(d.reason)}<blockquote>${esc(d.quote || "")}</blockquote></li>`).join("")}</ul></details>` : "";
+  const retry = s.status === "failed" ? `<button class="small" onclick="retryUpload(${s.id}, this)">Retry</button>` : "";
   const again = s.status === "processing" ? "" : `<label class="linkish" title="Upload an updated copy: only changes will be proposed">New version
     <input type="file" accept=".pdf,.docx,.txt,.md" hidden onchange="uploadFiles(this.files, ${s.id})"></label>`;
-  return `<li class="row upload"><span class="title">${esc(s.title)}</span><span class="meta">${status}</span>${again}</li>
+  return `<li class="row upload"><span class="title">${esc(s.title)}</span><span class="meta">${status}</span>${retry}${again}</li>
     ${s.error ? `<li class="uperror">${esc(s.error)}</li>` : ""}${dropped ? `<li class="updropped">${dropped}</li>` : ""}`;
 };
 

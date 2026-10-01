@@ -6,6 +6,7 @@ text, turns dates into calendar dates, and queues Proposals for review."""
 
 import io
 import json
+from pathlib import Path
 import re
 import unicodedata
 import zipfile
@@ -761,8 +762,31 @@ async def upload(file: UploadFile, background: BackgroundTasks, request: Request
     with WRITE:
         cur = s.db.execute("insert into sources (kind, title, text, status, created_at, lineage) "
                            "values ('document', ?, '', 'processing', ?, ?)", (file.filename, now, lineage))
+    _kept(s, cur.lastrowid, file.filename).write_bytes(data)  # so a failed upload can be retried
     background.add_task(ingest, s.db, s.reader, s.clock, cur.lastrowid, file.filename, data)
     return {"id": cur.lastrowid, "status": "processing"}
+
+
+def _kept(state, source_id, filename):
+    folder = state.db_path.parent / "uploads"
+    folder.mkdir(exist_ok=True)
+    return folder / f"{source_id}{Path(filename).suffix.lower()}"
+
+
+@router.post("/sources/{id}/retry", status_code=202)
+def retry(id: int, background: BackgroundTasks, request: Request):
+    """Read a failed upload again, from the copy kept when it was uploaded."""
+    s = request.app.state
+    src = _source(s.db, id)
+    if src["status"] != "failed":
+        raise HTTPException(409, "Only a failed upload can be retried.")
+    kept = _kept(s, id, src["title"])
+    if not kept.exists():
+        raise HTTPException(409, "The file wasn't kept (it was uploaded before retrying existed). Upload it again.")
+    with WRITE:
+        s.db.execute("update sources set status = 'processing', error = null where id = ?", (id,))
+    background.add_task(ingest, s.db, s.reader, s.clock, id, src["title"], kept.read_bytes())
+    return {"id": id, "status": "processing"}
 
 
 def _source(con, id):
