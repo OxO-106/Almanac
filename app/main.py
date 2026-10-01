@@ -59,6 +59,10 @@ def create_app(db_path: Path = DB_PATH, llm=None, clock=None) -> FastAPI:
     def index():
         return FileResponse(WEB_DIR / "index.html")
 
+    @app.get("/favicon.ico")
+    def favicon():
+        return FileResponse(WEB_DIR / "icons" / "almanac.ico", media_type="image/x-icon")
+
     @app.get("/sw.js")
     def service_worker():
         # at the root so its scope covers the whole app

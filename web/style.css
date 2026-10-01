@@ -43,7 +43,8 @@ button { font: inherit; color: inherit; cursor: pointer; }
         gap: 16px; padding: 14px 10px; height: 100vh; position: sticky; top: 0; overflow-y: auto; }
 .brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px; font-weight: 600; font-size: 15px; }
 .mark { width: 26px; height: 26px; border-radius: 7px; background: var(--slate); color: #fff; display: grid; place-items: center;
-        font: italic 17px var(--serif); }
+        font: italic 17px var(--serif); position: relative; line-height: 1; padding-bottom: 3px; box-sizing: border-box; }
+.mark::after { content: ""; position: absolute; left: 7px; right: 7px; bottom: 5px; height: 2px; background: #ACCBE1; }
 #side .ask { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid #E3E7EA; border-radius: 8px;
              background: var(--ground); color: var(--muted); text-decoration: none; }
 #side .ask:hover { border-color: var(--btn-line); color: var(--ink-2); }
