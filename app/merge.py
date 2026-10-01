@@ -6,6 +6,7 @@ proposed as an update: its course, project, exact time, week or location.
 If the match is still a pending proposal, the details merge into it."""
 
 import json
+import re
 
 from . import ingest
 
@@ -27,35 +28,99 @@ def _compatible(a, b) -> bool:
     return not (isinstance(a, int) and isinstance(b, int) and a != b)
 
 
+# ---- the one duplicate rule -------------------------------------------------------
+# Used by every reader (syllabus, chat, Bruin Learn) and by the duplicate check:
+# the same course, a matching date or week, titles sharing half their words,
+# and the same kind, except that a session and its deadline on the same day are
+# one thing when either says it's due ("Mid-Project Check-in: Phase 1 Due" and
+# "Submit Phase 1 deliverables").
+
+DUEISH = re.compile(r"\b(due|submit\w*|deliverables?|hand[- ]in)\b", re.I)
+
+
+def _days(kind, data) -> tuple[str, str] | None:
+    """(first, last) day an item is on: its date, or its week."""
+    if data.get("window"):
+        a, b = data["window"].split("/")
+        return a, b
+    d = (data.get(DATE_FIELD.get(kind, "due")) or "")[:10]
+    return (d, d) if d else None
+
+
+def same(kind_a, a, kind_b, b) -> bool:
+    """Are these two items (plan rows, proposal data, or items being read) one thing?"""
+    if not (_compatible(a.get("course_id"), b.get("course_id")) and _same(a.get("title", ""), b.get("title", ""))):
+        return False
+    da, db_ = _days(kind_a, a), _days(kind_b, b)
+    if not (da and db_ and da[0] <= db_[1] and db_[0] <= da[1]):
+        return False
+    if a.get("repeat") or b.get("repeat"):
+        return False  # a weekly class isn't a one-off on one of its days
+    if kind_a == kind_b:
+        return True
+    return {kind_a, kind_b} == {"events", "deadlines"} and bool(DUEISH.search(a.get("title", "") + " " + b.get("title", "")))
+
+
+def _kinds(kind):
+    return ("events", "deadlines") if kind in ("events", "deadlines") else (kind,)
+
+
 def find(con, kind, data):
     """(table, row) of a plan item that is this one, or (None, None)."""
-    # same kind only: a deadline and a session on its day are different things
-    table = kind if kind in ("deadlines", "events", "tasks") else None
-    if not table:
+    if kind not in ("deadlines", "events", "tasks"):
         return None, None
-    f = DATE_FIELD[table]
-    day = (data.get(f) or "")[:10]
-    rows = con.execute(f"select * from {table} where substr({f}, 1, 10) = ?", (day,)) if day else \
-        con.execute(f"select * from {table}")  # no date given ("the team list is for Ding's course")
-    hits = [dict(r) for r in rows if _same(r["title"], data["title"]) and _compatible(r["course_id"], data.get("course_id"))]
-    # with a date, the first match; without one, only an unambiguous match
-    return (table, hits[0]) if hits and (day or len(hits) == 1) else (None, None)
+    if not _days(kind, data):  # no date given ("the team list is for Ding's course"): only an unambiguous match
+        hits = [(kind, dict(r)) for r in con.execute(f"select * from {kind}")
+                if _same(r["title"], data["title"]) and _compatible(r["course_id"], data.get("course_id"))]
+        return hits[0] if len(hits) == 1 else (None, None)
+    for table in _kinds(kind):
+        for r in con.execute(f"select * from {table}"):
+            if same(table, dict(r), kind, data):
+                return table, dict(r)
+    return None, None
 
 
 def find_pending(con, kind, data):
     """A pending proposal creating this same item, or None."""
-    day = (data.get(DATE_FIELD.get(kind, "due")) or "")[:10]
-    if not day:
+    if not _days(kind, data):
         return None
     for r in con.execute("select id, ops from proposals where status = 'pending' order by id"):
         ops = json.loads(r["ops"])
         o = ops[0]
-        if len(ops) != 1 or o["op"] != "create" or o["kind"] != kind:
+        if len(ops) != 1 or o["op"] != "create" or o["kind"] not in _kinds(kind):
             continue
-        if (o["data"].get(DATE_FIELD[o["kind"]]) or "")[:10] == day and _same(o["data"].get("title", ""), data["title"]) \
-                and _compatible(o["data"].get("course_id"), data.get("course_id")):
+        if same(o["kind"], o["data"], kind, data):
             return {"id": r["id"], "ops": ops}
     return None
+
+
+def duplicates(con) -> list[tuple]:
+    """Pairs already in the plan that the rule says are one thing:
+    (keep (kind, row), drop (kind, row)). Keeps the one with more detail:
+    a session over its deadline, a time over a date, a course over none."""
+    rows = [(k, dict(r)) for k in ("events", "deadlines", "tasks") for r in con.execute(f"select * from {k}")]
+    detail = lambda kr: (kr[0] == "events", len(kr[1].get(DATE_FIELD[kr[0]]) or "") > 10, kr[1].get("course_id") is not None,
+                         not kr[1].get("window"), -kr[1]["id"])
+    out, gone = [], set()
+    for i, a in enumerate(rows):
+        for b in rows[i + 1:]:
+            if (a[0], a[1]["id"]) in gone or (b[0], b[1]["id"]) in gone or not same(a[0], a[1], b[0], b[1]):
+                continue
+            keep, drop = sorted([a, b], key=detail, reverse=True)
+            gone.add((drop[0], drop[1]["id"]))
+            out.append((keep, drop))
+    return out
+
+
+def offer_duplicates(con, clock) -> int:
+    """Suggest removing the second copy of each duplicate already in the plan."""
+    from . import inbox
+    n = 0
+    for (kk, keep), (dk, drop) in duplicates(con):
+        p = inbox.propose(con, clock, None, f"Same thing twice: keep “{keep['title']}”, remove “{drop['title']}”",
+                          [{"op": "delete", "kind": dk, "id": drop["id"]}])
+        n += "id" in p
+    return n
 
 
 def details(table, row, data) -> dict:

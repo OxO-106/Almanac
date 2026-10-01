@@ -716,7 +716,8 @@ def _settle(items, text, today, term, lectures):
             resolved[i] = _repair(it, text, today, term, known) or resolved[i]
 
     keep, undated, seen = [], [], []
-    for i in sorted(range(len(items)), key=lambda i: "slot" not in items[i]):  # slot dates first
+    # slot dates first, then sessions: of a session and its deadline, the session (time, place) is kept
+    for i in sorted(range(len(items)), key=lambda i: ("slot" not in items[i], items[i]["kind"] != "event")):
         it = items[i]
         if _duplicate(it, resolved[i], seen):
             continue
@@ -1062,16 +1063,16 @@ STOP = {"the", "a", "an", "and", "or", "of", "for", "to", "in", "on", "due", "yo
 
 
 def _duplicate(it, when, seen) -> bool:
-    """The same kind of item on the same date with overlapping title words is
-    one item reported twice (a model lists "Phase 1 due" and "Phase 1
-    application, traces and draft requirements" from the same schedule)."""
-    words = {w for w in _words(it["title"]) if w not in STOP}
-    key = (it["kind"], (when.value or "")[:10])
-    for k, other in seen:
-        if k == key and key[1] and words and other and len(words & other) / min(len(words), len(other)) >= 0.5:
-            return True
-    seen.append((key, words))
-    return False
+    """One item reported twice in the same document, by the one duplicate rule
+    (merge.same): e.g. "Phase 1 due" and "Phase 1 application, traces and draft
+    requirements" on the same day."""
+    table = KIND.get(it["kind"], (None,))[0]
+    if not table or not when.value:
+        return False
+    me = {"title": it["title"], DATE_FIELD_OF[table]: when.value, "window": when.window}
+    dup = any(merge.same(t, other, table, me) for t, other in seen)
+    seen.append((table, me))  # remembered even when dropped, so a third report matches through it
+    return dup
 
 
 _DAY_RUN = re.compile(r"(m|tu|t|w|th|r|f|sa|su)+")
@@ -1144,6 +1145,7 @@ def _propose_meetings(con, clock, source_id, course, short, m, term, no_class, p
                  f"{title} (weekly)" if title else f"{short} class meetings")
 
 
+DATE_FIELD_OF = {"deadlines": "due", "events": "start", "tasks": "due", "projects": "deadline"}
 KIND = {"deadline": ("deadlines", "due"), "event": ("events", "start"), "task": ("tasks", "due"),
         "project": ("projects", "deadline")}
 

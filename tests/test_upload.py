@@ -341,7 +341,8 @@ def test_the_same_item_reported_twice_is_proposed_once(client, llm):
              when={"type": "date", "month": 11, "day": 11})
     llm.replies = [course_reply([]), items_reply(a, b, c)]
     upload(client, "x.txt", SYLLABUS.encode())
-    assert [p["summary"] for p in inbox(client)["proposals"]] == ["Phase 1 due", "Phase 1 check-in"]
+    # one rule for duplicates: a session and what's due at it are one thing; the session is kept
+    assert [p["summary"] for p in inbox(client)["proposals"]] == ["Phase 1 check-in"]
 
 
 def test_the_model_sees_the_document_text_from_a_docx(client, llm):
