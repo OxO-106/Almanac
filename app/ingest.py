@@ -148,6 +148,13 @@ QUESTIONS_SCHEMA = {"type": "object", "properties": {"questions": {"type": "arra
 QUESTIONS_CHARS = 60000
 
 
+SECOND_LOOK_PROMPT = RULES + """
+Task: these items were found in the document, but their quote or their date could not be checked against it. For each numbered item, copy from the document, word for word, the passage that states it and when. If the item and its date are far apart (a heading and a line under it), quote both and mark the skipped middle with "...". Report the date as written ("in your first week" → {"type":"week","week":1}). If the document doesn't say when, quote the passage and give {"type":"unknown"}. If the item isn't in the document, give an empty quote."""
+
+SECOND_LOOK_SCHEMA = {"type": "object", "properties": {"items": {"type": "array", "items": {"type": "object", "properties": {
+    "n": {"type": "integer"}, "quote": {"type": "string"}, "when": WHEN}, "required": ["n", "quote", "when"]}}}, "required": ["items"]}
+
+
 MERGE_PROMPT = """You help a personal assistant decide what to ask a student about one course document. Below are draft questions, numbered. Many ask the same thing in different words.
 - Merge drafts that ask the same thing into one question, worded clearly, addressed to "you", ending in "?".
 - Drop drafts that aren't needed to know WHEN something happens for the student or WHETHER a task applies to them (course content, grading, whether they already did something, reminders).
@@ -278,9 +285,9 @@ def _match_at(q, t, start):
 ELLIPSIS_GAP = 30  # words a "..." may skip: a table row's cells, not the next row
 
 
-def quoted(quote: str, text: str) -> bool:
+def quoted(quote: str, text: str, gap: int = ELLIPSIS_GAP) -> bool:
     """The quote's words appear in the document in order and close together.
-    Pieces joined by "..." may be up to ELLIPSIS_GAP words apart."""
+    Pieces joined by "..." may be up to `gap` words apart."""
     t = _words(text)
     parts = [p for p in (_words(x) for x in re.split(r"\.\.\.|…", quote or "")) if p]
     if not parts or sum(map(len, parts)) < 2:
@@ -290,12 +297,12 @@ def quoted(quote: str, text: str) -> bool:
         if not pieces:
             return True
         return any((end := _match_at(pieces[0], t, s)) >= 0 and rest(pieces[1:], end)
-                   for s in range(frm, min(frm + ELLIPSIS_GAP + 1, len(t))))
+                   for s in range(frm, min(frm + gap + 1, len(t))))
 
     return any((end := _match_at(parts[0], t, s)) >= 0 and rest(parts[1:], end) for s in range(len(t)))
 
 
-def locate(quote: str, text: str):
+def locate(quote: str, text: str, gap: int = ELLIPSIS_GAP):
     """(start, end) character offsets of the quote in the text, else None."""
     spans = [(m.group(), m.start(), m.end()) for m in re.finditer(r"\w+", _norm_keep_len(text))]
     t = [w for w, _, _ in spans]
@@ -307,7 +314,7 @@ def locate(quote: str, text: str):
         for p in parts[1:]:
             if end < 0:
                 break
-            end = next((e for s2 in range(end, min(end + ELLIPSIS_GAP + 1, len(t))) if (e := _match_at(p, t, s2)) >= 0), -1)
+            end = next((e for s2 in range(end, min(end + gap + 1, len(t))) if (e := _match_at(p, t, s2)) >= 0), -1)
         if end >= 0:
             return spans[s][1], spans[end - 1][2]
     return None
@@ -334,6 +341,30 @@ def row_quote(quote: str, text: str) -> str | None:
     # the same row: no other date line between the date and the deliverable
     between = text[at[0]:at[1]].split("\n")[1:]
     return None if any(DATE_HEADING.match(line) and not DATE_HEADING.match(line).group("week") for line in between) else fixed
+
+
+SECTION_GAP = 150  # words a "..." may skip within one dated section (a lecture's entry)
+
+
+def section_quote(quote: str, text: str) -> str | None:
+    """A "..." quote whose pieces are further apart than a table row, but in
+    the same section: a lecture heading and a note a paragraph below it. No
+    other date heading may come between the pieces."""
+    if not re.search(r"\.\.\.|…", quote or ""):
+        return None
+    at = locate(quote, text, SECTION_GAP)
+    if not at:
+        return None
+    between = text[at[0]:at[1]].split("\n")[1:]
+    return None if any((m := DATE_HEADING.match(line)) or LECTURE_HEADING.match(line) for line in between) else quote
+
+
+def checked_quote(quote: str, text: str) -> str | None:
+    """The quote as it will be shown, if the document states it: verbatim, a
+    schedule row ("<date> … <deliverable>"), or one section ("<heading> … <note>")."""
+    if quoted(quote, text):
+        return quote
+    return row_quote(quote, text) or section_quote(quote, text)
 
 
 def _norm_keep_len(s: str) -> str:
@@ -373,6 +404,7 @@ def time_in_quote(time: str, quote: str) -> bool:
                 or (h == 12 and mm == "00" and "noon" in q))
 
 
+ORDINALS = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth"]
 DAY_NAMES = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
                 "eleven", "twelve", "thirteen", "fourteen"]
@@ -416,7 +448,8 @@ def resolve(it: dict, today: date, term: dict | None, known: dict) -> When:
         return When(d.isoformat() + (f"T{time[:5]}" if time else ""))
     if t == "week" and term and isinstance(when.get("week"), int):
         n = when["week"]
-        if not re.search(rf"\bweek\s*{n}\b", _norm(quote)):
+        ordinal = ORDINALS[n - 1] if 0 < n <= len(ORDINALS) else None
+        if not (re.search(rf"\bweek\s*{n}\b", _norm(quote)) or (ordinal and re.search(rf"\b{ordinal}\s+week\b", _norm(quote)))):
             return When()
         monday = date.fromisoformat(term["week1"]) + timedelta(weeks=n - 1)
         wd = (when.get("weekday") or "").upper()[:2]
@@ -518,6 +551,71 @@ def _supersede(con, source_id) -> dict:
     return prior
 
 
+def _tidy(it):
+    """Normalise one reported item, or None for one that isn't ours to plan."""
+    # Regular lectures ("Lecture 10: Thursday, November 5 — …") come with the
+    # class-meeting Event; models list them anyway.
+    if it["kind"] == "event" and re.match(r"\s*lecture\s*\d+\b", it["title"], re.I):
+        return None
+    it["title"] = capitalize(it["title"].strip())
+    if re.match(r"no class\b", it["title"], re.I):
+        it["kind"] = "no_class"  # a day off, not something to do
+    return it
+
+
+def _settle(items, text, today, term, lectures):
+    """Dates for the items, and which to plan: (resolved, keep, undated), where
+    undated are tasks with no date or lecture (left out unless a second look finds one)."""
+    # Resolve absolute dates first so relative ones ("two days before Phase 1") can use them.
+    known, resolved = {}, {}
+    for rnd in ("absolute", "relative"):
+        for i, it in enumerate(items):
+            if ((it.get("when") or {}).get("type") == "relative") == (rnd == "relative"):
+                resolved[i] = resolve(it, today, term, known)
+                if resolved[i].value:
+                    known.setdefault(it["title"].lower(), resolved[i].value)
+    lecture_days = {d for d, _ in lectures.values()}
+    for i, it in enumerate(items):
+        if it["kind"] == "task" and resolved[i].value and resolved[i].value[:10] in lecture_days \
+                and re.match(r"(read|review|skim)\b", it["title"], re.I):
+            # dated by its lecture's row: read it the day before
+            day = date.fromisoformat(resolved[i].value[:10]) - timedelta(days=1)
+            resolved[i] = When(day.isoformat())
+            continue
+        if resolved[i].value or (it.get("when") or {}).get("type") == "relative":
+            continue
+        if it["kind"] == "task":
+            # A reading is due the day before the lecture it's for.
+            resolved[i] = _before_lecture(it, lectures) or _before_lecture(it, lectures, _repair(it, text, today, term, known)) or resolved[i]
+        elif it["kind"] in ("deadline", "event"):
+            # Only schedule entries (deadlines, sessions): general instructions such
+            # as "read the papers" sit under headings they don't belong to.
+            resolved[i] = _repair(it, text, today, term, known) or resolved[i]
+
+    keep, undated, seen = [], [], []
+    for i, it in enumerate(items):
+        if _duplicate(it, resolved[i], seen):
+            continue
+        if it["kind"] == "task" and not resolved[i].value and not it.get("question"):
+            undated.append(i)
+            continue
+        last = (resolved[i].window or resolved[i].value or "")[-10:]  # a week's task is open until the week ends
+        if it["kind"] == "task" and last and last < (today - timedelta(days=1)).isoformat():
+            continue  # e.g. the reading for a lecture that has already happened
+        keep.append(i)
+    return resolved, keep, undated
+
+
+def _second_look(llm, context, text, items) -> dict:
+    """n → {"quote", "when"} from the model, for items whose quote or date didn't check out."""
+    listing = "\n".join(f"{n}. {it['title']} (reported quote: “{it.get('quote') or ''}”)" for n, it in enumerate(items))
+    try:
+        got = _ask_model(llm, SECOND_LOOK_PROMPT, SECOND_LOOK_SCHEMA, f"{context}\n\nItems:\n{listing}", text[:QUESTIONS_CHARS])["items"]
+    except Exception:
+        return {}  # a failed second look leaves them as left out
+    return {g["n"]: g for g in got if isinstance(g.get("n"), int) and 0 <= g["n"] < len(items) and (g.get("quote") or "").strip()}
+
+
 def _propose_all(con, llm, clock, source_id, text, prior=None):
     prior = prior or {}
     matched = set()
@@ -591,57 +689,42 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
                 meetings.append((courses.get(c["number"]), short, m))
     only = next(iter(courses.values())) if len(courses) == 1 else None
 
-    # Pass B: items, a chunk at a time.
-    items = []
+    # Pass B: items, a chunk at a time. Ones whose quote doesn't check out get a second look.
+    items, missed = [], []
     for part in chunks(text):
-        items += [it for it in _items(llm, context, part) if keep(it, it["title"])]
-    # Regular lectures ("Lecture 10: Thursday, November 5 — …") come with the
-    # class-meeting Event; models list them anyway.
-    items = [it for it in items if not (it["kind"] == "event" and re.match(r"\s*lecture\s*\d+\b", it["title"], re.I))]
-    for it in items:
-        it["title"] = capitalize(it["title"].strip())
-        if re.match(r"no class\b", it["title"], re.I):
-            it["kind"] = "no_class"  # a day off, not something to do
+        for it in _items(llm, context, part):
+            if (q := checked_quote(it.get("quote"), text)):
+                items.append(_tidy({**it, "quote": q}))
+            else:
+                missed.append(_tidy(it))
+    items = [it for it in items if it]
+    missed = [it for it in missed if it]
 
-    # Resolve absolute dates first so relative ones ("two days before Phase 1") can use them.
     term = current_term(con, today)
-    known, resolved = {}, {}
-    for rnd in ("absolute", "relative"):
-        for i, it in enumerate(items):
-            if ((it.get("when") or {}).get("type") == "relative") == (rnd == "relative"):
-                resolved[i] = resolve(it, today, term, known)
-                if resolved[i].value:
-                    known.setdefault(it["title"].lower(), resolved[i].value)
     lectures = lecture_dates(text, today, term)
-    lecture_days = {d for d, _ in lectures.values()}
-    for i, it in enumerate(items):
-        if it["kind"] == "task" and resolved[i].value and resolved[i].value[:10] in lecture_days \
-                and re.match(r"(read|review|skim)\b", it["title"], re.I):
-            # dated by its lecture's row: read it the day before
-            day = date.fromisoformat(resolved[i].value[:10]) - timedelta(days=1)
-            resolved[i] = When(day.isoformat())
-            continue
-        if resolved[i].value or (it.get("when") or {}).get("type") == "relative":
-            continue
-        if it["kind"] == "task":
-            # A reading is due the day before the lecture it's for.
-            resolved[i] = _before_lecture(it, lectures) or _before_lecture(it, lectures, _repair(it, text, today, term, known)) or resolved[i]
-        elif it["kind"] in ("deadline", "event"):
-            # Only schedule entries (deadlines, sessions): general instructions such
-            # as "read the papers" sit under headings they don't belong to.
-            resolved[i] = _repair(it, text, today, term, known) or resolved[i]
+    resolved, keep_items, undated = _settle(items, text, today, term, lectures)
 
-    keep_items, seen = [], []
-    for i, it in enumerate(items):
-        if _duplicate(it, resolved[i], seen):
-            continue
-        if it["kind"] == "task" and not resolved[i].value and not it.get("question"):
-            # No date and no lecture: a general instruction, not a task to plan.
-            dropped.append({"title": it["title"], "quote": it["quote"], "reason": "no date or lecture stated"})
-            continue
-        if it["kind"] == "task" and resolved[i].value and resolved[i].value[:10] < (today - timedelta(days=1)).isoformat():
-            continue  # e.g. the reading for a lecture that has already happened
-        keep_items.append(i)
+    # Second look: what was left out (quote not found, or no date) goes back to
+    # the model once, for the exact passage and its date. Whatever checks out
+    # is planned like everything else; the rest is listed as left out.
+    again = [(it, None) for it in missed] + [(items[i], i) for i in undated]
+    found = _second_look(llm, context, text, [it for it, _ in again]) if again else {}
+    for n, (it, at) in enumerate(again):
+        g = found.get(n)
+        q = g and checked_quote(g.get("quote"), text)
+        if q:
+            fixed = {**it, "quote": q, "when": g.get("when") or it.get("when") or {"type": "unknown"}}
+            if at is None:
+                items.append(fixed)
+            else:
+                items[at] = fixed
+        elif at is None:
+            dropped.append({"title": it["title"], "quote": it.get("quote"), "reason": "quote not found in the document"})
+    if found:
+        resolved, keep_items, undated = _settle(items, text, today, term, lectures)
+    for i in undated:
+        # No date and no lecture even on a second look: a general instruction, not a task to plan.
+        dropped.append({"title": items[i]["title"], "quote": items[i]["quote"], "reason": "no date or lecture stated"})
 
     # Questions: what only the student can tell us, from a pass of its own (so
     # asking doesn't depend on the item pass remembering to), from the items,

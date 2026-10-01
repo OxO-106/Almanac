@@ -417,3 +417,54 @@ def test_a_schedule_row_quoted_as_date_and_deliverable_is_kept(client, llm):
     (p,) = inbox(client)["proposals"]
     assert (p["summary"], p["ops"][0]["data"]["due"], p["quote"]) == ("Proposal one-pager", "2026-10-21", "Wed Oct 21 … Proposal one-pager")
     assert src["dropped"] == []
+
+
+SECTION = """In your first week, you must read and sign UCLA's Academic Integrity Statement.
+Lecture 12: Thursday, November 12 — Prompt Injection Defense & Preliminary Results
+Check-in
+P12. Defeating Prompt Injections by Design [IEEE SaTML 2026]
+Suggested team presentations: AgentDojo — provides the benchmark and threat model
+that CaMeL and other defenses are evaluated against; Agent-C (Temporal Constraints) — a
+different enforcement approach using SMT-checked temporal policies rather than
+architectural isolation, good contrast to CaMeL's privilege separation.
+Project check-in follows the paper discussion: encoding policies.md as rules and early
+Phase 2 porting work due.
+Lecture 13: Tuesday, November 17 — Plan Compliance & Intent Specifications
+"""
+
+
+def test_a_heading_and_a_note_further_down_its_section_make_one_quote(client, llm):
+    check_in = item(title="Project check-in", when={"type": "date", "month": 11, "day": 12},
+                    quote="Lecture 12: Thursday, November 12 ... Project check-in follows the paper discussion")
+    llm.replies = [course_reply([]), items_reply(check_in)]
+    upload(client, "kim.txt", SECTION.encode())
+    (p,) = inbox(client)["proposals"]
+    assert (p["summary"], p["ops"][0]["data"]["due"]) == ("Project check-in", "2026-11-12")
+
+
+def test_a_section_quote_may_not_cross_into_the_next_lecture(client, llm):
+    wrong = item(title="Plan compliance", when={"type": "date", "month": 11, "day": 12},
+                 quote="Lecture 12: Thursday, November 12 ... Plan Compliance & Intent Specifications")
+    llm.replies = [course_reply([]), items_reply(wrong)]
+    src = upload(client, "kim.txt", SECTION.encode())
+    assert inbox(client)["proposals"] == [] and [d["title"] for d in src["dropped"]] == ["Plan compliance"]
+
+
+def test_what_was_left_out_gets_a_second_look(client, llm):
+    misquoted = item(title="Project check-in", quote="Nov 12 project check-in: policies as rules", when={"type": "unknown"})
+    undated = item(kind="task", title="Read UCLA's Academic Integrity Statement", when={"type": "unknown"},
+                   quote="you must read and sign UCLA's Academic Integrity Statement")
+    invented = item(title="Final exam", quote="Final exam on December 10", when={"type": "unknown"})
+    second = json.dumps({"items": [  # 0, 1: quotes not found; 2: no date
+        {"n": 0, "quote": "Lecture 12: Thursday, November 12 ... Project check-in follows the paper discussion",
+         "when": {"type": "date", "month": 11, "day": 12}},
+        {"n": 1, "quote": "", "when": {"type": "unknown"}},
+        {"n": 2, "quote": "In your first week, you must read and sign UCLA's Academic Integrity Statement",
+         "when": {"type": "week", "week": 1}}]})
+    llm.replies = [course_reply([]), items_reply(misquoted, undated, invented), second]
+    src = upload(client, "kim.txt", SECTION.encode())
+    got = {p["summary"]: p["ops"][0]["data"] for p in inbox(client)["proposals"]}
+    assert got["Project check-in"]["due"] == "2026-11-12"
+    assert got["Read UCLA's Academic Integrity Statement"]["due"] == "2026-09-28"  # "first week" = Week 1
+    assert [d["title"] for d in src["dropped"]] == ["Final exam"]
+    assert "Items:\n0. Project check-in" in llm.requests[2]["messages"][-1]["content"]

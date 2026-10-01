@@ -496,8 +496,10 @@ async function retryUpload(id, button) {
 
 const uploadRow = s => {
   const status = s.status === "processing" ? `<span class="spin"></span> reading…` : s.status === "failed" ? `<span class="bad">couldn't read it</span>` : "read";
-  const dropped = s.dropped.length ? `<details class="upload-note"><summary>${s.dropped.length} thing${s.dropped.length > 1 ? "s" : ""} I left out (not found word for word)</summary>
-    <ul>${s.dropped.map(d => `<li>${esc(d.title)}: “${esc(d.quote || "")}”</li>`).join("")}</ul></details>` : "";
+  // what's still left out after a second look, each with why
+  const why = { "quote not found in the document": "I couldn't find it in the document", "no date or lecture stated": "the document doesn't say when" };
+  const dropped = s.dropped.length ? `<details class="upload-note"><summary>${s.dropped.length} thing${s.dropped.length > 1 ? "s" : ""} I left out, even on a second look</summary>
+    <ul>${s.dropped.map(d => `<li>${esc(d.title)}: ${esc(why[d.reason] || d.reason || "")}${d.quote ? ` (“${esc(d.quote)}”)` : ""}</li>`).join("")}</ul></details>` : "";
   return `<div class="upload">${ICON.doc}<span class="name">${esc(s.title)}</span><span class="meta">${status}</span>
     ${s.status === "failed" ? `<button class="btn small" onclick="retryUpload(${s.id}, this)">Try again</button>` : ""}
     ${s.status !== "processing" ? `<label class="btn small quiet" title="Upload an updated copy: only changes will be suggested">New version
