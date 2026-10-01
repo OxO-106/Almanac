@@ -919,10 +919,10 @@ def _propose_meetings(con, clock, source_id, course, short, m, term, no_class, p
     start = m.get("start") if time_in_quote(m.get("start"), m["quote"]) else None
     end = m.get("end") if time_in_quote(m.get("end"), m["quote"]) else None
     if not days or not term:
-        return
+        return None
     if not start:
         inbox.ask(con, clock, source_id, f"What time does {short} meet on {'/'.join(days)}? The document doesn't say.", m["quote"])
-        return
+        return None
     first = date.fromisoformat(term["week1"]) - timedelta(days=7)
     while first.isoformat() < term["instruction_begins"] or plan.DAYS[first.weekday()] not in days:
         first += timedelta(days=1)
@@ -938,7 +938,7 @@ def _propose_meetings(con, clock, source_id, course, short, m, term, no_class, p
         data["course_id"] = course
     if skip := sorted(set(holidays + no_class)):
         data["skip"] = ",".join(skip)
-    _emit(con, clock, source_id, "events", data, m["quote"], None, prior, matched, f"{short} class meetings")
+    return _emit(con, clock, source_id, "events", data, m["quote"], None, prior, matched, f"{short} class meetings")
 
 
 KIND = {"deadline": ("deadlines", "due"), "event": ("events", "start"), "task": ("tasks", "due"),

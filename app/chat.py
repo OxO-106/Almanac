@@ -20,6 +20,7 @@ from fastapi.responses import StreamingResponse
 from . import canvas, goals, inbox, ingest, merge
 from .clock import local
 from .db import WRITE
+from . import plan
 from .plan import current_term
 from .scheduler import notify
 
@@ -301,13 +302,16 @@ ACTIONS_PROMPT = """You turn what a student just told their personal assistant i
 - "question": something the assistant must ask to plan it properly (e.g. a due date they didn't give); "title" is the question.
 "quote": the student's exact words (copied from their message) that state it. Dates, as said: a calendar date → {"type":"date","month":M,"day":D}; "Friday" → {"type":"weekday","weekday":"FR"}; "next Friday" → add "next_week": true; "tomorrow", "in 3 days", "in two weeks" → {"type":"in_days","days":N}; anything else (e.g. "before Thanksgiving") → {"type":"unknown"}.
 Also, when the student said which course or project it belongs to: "course" as they named it (e.g. "Ding's CS 239"), "project" likewise.
+A class or meeting that repeats every week ("MW 2pm - 3:50pm"): one "event" with "days" (e.g. "MO,WE"), "start_time" and "end_time" (24-hour "HH:MM"), as said; no "when".
+Something to do after every class of a course ("watch the recording before the next class"): one "task" with "each_class": true; no "when". Don't ask for dates the schedule already gives.
 If the message is just conversation, return no actions."""
 
 ACTIONS_SCHEMA = {"type": "object", "properties": {"actions": {"type": "array", "items": {"type": "object", "properties": {
     "type": {"type": "string", "enum": ["task", "event", "deadline", "goal", "project", "memory", "progress", "question"]},
     "title": {"type": "string"}, "quote": {"type": "string"}, "when": ingest.WHEN, "done": {"type": "boolean"},
     "why": {"type": "string"}, "horizon": {"type": "string"}, "topic": {"type": "string"},
-    "course": {"type": "string"}, "project": {"type": "string"}},
+    "course": {"type": "string"}, "project": {"type": "string"},
+    "days": {"type": "string"}, "start_time": {"type": "string"}, "end_time": {"type": "string"}, "each_class": {"type": "boolean"}},
     "required": ["type", "title", "quote"]}}}, "required": ["actions"]}
 
 
@@ -402,12 +406,53 @@ def _match_course(con, named, text):
         return None
     said = (named + " " + text).lower()
     courses = [dict(r) for r in con.execute("select * from courses")]
-    by_name = [c for c in courses if c["instructor"].split()[-1].lower() in said and c["instructor"] != "Not stated"]
+    # whole words: "recording" doesn't name Ding
+    by_name = [c for c in courses if c["instructor"] != "Not stated"
+               and re.search(rf"\b{re.escape(c['instructor'].split()[-1].lower())}\b", said)]
     if len(by_name) == 1:
         return by_name[0]["id"]
-    compact = said.replace(" ", "")
-    by_number = [c for c in courses if c["number"].lower().replace(" ", "") in compact]
+    # by number, as written or by its digits ("CS269" is COM SCI 269), if only one course has it
+    def digits(number):
+        m = re.search(r"\d+[a-z]?", number.lower())
+        return m.group() if m else None
+    by_number = [c for c in courses if (n := digits(c["number"])) and re.search(rf"(?<!\d){n}(?![\da-z])", said)]
     return by_number[0]["id"] if len(by_number) == 1 else None
+
+
+def _days_said(days: list[str], quote: str) -> bool:
+    """Each weekday is in the student's words: by name ("Mondays", "Wed") or
+    in a letter run ("MW", "TTh", "MWF")."""
+    words = ingest._words(quote)
+    runs = [w for w in words if re.fullmatch(r"(m|tu|t|w|th|r|f|sa|su)+", w) and len(w) >= 2]
+    letter = {"MO": "m", "TU": "t", "WE": "w", "TH": ("th", "r"), "FR": "f", "SA": "sa", "SU": "su"}
+    for d in days:
+        name = ingest.DAY_NAMES[plan.DAYS.index(d)]
+        if any(w.startswith(name[:3]) for w in words):
+            continue
+        marks = letter[d] if isinstance(letter[d], tuple) else (letter[d],)
+        if not any(m in r for r in runs for m in marks):
+            return False
+    return True
+
+
+def _each_class(con, title, course, meeting, today, term):
+    """One task per class from today on, each due when the next class starts
+    ("watch the recording before the next class")."""
+    events = [{"end": None, "until": None, "skip": None, **meeting}] if meeting else [dict(r) for r in con.execute(
+        "select * from events where course_id = ? and repeat is not null", (course,))] if course is not None else []
+    if not events or not term:
+        return []
+    occ = plan.occurrences(events, (today - timedelta(days=7)).isoformat(), term["instruction_ends"])
+    out = []
+    for this, nxt in zip(occ, occ[1:]):
+        if nxt["start"][:10] < today.isoformat():
+            continue  # both already past; the latest class whose next one is ahead still counts
+        d = date.fromisoformat(this["start"][:10])
+        data = {"title": f"{title} ({d:%a %b} {d.day})", "due": nxt["start"], "do_date": max(this["start"][:10], today.isoformat())}
+        if course is not None:
+            data["course_id"] = course
+        out.append({"op": "create", "kind": "tasks", "data": data})
+    return out
 
 
 def _match_project(con, named, course_id, text):
@@ -431,6 +476,8 @@ def _actions(con, llm, clock, text, reply_id) -> list[int] | None:
     source = None
     made = []
     seen = set()
+    meetings = {}  # course → the weekly class event proposed in this message
+    acts.sort(key=lambda a: not (a.get("type") == "event" and a.get("days")))  # classes first: "after each class" needs them
     for a in acts:
         title = ingest.capitalize((a.get("title") or "").strip())
         if not title or title.lower() in seen or not ingest.quoted(a.get("quote"), text):
@@ -460,13 +507,33 @@ def _actions(con, llm, clock, text, reply_id) -> list[int] | None:
             table = {"task": "tasks", "event": "events", "deadline": "deadlines", "project": "projects"}.get(kind)
             if not table:
                 continue
+            course = _match_course(con, a.get("course"), text)
+            if table == "events" and a.get("days"):
+                # a weekly class: one repeating event over the term, like a syllabus's class times
+                days = [d for d in a["days"].upper().replace(" ", "").split(",") if d in plan.DAYS]
+                if days and _days_said(days, a["quote"]) and term:
+                    c = con.execute("select number, instructor from courses where id = ?", (course,)).fetchone() if course is not None else None
+                    short = f"{c['number']} · {c['instructor'].split()[-1]}" if c else title
+                    m = {"days": ",".join(days), "start": a.get("start_time"), "end": a.get("end_time"), "quote": a["quote"]}
+                    p = ingest._propose_meetings(con, clock, source, course, short, m, term, [], {}, set())
+                    if p:
+                        made.append(p["id"])
+                        meetings[course] = p["ops"][0]["data"]
+                    continue
+            if table == "tasks" and a.get("each_class"):
+                ops = _each_class(con, title, course, meetings.get(course), today, term)
+                if ops:
+                    p = inbox.propose(con, clock, source, f"{title} after each class, before the next ({len(ops)} tasks)", ops, a["quote"])
+                    if "id" in p:
+                        made.append(p["id"])
+                    continue
             w = ingest.resolve({"title": title, "quote": a["quote"], "when": a.get("when")}, today, term, {})
             data = {"title": title}
             if w.value:
                 data[DATE_FIELD[table]] = w.value
             if table == "events" and "start" not in data:
                 table = "tasks"  # an event without a time is something to do on no set date
-            if (course := _match_course(con, a.get("course"), text)) is not None:
+            if course is not None:
                 data["course_id"] = course
             if (project := _match_project(con, a.get("project"), data.get("course_id"), text)) is not None:
                 data["project_id"] = project
