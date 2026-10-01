@@ -152,3 +152,32 @@ def test_skipped_dates_are_left_out_of_the_calendar(client):
     client.post("/api/events", json={"title": "Lecture", "start": "2026-09-28T16:00", "repeat": "MO,WE", "skip": "2026-11-11"})
     starts = [e["start"] for e in client.get("/api/calendar", params={"start": "2026-11-09", "end": "2026-11-13"}).json()["events"]]
     assert starts == ["2026-11-09T16:00"]
+
+
+def test_answering_which_day_in_the_week_dates_the_item_even_once_accepted(client, llm):
+    llm.replies = [course(), items_reply(item(title="Midterm assessment", quote="Week 5: AI Functions practicum (midterm assessment)",
+                                              when={"type": "week", "week": 5}))]
+    upload(client, "cs269.txt", DOC.encode())
+    for p in inbox(client)["proposals"]:
+        client.post(f"/api/proposals/{p['id']}/accept")
+    (deadline,) = client.get("/api/deadlines").json()
+    assert deadline["window"] == "2026-10-26/2026-10-30"
+    assert client.get("/api/chat").json()["current"]["text"].endswith("Which day in Week 5 (Oct 26 – Oct 30) is “Midterm assessment”? "
+                                                                      "The document only gives the week.")
+    llm.replies = [json.dumps({"items": [{"n": 0, "when": {"type": "weekday", "weekday": "WE"}}]})]
+    client.post("/api/chat", json={"text": "It's on Wednesday"})
+    (deadline,) = client.get("/api/deadlines").json()
+    assert (deadline["due"], deadline["window"], deadline["provisional"]) == ("2026-10-28", None, 0)  # Week 5's Wednesday
+    assert "Updated Midterm assessment: Wed Oct 28." in client.get("/api/chat").json()["messages"][-1]["text"]
+
+
+def test_answering_with_tomorrow_dates_a_waiting_suggestion(client, llm, clock):
+    llm.replies = [course(), items_reply(item(title="Midterm assessment", quote="Week 5: AI Functions practicum (midterm assessment)",
+                                              when={"type": "week", "week": 5}))]
+    upload(client, "cs269.txt", DOC.encode())
+    client.get("/api/chat")
+    llm.replies = [json.dumps({"items": [{"n": 0, "when": {"type": "in_days", "days": 1}}]})]
+    client.post("/api/chat", json={"text": "I plan to finish it by the end of tomorrow"})
+    d = data(props(client)["Midterm assessment"])
+    assert d["due"] == (clock.now().date() + __import__("datetime").timedelta(days=1)).isoformat()
+    assert "window" not in d and "provisional" not in d

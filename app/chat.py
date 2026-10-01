@@ -240,6 +240,16 @@ def _answer(con, llm, clock, question, text):
             filled.append(f"{o['data']['number']} · {name}")
     undated = [(p, o) for p in waiting for o in p["ops"][:1]
                if o["op"] == "create" and o["kind"] in DATE_FIELD and not o["data"].get(DATE_FIELD[o["kind"]])]
+    # Items this question dates without holding them up ("Which day in Week 9 is …?"),
+    # whether still a suggestion or already accepted into the plan.
+    for pid in meta.get("fills", []):
+        if not _exists(con, pid):
+            continue
+        p = inbox._proposal(con, pid)
+        o = p["ops"][0]
+        if o["op"] == "create" and o["kind"] in DATE_FIELD and p["status"] in ("pending", "accepted") \
+                and not any(x["id"] == pid for x, _ in undated):
+            undated.append((p, o))
     if undated:
         today = local(clock.now()).date()
         listing = "\n".join(f"{i}. {o['data']['title']}" for i, (_, o) in enumerate(undated))
@@ -257,17 +267,28 @@ def _answer(con, llm, clock, question, text):
             # the date must be in the student's own words, like any other quote
             w = ingest.resolve({"title": o["data"]["title"], "quote": text, "when": g.get("when")},
                                today, current_term(con, today), {})
+            window = o["data"].get("window") or ""
+            if w.value and window and (g.get("when") or {}).get("type") == "weekday" and not (g["when"].get("next_week")):
+                # "Wednesday" to "which day in Week 5": that week's Wednesday, not this one
+                monday = date.fromisoformat(window[:10])
+                w = ingest.When((monday + timedelta(days=date.fromisoformat(w.value[:10]).weekday())).isoformat())
             if w.value:
-                o["data"][DATE_FIELD[o["kind"]]] = w.value
+                field = DATE_FIELD[o["kind"]]
+                o["data"][field] = w.value
+                o["data"].pop("window", None)  # the day is known now: no longer just "sometime in Week 9"
+                o["data"].pop("provisional", None)
                 with WRITE:
                     con.execute("update proposals set ops = ? where id = ?", (json.dumps(p["ops"]), p["id"]))
+                    if p["status"] == "accepted" and p.get("applied"):  # already in the plan: date it there
+                        con.execute(f"update {o['kind']} set {field} = ?, window = null, provisional = 0 where id = ?",
+                                    (w.value, p["applied"][0]))
                 filled.append(f"{o['data']['title']}: {_fmt(w.value)}")
     # Only say something when the answer changed something; a plain answer
     # is acknowledged by the next question's opening ("Got it. Next, …").
     n = len(waiting)
-    if n:
-        _say(con, clock, "assistant", (f"{'; '.join(filled)}. " if filled else "") +
-             f"{n} suggestion{'s' if n > 1 else ''} that {'were' if n > 1 else 'was'} waiting on this {'are' if n > 1 else 'is'} ready in Suggestions.")
+    if n or filled:
+        _say(con, clock, "assistant", (f"Updated {'; '.join(filled)}." if filled else "") + (" " if filled and n else "") +
+             (f"{n} suggestion{'s' if n > 1 else ''} that {'were' if n > 1 else 'was'} waiting on this {'are' if n > 1 else 'is'} ready in Suggestions." if n else ""))
 
 
 # ---- free conversation --------------------------------------------------------

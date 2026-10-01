@@ -673,7 +673,9 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
                 no_class.append(resolved[i].value[:10])
             continue
         course = courses.get(course_number(it.get("course") or "")) or only
-        _propose_item(con, clock, source_id, it, course, resolved[i], prior, matched, ask_draft(item_draft.get(i)))
+        made = _propose_item(con, clock, source_id, it, course, resolved[i], prior, matched, ask_draft(item_draft.get(i)))
+        if made and (q := ask_draft(week_draft.get(i))):
+            inbox.fills(con, q["id"], made["id"])  # "Which day in Week 9…?": its answer dates this item
 
     for course, short, m in meetings:
         _propose_meetings(con, clock, source_id, course, short, m, term, no_class, prior, matched)
@@ -780,8 +782,9 @@ def _emit(con, clock, source_id, kind, data, quote, question_id, prior, matched,
                and not (f == "provisional" and bool(data[f]) == bool(old.get(f)))}
     if changed:
         what = "; ".join(f"{f} {old.get(f) or 'none'} → {v}" for f, v in changed.items())
-        inbox.propose(con, clock, source_id, f"Update “{old['title']}”: {what}",
-                      [{"op": "update", "kind": kind, "id": old["id"], "data": changed}], quote, question_id)
+        p = inbox.propose(con, clock, source_id, f"Update “{old['title']}”: {what}",
+                          [{"op": "update", "kind": kind, "id": old["id"], "data": changed}], quote, question_id)
+        return p if "id" in p else None
 
 
 STOP = {"the", "a", "an", "and", "or", "of", "for", "to", "in", "on", "due", "your", "with"}
@@ -852,7 +855,7 @@ def _propose_item(con, clock, source_id, it, course, when: When, prior, matched,
     """question: the (merged) question the item waits on, if the model drafted one."""
     kind, field = KIND.get(it["kind"], (None, None))
     if not kind:
-        return
+        return None
     data = {"title": it["title"]}
     if when.value:
         data[field] = when.value
@@ -865,7 +868,7 @@ def _propose_item(con, clock, source_id, it, course, when: When, prior, matched,
     if kind == "events" and "start" not in data:
         # An Event needs a time; without one it's a Deadline-like marker until answered.
         kind = "deadlines"
-    _emit(con, clock, source_id, kind, data, it["quote"], question["id"] if question else None, prior, matched)
+    return _emit(con, clock, source_id, kind, data, it["quote"], question["id"] if question else None, prior, matched)
 
 
 # ---- HTTP ---------------------------------------------------------------------

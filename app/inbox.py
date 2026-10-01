@@ -67,6 +67,17 @@ def ask(con, clock, source_id, text, quote=None, meta=None) -> dict:
         return dict(con.execute("select * from questions where id = ?", (cur.lastrowid,)).fetchone())
 
 
+def fills(con, question_id, proposal_id):
+    """Record that answering this question gives the date of what the proposal
+    adds (it doesn't hold the proposal up: the item stands without it)."""
+    with WRITE:
+        row = con.execute("select meta from questions where id = ?", (question_id,)).fetchone()
+        meta = json.loads(row["meta"]) if row and row["meta"] else {}
+        if proposal_id not in meta.setdefault("fills", []):
+            meta["fills"].append(proposal_id)
+        con.execute("update questions set meta = ? where id = ?", (json.dumps(meta), question_id))
+
+
 def _resolve(con, value, created):
     m = REF.match(value) if isinstance(value, str) else None
     if not m:
