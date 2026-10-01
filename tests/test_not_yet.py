@@ -44,11 +44,13 @@ def test_a_real_answer_is_still_an_answer(client, question):
     assert answer(client, "Not yet sure between ReAct and Reflexion, probably ReAct because I already read it twice").endswith("That's all I wanted to ask for now.")
 
 
-@pytest.mark.parametrize("text", ["not yet", "Don't know", "idk", "No idea", "still deciding", "I haven't chosen", "dunno, next week"])
+@pytest.mark.parametrize("text", ["not yet", "Don't know", "idk", "No idea", "still deciding", "I haven't chosen", "dunno, next week",
+                                  "Haven't sign up yet", "not assigned yet", "no team yet", "will decide later", "TBD"])
 def test_ways_of_saying_not_yet(text):
     assert chat._later(text, False) == 7
 
 
 def test_answers_that_are_not_not_yet():
     assert chat._later("ReAct", False) is None
-    assert chat._later("Notably the second one", False) is None
+    for text in ("Notably the second one", "No", "Monday", "Miryung Kim", "Not relevant to me", "P10, on Nov 5", "Nothing, I'm solo"):
+        assert chat._later(text, False) is None, text

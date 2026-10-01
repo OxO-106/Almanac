@@ -160,9 +160,13 @@ def _fmt(value: str) -> str:
     return f"{d:%a %b} {d.day}" + (f", {value[11:16]}" if len(value) > 10 else "")
 
 
+# "Not yet" in its many forms: at the start of a short answer ("haven't sign
+# up yet", "I have not chosen", "not assigned", "don't know", "TBD"), or
+# "yet" / "later" anywhere in one ("no team yet", "will decide later").
 UNDECIDED = re.compile(
-    r"\s*(i\s+)?(not\s+(yet|sure|decided)|(have\s*n[o']?t|did\s*n[o']?t|have\s+not|did\s+not)\s+(decided?|chosen|choose|picked?|signed|joined|heard|figured)"
-    r"|(do\s*n[o']?t|do\s+not)\s+know|no\s+idea|no\s+clue|undecided|unsure|still\s+deciding|tbd|idk|dunno)\b", re.I)
+    r"\s*(i\s+)?((have|has|did|do)\s*n[o']?t\b|(have|has|did|do)\s+not\b|not\s+(yet|sure|decided|assigned|registered|signed|chosen|picked|known|certain)\b"
+    r"|no\s+(idea|clue)\b|undecided|unsure|still\s+(deciding|thinking|figuring)|tbd\b|idk\b|dunno\b)", re.I)
+UNDECIDED_ANYWHERE = re.compile(r"\b(yet|later|tbd|undecided)\b", re.I)
 NUMBERS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "a": 1, "an": 1, "a couple of": 2, "a few": 3}
 
 
@@ -171,7 +175,7 @@ def _later(text, urgent) -> int | None:
     know": when they said ("tomorrow", "in 2 days", "next week"), else 3 days
     if something is waiting on it, else a week."""
     t = " ".join(text.lower().split())
-    if len(t.split()) > 12 or not UNDECIDED.match(t):
+    if len(t.split()) > 12 or not (UNDECIDED.match(t) or UNDECIDED_ANYWHERE.search(t)):
         return None
     if "tomorrow" in t:
         return 1
@@ -185,7 +189,7 @@ def _later(text, urgent) -> int | None:
 
 def _answer(con, llm, clock, question, text):
     blocking = con.execute("select count(*) from proposals where question_id = ? and status = 'pending'", (question["id"],)).fetchone()[0]
-    urgent = blocking or re.match(r"(when|which day|what (date|time))\b", question["text"], re.I)
+    urgent = blocking or re.search(r"\b(when|dates?|day|time|slot)\b", question["text"], re.I)  # a date for the plan
     if (days := _later(text, urgent)) is not None:
         # Not decided yet: keep the question and ask again later, not "noted".
         again = clock.now() + timedelta(days=days)
