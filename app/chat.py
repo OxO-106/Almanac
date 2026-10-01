@@ -227,6 +227,9 @@ ACTIONS_PROMPT = """You turn what a student just told their personal assistant i
 - "memory": a lasting fact about the student worth remembering (habits, preferences, constraints, people); "title" is the fact, "topic" a short label.
 - "progress": they finished (or undid) one of their open tasks listed below; "title" is that task's title, "done": true.
 - "question": something the assistant must ask to plan it properly (e.g. a due date they didn't give); "title" is the question.
+- "change": something already in their plan (listed below) changes: moved to another date ("when"), a new time ("start_time", 24-hour "HH:MM"), place or link ("location"), or name ("new_title"). "title" is the item as listed.
+- "remove": they want an item in their plan gone (or a routine stopped); "title" is the item as listed.
+Use "change" or "remove", not a new item, when they talk about something already planned. Statements count, not only requests: "the CS 259 lecture is at 3pm now" is a change (start_time "15:00"); "the gating test moved to Monday" is a change (when); "I dropped the reading group" is a remove.
 "quote": the student's exact words (copied from their message) that state it. Dates, as said: a calendar date → {"type":"date","month":M,"day":D}; "Friday" → {"type":"weekday","weekday":"FR"}; "next Friday" → add "next_week": true; "tomorrow", "in 3 days", "in two weeks" → {"type":"in_days","days":N}; anything else (e.g. "before Thanksgiving") → {"type":"unknown"}.
 Also, when the student said which course or project it belongs to: "course" as they named it (e.g. "Ding's CS 239"), "project" likewise.
 A class or meeting that repeats every week ("MW 2pm - 3:50pm"): one "event" with "days" (e.g. "MO,WE"), "start_time" and "end_time" (24-hour "HH:MM"), as said; no "when".
@@ -234,11 +237,13 @@ Something to do after every class of a course ("watch the recording before the n
 If the message is just conversation, return no actions."""
 
 ACTIONS_SCHEMA = {"type": "object", "properties": {"actions": {"type": "array", "items": {"type": "object", "properties": {
-    "type": {"type": "string", "enum": ["task", "event", "deadline", "goal", "project", "memory", "progress", "question"]},
+    "type": {"type": "string", "enum": ["task", "event", "deadline", "goal", "project", "memory", "progress", "question",
+                                        "change", "remove"]},
     "title": {"type": "string"}, "quote": {"type": "string"}, "when": ingest.WHEN, "done": {"type": "boolean"},
     "why": {"type": "string"}, "horizon": {"type": "string"}, "topic": {"type": "string"},
     "course": {"type": "string"}, "project": {"type": "string"},
-    "days": {"type": "string"}, "start_time": {"type": "string"}, "end_time": {"type": "string"}, "each_class": {"type": "boolean"}},
+    "days": {"type": "string"}, "start_time": {"type": "string"}, "end_time": {"type": "string"}, "each_class": {"type": "boolean"},
+    "location": {"type": "string"}, "new_title": {"type": "string"}},
     "required": ["type", "title", "quote"]}}}, "required": ["actions"]}
 
 
@@ -250,12 +255,19 @@ def _context(con, clock) -> str:
                  now.date().isoformat(), (now.date() + timedelta(days=14)).isoformat(),
                  now.date().isoformat(), (now.date() + timedelta(days=14)).isoformat())
     open_tasks = q("select title from tasks where status = 'open' order by coalesce(do_date, due, '9999'), id limit 40")
+    weekly = q("select title, start, end, repeat, location from events where repeat is not null")
+    dated = q("select title, start as at from events where repeat is null and substr(start, 1, 10) >= ? "
+              "union all select title, due from deadlines where substr(due, 1, 10) >= ? order by at limit 30",
+              now.date().isoformat(), now.date().isoformat())
     goals = q("select title from goals where status = 'active'")
     memories = q("select text from memories order by id limit 40")
     lines = lambda rows, f: "\n".join(f"- {f(r)}" for r in rows) or "- none"
     return (f"Today is {now:%A, %B %d, %Y}, {now:%H:%M} in Los Angeles.\n\n"
             f"Coming up in the next two weeks:\n{lines(upcoming, lambda r: f'{r['at']}: {r['title']}')}\n\n"
-            f"Open tasks:\n{lines(open_tasks, lambda r: r['title'])}\n\nGoals:\n{lines(goals, lambda r: r['title'])}\n\n"
+            f"Open tasks:\n{lines(open_tasks, lambda r: r['title'])}\n\n"
+            f"Weekly classes:\n{lines(weekly, lambda r: f'{r['title']}: {r['repeat']} {r['start'][11:16]}' + (f'-{r['end'][11:16]}' if r['end'] else '') + (f' ({r['location']})' if r['location'] else ''))}\n\n"
+            f"Planned sessions and deadlines:\n{lines(dated, lambda r: f'{r['title']} ({r['at']})')}\n\n"
+            f"Goals:\n{lines(goals, lambda r: r['title'])}\n\n"
             f"What you know about the student:\n{lines(memories, lambda r: r['text'])}")
 
 
@@ -312,6 +324,95 @@ def _chat_source(con, clock, text) -> int:
             return row["id"]
         return con.execute("insert into sources (kind, title, text, status, created_at) values ('chat', ?, ?, 'done', ?)",
                            (title, text, today.strftime("%Y-%m-%dT%H:%M"))).lastrowid
+
+
+def _match_item(con, title, course=None):
+    """(kind, row) of the plan item the student means: most title words in
+    common (at least half), the named course breaking ties."""
+    title = re.sub(r"^\s*\d{4}-\d{2}-\d{2}(T\d\d:\d\d)?\s*:\s*|\s*\(\d{4}-\d{2}-\d{2}[^)]*\)\s*$", "", title)  # as listed to the model
+    want = set(ingest._words(title)) - ingest.STOP
+    best, score = None, 0.0
+    for kind in ("events", "deadlines", "tasks"):
+        for r in con.execute(f"select * from {kind}" + (" where status = 'open'" if kind == "tasks" else "")):
+            have = set(ingest._words(r["title"])) - ingest.STOP
+            s = len(want & have) / max(1, len(want)) + (0.25 if course is not None and r["course_id"] == course else 0)
+            if s > score:
+                best, score = (kind, dict(r)), s
+    return best if score >= 0.5 else None
+
+
+def _series(con, kind, row) -> list[int]:
+    """The routine an item belongs to: the items its proposal created with the
+    same name ("Watch CS269 recording (Mon Oct 5)", "(Wed Oct 7)", …)."""
+    o = plan.origin(con, kind, row["id"])
+    if not o:
+        return [row["id"]]
+    stem = row["title"].split(" (")[0]
+    ids = [r["item_id"] for r in con.execute("select item_id from history where proposal_id = ? and kind = ? and op = 'create'",
+                                             (o["id"], kind))]
+    return [i for i in ids if (r := con.execute(f"select title from {kind} where id = ?", (i,)).fetchone())
+            and r["title"].split(" (")[0] == stem] or [row["id"]]
+
+
+def _change_or_remove(con, clock, source, a, title, text, today, term):
+    """"Move the one-pager to Tuesday", "the CS 259 lecture is at 3 now", "delete
+    the gating test": a proposal changing or removing what's already planned.
+    New dates, times and places must be in the student's words."""
+    hit = _match_item(con, title, _match_course(con, a.get("course"), text))
+    if not hit:
+        return None
+    kind, row = hit
+    quote = a["quote"]
+    if a["type"] == "remove":
+        ids = _series(con, kind, row)
+        name = row["title"].split(" (")[0] if len(ids) > 1 else row["title"]
+        p = inbox.propose(con, clock, source, f"Remove “{name}”" + (f" ({len(ids)} {kind})" if len(ids) > 1 else ""),
+                          [{"op": "delete", "kind": kind, "id": i} for i in ids], quote)
+        return p if "id" in p else None
+    field = DATE_FIELD[kind]
+    data, said = {}, []
+    w = ingest.resolve({"title": row["title"], "quote": quote, "when": a.get("when")}, today, term, {}) if a.get("when") else None
+    old = row.get(field) or ""
+    if w and w.value:
+        day = w.value[:10]
+        data[field] = day + (old[10:] if len(old) > 10 and len(w.value) == 10 else w.value[10:])
+        if kind == "events" and row.get("end") and len(old) > 10:
+            data["end"] = day + row["end"][10:]
+        said.append(_fmt_day(data[field]))
+    if (t := a.get("start_time")) and ingest.time_in_quote(t, quote) and kind in ("events", "deadlines", "tasks") and old:
+        start = (data.get(field) or old)[:10] + "T" + t[:5]
+        if kind == "events" and row.get("end") and len(old) > 10:  # keep the length
+            from datetime import datetime as dt
+            length = dt.fromisoformat(row["end"]) - dt.fromisoformat(old)
+            data["end"] = (dt.fromisoformat(start) + length).isoformat(timespec="minutes")
+        data[field] = start
+        said.append(f"at {questions._fmt_time(t[:5])}")
+    if (loc := (a.get("location") or "").strip()) and kind == "events" and _place_ok(loc, text):
+        data["location"] = loc
+        said.append(f"at {loc}")
+    if (new := (a.get("new_title") or "").strip()) and set(ingest._words(new)) <= set(ingest._words(text)):
+        data["title"] = ingest.capitalize(new)
+        said.append(f"renamed “{data['title']}”")
+    if not data:
+        return None
+    if "provisional" in row and row["provisional"] and field in data:
+        data["provisional"] = False
+    if row.get("window") and field in data:
+        data["window"] = None
+    p = inbox.propose(con, clock, source, f"Change “{row['title']}”: {', '.join(said)}",
+                      [{"op": "update", "kind": kind, "id": row["id"], "data": data}], quote)
+    return p if "id" in p else None
+
+
+def _place_ok(loc, text) -> bool:
+    """A place the student wrote: in their words as written, and shaped like a
+    place (a capital, a number or a link), so "now" or "online later" isn't one."""
+    return loc in text and (loc[:1].isupper() or any(ch.isdigit() for ch in loc) or "http" in loc)
+
+
+def _fmt_day(value):
+    d = date.fromisoformat(value[:10])
+    return f"{d:%a %b} {d.day}" + (f", {questions._fmt_time(value[11:16])}" if len(value) > 10 else "")
 
 
 def _match_task(con, title):
@@ -418,6 +519,10 @@ def _actions(con, llm, clock, text, reply_id, message_id=None) -> list[int] | No
             with WRITE:  # the reply just asked it: the student's next message answers it
                 con.execute("update chat_messages set question_id = ? where id = ?", (q["id"], reply_id))
             continue
+        if kind in ("change", "remove"):
+            if (p := _change_or_remove(con, clock, source, a, title, text, today, term)):
+                made.append(p["id"])
+            continue
         if kind == "progress":
             task = _match_task(con, title)
             if not task:
@@ -436,6 +541,11 @@ def _actions(con, llm, clock, text, reply_id, message_id=None) -> list[int] | No
             if not table:
                 continue
             course = _match_course(con, a.get("course"), text)
+            if table == "events" and a.get("days") and (hit := _match_item(con, title, course)) and hit[1].get("repeat"):
+                # a class they already have, said again with a new time or place: a change, not a second class
+                if (p := _change_or_remove(con, clock, source, {**a, "type": "change"}, hit[1]["title"], text, today, term)):
+                    made.append(p["id"])
+                continue
             if table == "events" and a.get("days"):
                 # a weekly class: one repeating event over the term, like a syllabus's class times
                 days = [d for d in a["days"].upper().replace(" ", "").split(",") if d in plan.DAYS]
