@@ -17,9 +17,9 @@ def summaries(client):
 
 def test_a_known_course_number_with_a_different_instructor_is_asked_about(client, llm):
     client.post("/api/courses", json={"number": "CS 239", "instructor": "Robin Ding"})
-    llm.replies = [course_reply([{"number": "CS 239", "instructor": "Miryung Kim", "quote": "Instructor: Robin Ding", "meetings": []}]),
+    llm.replies = [course_reply([{"number": "CS 239", "instructor": "Miryung Kim", "quote": "Instructor: Miryung Kim", "meetings": []}]),
                    items_reply()]
-    upload(client, "kim.txt", SYLLABUS.encode())
+    upload(client, "kim.txt", SYLLABUS.replace("Robin Ding", "Miryung Kim").encode())
     (course,) = inbox(client)["proposals"]
     assert course["blocked_by"] == ("You already have CS 239 · Robin Ding. Is CS 239 · Miryung Kim a different course? "
                                     "If it's the same one, reject this and correct the instructor instead.")

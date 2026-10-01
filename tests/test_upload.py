@@ -134,13 +134,63 @@ def test_an_ellipsis_may_skip_a_table_rows_cells_but_not_whole_rows(client, llm)
     assert [d["title"] for d in src["dropped"]] == ["Final project report"]
 
 
-def test_an_undated_task_is_proposed_without_a_question(client, llm):
+def test_a_task_with_no_date_or_lecture_is_left_out(client, llm):
+    # "Read papers before lectures" is an instruction, not something to plan.
     llm.replies = [course_reply([]), items_reply(item(kind="task", title="Read papers before lectures",
                                                       quote="Select a paper", when={"type": "unknown"}))]
-    upload(client, "cs239.txt", SYLLABUS.encode())
+    src = upload(client, "cs239.txt", SYLLABUS.encode())
     box = inbox(client)
-    assert [p["summary"] for p in box["proposals"]] == ["Read papers before lectures"]
-    assert box["questions"] == []
+    assert box["proposals"] == [] and box["questions"] == []
+    assert [(d["title"], d["reason"]) for d in src["dropped"]] == [("Read papers before lectures", "no date or lecture stated")]
+
+
+READINGS = """Course Schedule
+Lecture 4: Thursday, October 8 — Search over Reasoning States
+P4. Tree of Thoughts
+Lecture 5: Tuesday, October 13 — Agent-Computer Interfaces
+P5. SWE-agent
+Reading list
+Papers marked [Required] must be read before the corresponding lecture.
+P5. SWE-agent: Agent-Computer Interfaces Enable Automated Software Engineering. [NeurIPS
+2024] [Required — Lecture 5] (John Yang)
+"""
+
+
+def test_a_reading_is_due_the_day_before_its_lecture(client, llm):
+    tagged = item(kind="task", title="Read P5. SWE-agent", when={"type": "unknown"},
+                  quote="P5. SWE-agent: Agent-Computer Interfaces Enable Automated Software Engineering. [NeurIPS 2024] [Required — Lecture 5]")
+    in_schedule = item(kind="task", title="Read P4. Tree of Thoughts", quote="P4. Tree of Thoughts", when={"type": "unknown"})
+    llm.replies = [course_reply([]), items_reply(tagged, in_schedule)]
+    upload(client, "kim.txt", READINGS.encode())
+    got = {p["summary"]: p for p in inbox(client)["proposals"]}
+    assert got["Read P5. SWE-agent"]["ops"][0]["data"]["due"] == "2026-10-12"  # Lecture 5 is Tue Oct 13
+    assert got["Read P5. SWE-agent"]["quote"].startswith("Lecture 5: Tuesday, October 13")
+    assert got["Read P4. Tree of Thoughts"]["ops"][0]["data"]["due"] == "2026-10-07"  # under Lecture 4, Thu Oct 8
+
+
+def test_questions_already_open_for_the_course_are_not_asked_again(client, llm):
+    q1 = json.dumps({"questions": [{"question": "Which paper did you register to present?", "quote": "Select a paper and register"}]})
+    llm.replies = [course_reply(), items_reply(), q1]
+    upload(client, "cs239.txt", SYLLABUS.encode())
+    q2 = json.dumps({"questions": [
+        {"question": "Which paper will you present?", "quote": "Select a paper and register"},
+        {"question": "Have you already signed up for a slot?", "quote": "Select a paper and register"}]})
+    merged = json.dumps({"merged": [{"question": "Which paper did you register to present?", "from": [0, 1]}]})
+    llm.replies = [course_reply(), items_reply(), q2, merged]
+    upload(client, "cs239 schedule.txt", SYLLABUS.encode())
+    assert [q["text"] for q in inbox(client)["questions"]] == ["Which paper did you register to present?"]
+    listing = llm.requests[-1]["messages"][-1]["content"]
+    assert "1. Which paper did you register to present? (already asked)" in listing
+    assert "Have you already" not in listing  # yes/no about something done: not asked
+
+
+def test_a_question_code_must_ask_is_kept_even_if_the_merge_drops_it(client, llm):
+    drafts = json.dumps({"questions": [{"question": "Which paper are you presenting?", "quote": "Select a paper and register"}]})
+    undated = item(title="Final report", quote="Instructor: Robin Ding", when={"type": "unknown"})
+    llm.replies = [course_reply(), items_reply(undated), drafts, json.dumps({"merged": [{"question": "Which paper are you presenting?", "from": [0]}]})]
+    upload(client, "cs239.txt", SYLLABUS.encode())
+    assert sorted(q["text"] for q in inbox(client)["questions"]) == [
+        "When is “Final report” due? The document doesn't say.", "Which paper are you presenting?"]
 
 
 def test_a_course_without_a_named_instructor_is_asked_about(client, llm):
@@ -335,3 +385,22 @@ def test_only_failed_uploads_can_be_retried(client, llm):
     llm.replies = [course_reply(), items_reply()]
     src = upload(client, "cs239.txt", SYLLABUS.encode())
     assert client.post(f"/api/sources/{src['id']}/retry").status_code == 409
+
+
+def test_a_reading_dated_by_its_lecture_row_moves_to_the_day_before_and_merges(client, llm):
+    from_row = item(kind="task", title="Read P5. SWE-agent", quote="Lecture 5: Tuesday, October 13 ... P5. SWE-agent",
+                    when={"type": "date", "month": 10, "day": 13})
+    from_list = item(kind="task", title="Read SWE-agent: Agent-Computer Interfaces", when={"type": "unknown"},
+                     quote="P5. SWE-agent: Agent-Computer Interfaces Enable Automated Software Engineering. [NeurIPS 2024] [Required — Lecture 5]")
+    llm.replies = [course_reply([]), items_reply(from_row, from_list)]
+    upload(client, "kim.txt", READINGS.encode())
+    assert [(p["summary"], p["ops"][0]["data"]["due"]) for p in inbox(client)["proposals"]] == [("Read P5. SWE-agent", "2026-10-12")]
+
+
+def test_someone_named_only_in_passing_is_not_taken_for_the_instructor(client, llm):
+    doc = "CS 239 Autonomous Software Engineering Agents\nThaddy will give a tutorial on multi-agent frameworks.\n"
+    llm.replies = [course_reply([{"number": "CS 239", "instructor": "Thaddy", "title": "Autonomous Software Engineering Agents",
+                                  "quote": "Thaddy will give a tutorial", "meetings": []}]), items_reply()]
+    upload(client, "kim.txt", doc.encode())
+    assert [q["text"] for q in inbox(client)["questions"]] == [
+        "Who teaches CS 239: Autonomous Software Engineering Agents? The document doesn't name the instructor."]

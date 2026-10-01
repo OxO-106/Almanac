@@ -111,7 +111,7 @@ ITEMS_PROMPT = RULES + """
 Task: list everything in this part of the document the student must attend, submit or do:
 - "deadline": something due or submitted by a moment (registration, report, sign-up).
 - "event": a scheduled session the student attends that is not a regular lecture (exam, tutorial, presentation day, check-in, guest lecture).
-- "task": work to do before a moment (e.g. read the assigned paper before its lecture).
+- "task": a specific piece of work to do before a moment. List each assigned reading on its own, titled "Read <paper or chapter>", and quote the line that ties it to its lecture or date (e.g. "[Required — Lecture 5]"). Not general expectations that apply every week or to whoever presents ("read the papers before class", "participate in discussion", "bring an annotated copy").
 - "project": a multi-part deliverable spanning weeks (a course project, a presentation to prepare).
 - "question": a fact only the student can supply that decides WHEN something happens or WHETHER a task exists for them (which paper they present and so on which date, their team, their presentation slot, a choice between options such as an exam or a project). Not questions about the content of their work. Write the question to ask them, addressed to "you", as a full sentence ending in "?", in "question".
 Also set "question" on any other item whose date depends on the student's choice or assignment.
@@ -151,36 +151,61 @@ QUESTIONS_CHARS = 60000
 MERGE_PROMPT = """You help a personal assistant decide what to ask a student about one course document. Below are draft questions, numbered. Many ask the same thing in different words.
 - Merge drafts that ask the same thing into one question, worded clearly, addressed to "you", ending in "?".
 - Drop drafts that aren't needed to know WHEN something happens for the student or WHETHER a task applies to them (course content, grading, whether they already did something, reminders).
-- Keep at most 6 questions, most important first.
-Return each kept question with "from": the numbers of every draft it covers."""
+- Never drop a draft asking when something is due or which day it happens; merge it only with drafts about the same thing.
+- Questions marked "already asked" are waiting for the student's answer from another document of the same course. If a draft asks the same thing, put it in that question's group and keep that question's wording; never ask it twice.
+- Keep at most 8 questions, most important first.
+Return each kept question with "from": the numbers of every draft (and already-asked question) it covers."""
 
 MERGE_SCHEMA = {"type": "object", "properties": {"merged": {"type": "array", "items": {"type": "object", "properties": {
     "question": {"type": "string"}, "from": {"type": "array", "items": {"type": "integer"}}},
     "required": ["question", "from"]}}}, "required": ["merged"]}
 
 
-def _consolidate(llm, context, drafts):
-    """Draft index → (question, quote) to ask, or None if merged away/dropped.
+def _consolidate(llm, context, drafts, required=(), existing=()):
+    """Draft index → (question, quote) to ask, an existing open question (a
+    dict) that already asks it, or None if merged away/dropped. `required`:
+    drafts that may be merged but never dropped (when is it due, which day).
+    `existing`: questions already open for this course from other documents.
     If the model call fails, exact duplicates are merged and the rest kept."""
+    same = {q["text"].lower(): q for q in existing}
     exact = {}
-    final = [exact.setdefault(q.lower(), (q, quote)) for q, quote in drafts]
-    if len(drafts) < 2:
+    final = [same.get(q.lower()) or exact.setdefault(q.lower(), (q, quote)) for q, quote in drafts]
+    if len(drafts) + len(existing) < 2:
         return final
-    listing = "\n".join(f"{i}. {q}" for i, (q, _) in enumerate(drafts))
+    n = len(drafts)
+    listing = "\n".join([f"{i}. {q}" for i, (q, _) in enumerate(drafts)] +
+                        [f"{n + j}. {q['text']} (already asked)" for j, q in enumerate(existing)])
     try:
         merged = json.loads(llm.chat([{"role": "system", "content": MERGE_PROMPT},
                                       {"role": "user", "content": f"{context}\n\nDrafts:\n{listing}"}],
                                      schema=MERGE_SCHEMA, timeout=900))["merged"]
     except Exception:
         return final
-    out = [None] * len(drafts)
-    for m in merged[:6]:
-        members = [i for i in m.get("from") or [] if isinstance(i, int) and 0 <= i < len(drafts)]
+    out = [None] * n
+    for m in merged[:8]:
+        ids = [i for i in m.get("from") or [] if isinstance(i, int) and 0 <= i < n + len(existing)]
+        members = [i for i in ids if i < n]
+        old = next((existing[i - n] for i in ids if i >= n), None)
         q = capitalize((m.get("question") or "").strip())
-        if members and q.endswith("?"):
+        if members and (old or q.endswith("?")):
             for i in members:
-                out[i] = out[i] or (q, drafts[members[0]][1])
+                out[i] = out[i] or old or (q, drafts[members[0]][1])
+    for i in required:  # dropped by the model, but the answer is needed
+        out[i] = out[i] or final[i]
     return out
+
+
+ROLE = re.compile(r"\b(instructors?|professor|prof|lecturer|taught|teacher|faculty)\b")
+
+
+def named_as_instructor(name: str, text: str) -> bool:
+    """The document names this person as the instructor: a role word within a
+    line or so of their surname ("Instructor: Stefano Soatto", "Robin Ding /
+    Instructor"), not just anywhere ("Thaddy will give a tutorial")."""
+    t = _norm_keep_len(text)
+    surname = name.split()[-1].lower()
+    return any(ROLE.search(t[max(0, m.start() - 60):m.end() + 60])
+               for m in re.finditer(rf"\b{re.escape(surname)}\b", t))
 
 
 def capitalize(s: str) -> str:
@@ -194,11 +219,23 @@ CHUNK = 8000  # characters per items pass; the whole doc would overflow the answ
 def _ask_model(llm, prompt, schema, context, text):
     raw = llm.chat([{"role": "system", "content": prompt},
                     {"role": "user", "content": f"{context}\n\nDocument:\n\"\"\"\n{text}\n\"\"\""}],
-                   schema=schema, timeout=900)
+                   schema=schema, timeout=900, max_tokens=6000)
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
         raise ValueError(f"The model returned something that isn't valid JSON: {raw[:200]!r}")
+
+
+def _items(llm, context, part):
+    """The items in one part. A part with a long list (a reading list) can
+    overrun the answer: then read it as two halves."""
+    try:
+        return _ask_model(llm, ITEMS_PROMPT, ITEMS_SCHEMA, context, part)["items"]
+    except ValueError:
+        halves = chunks(part, len(part) // 2 + 1)
+        if len(part) < 2000 or len(halves) < 2:
+            raise
+        return [it for h in halves for it in _items(llm, context, h)]
 
 
 def chunks(text, size=CHUNK):
@@ -483,11 +520,15 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
         if not c["number"]:
             continue
         instructor = (c.get("instructor") or "").strip()
+        if instructor and not named_as_instructor(instructor, text):
+            instructor = c["instructor"] = ""  # e.g. a TA named for one tutorial: ask instead
         name = f"{c['number']} · {instructor or 'instructor not stated'}"
         if not keep(c, name):
             continue
-        # How questions name this document in chat: course code and name, not the file name.
-        label = f"{c['number']}: {c['title'].strip()}" if (c.get("title") or "").strip() else c["number"]
+        # How questions name this document in chat: course code, instructor (two
+        # courses can share a number) and name, not the file name.
+        who = f"{c['number']} · {instructor}" if instructor else c["number"]
+        label = f"{who}: {c['title'].strip()}" if (c.get("title") or "").strip() else who
         labels.append(label)
         with WRITE:
             con.execute("update sources set about = ? where id = ?", ("; ".join(labels), source_id))
@@ -527,43 +568,14 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
     # Pass B: items, a chunk at a time.
     items = []
     for part in chunks(text):
-        items += [it for it in _ask_model(llm, ITEMS_PROMPT, ITEMS_SCHEMA, context, part)["items"] if keep(it, it["title"])]
+        items += [it for it in _items(llm, context, part) if keep(it, it["title"])]
     # Regular lectures ("Lecture 10: Thursday, November 5 — …") come with the
     # class-meeting Event; models list them anyway.
     items = [it for it in items if not (it["kind"] == "event" and re.match(r"\s*lecture\s*\d+\b", it["title"], re.I))]
     for it in items:
         it["title"] = capitalize(it["title"].strip())
-
-    # Pass C: what only the student can tell us. Its own pass so asking doesn't
-    # depend on the item pass remembering to (models differ a lot there).
-    # Questions from both passes are drafts: merged and trimmed before asking.
-    drafts, item_draft = [], {}
-
-    def draft(q, quote):
-        q = capitalize((q or "").strip())
-        if q.endswith("?") and quoted(quote, text):
-            drafts.append((q, quote))
-            return len(drafts) - 1
-
-    for q in _ask_model(llm, QUESTIONS_PROMPT, QUESTIONS_SCHEMA, context, text[:QUESTIONS_CHARS])["questions"]:
-        if draft(q.get("question"), q.get("quote")) is None and q.get("question"):
-            dropped.append({"title": q["question"], "quote": q.get("quote"), "reason": "quote not found in the document"})
-    for i, it in enumerate(items):
-        if (d := draft(it.get("question") or (it["title"] if it["kind"] == "question" else ""), it["quote"])) is not None:
-            item_draft[i] = d
-    final = _consolidate(llm, context, drafts)
-    asked = {}
-
-    def ask_draft(d):
-        if d is None or final[d] is None:
-            return None
-        q, quote = final[d]
-        if q not in asked:
-            asked[q] = inbox.ask(con, clock, source_id, q, quote)
-        return asked[q]
-
-    for d in range(len(drafts)):
-        ask_draft(d)
+        if re.match(r"no class\b", it["title"], re.I):
+            it["kind"] = "no_class"  # a day off, not something to do
 
     # Resolve absolute dates first so relative ones ("two days before Phase 1") can use them.
     term = current_term(con, today)
@@ -574,17 +586,88 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
                 resolved[i] = resolve(it, today, term, known)
                 if resolved[i].value:
                     known.setdefault(it["title"].lower(), resolved[i].value)
+    lectures = lecture_dates(text, today, term)
+    lecture_days = {d for d, _ in lectures.values()}
     for i, it in enumerate(items):
-        # Only schedule entries (deadlines, sessions): general instructions such
-        # as "read the papers" sit under headings they don't belong to.
-        if not resolved[i].value and it["kind"] in ("deadline", "event") \
-                and (it.get("when") or {}).get("type") != "relative":
+        if it["kind"] == "task" and resolved[i].value and resolved[i].value[:10] in lecture_days \
+                and re.match(r"(read|review|skim)\b", it["title"], re.I):
+            # dated by its lecture's row: read it the day before
+            day = date.fromisoformat(resolved[i].value[:10]) - timedelta(days=1)
+            resolved[i] = When(day.isoformat())
+            continue
+        if resolved[i].value or (it.get("when") or {}).get("type") == "relative":
+            continue
+        if it["kind"] == "task":
+            # A reading is due the day before the lecture it's for.
+            resolved[i] = _before_lecture(it, lectures) or _before_lecture(it, lectures, _repair(it, text, today, term, known)) or resolved[i]
+        elif it["kind"] in ("deadline", "event"):
+            # Only schedule entries (deadlines, sessions): general instructions such
+            # as "read the papers" sit under headings they don't belong to.
             resolved[i] = _repair(it, text, today, term, known) or resolved[i]
 
-    no_class, seen = [], []
+    keep_items, seen = [], []
     for i, it in enumerate(items):
         if _duplicate(it, resolved[i], seen):
             continue
+        if it["kind"] == "task" and not resolved[i].value and not it.get("question"):
+            # No date and no lecture: a general instruction, not a task to plan.
+            dropped.append({"title": it["title"], "quote": it["quote"], "reason": "no date or lecture stated"})
+            continue
+        if it["kind"] == "task" and resolved[i].value and resolved[i].value[:10] < (today - timedelta(days=1)).isoformat():
+            continue  # e.g. the reading for a lecture that has already happened
+        keep_items.append(i)
+
+    # Questions: what only the student can tell us, from a pass of its own (so
+    # asking doesn't depend on the item pass remembering to), from the items,
+    # and the ones code must ask (no date; only a week). All are drafts, merged
+    # with each other and with what's already open for this course, then asked.
+    drafts, item_draft, week_draft, required = [], {}, {}, []
+
+    def draft(q, quote, check=True):
+        q = capitalize((q or "").strip())
+        if (q.endswith("?") or not check and "?" in q) and not re.match(r"(have|did) you\b", q, re.I) and (not check or quoted(quote, text)):
+            drafts.append((q, quote))
+            return len(drafts) - 1
+
+    for q in _ask_model(llm, QUESTIONS_PROMPT, QUESTIONS_SCHEMA, context, text[:QUESTIONS_CHARS])["questions"]:
+        if draft(q.get("question"), q.get("quote")) is None and q.get("question") and not quoted(q.get("quote"), text):
+            dropped.append({"title": q["question"], "quote": q.get("quote"), "reason": "quote not found in the document"})
+    for i in keep_items:
+        it, w = items[i], resolved[i]
+        kind = KIND.get(it["kind"], (None,))[0]
+        d = draft(it.get("question") or (it["title"] if it["kind"] == "question" else ""), it["quote"])
+        if d is None and kind in ("deadlines", "events", "projects") and not w.value:
+            # A deliverable or session without a stated date must be asked about.
+            d = draft(f"When is “{it['title']}”{'' if kind == 'events' else ' due'}? The document doesn't say.", it["quote"], False)
+            required.append(d)
+        if d is not None:
+            item_draft[i] = d
+        if w.ask:  # e.g. which day of the week: worth asking, but the item stands without it
+            week_draft[i] = draft(w.ask, it["quote"], False)
+            required.append(week_draft[i])
+    about = con.execute("select about from sources where id = ?", (source_id,)).fetchone()["about"]
+    existing = [dict(r) for r in con.execute(
+        "select q.* from questions q join sources s on s.id = q.source_id where q.status = 'open' "
+        "and s.about = ? and s.id != ?", (about, source_id))] if about else []
+    final = _consolidate(llm, context, drafts, required, existing)
+    asked = {}
+
+    def ask_draft(d):
+        if d is None or final[d] is None:
+            return None
+        if isinstance(final[d], dict):  # already open from another document
+            return final[d]
+        q, quote = final[d]
+        if q not in asked:
+            asked[q] = inbox.ask(con, clock, source_id, q, quote)
+        return asked[q]
+
+    for d in range(len(drafts)):
+        ask_draft(d)
+
+    no_class = []
+    for i in keep_items:
+        it = items[i]
         if it["kind"] == "no_class":
             if resolved[i].value and not resolved[i].window:
                 no_class.append(resolved[i].value[:10])
@@ -642,6 +725,44 @@ def _repair(it, text, today, term, known):
         return None
     it["quote"] = f"{quote.strip()} … {it['quote'].strip()}"
     return w
+
+
+LECTURE_HEADING = re.compile(
+    rf"^[^\w\n]*(?:lecture|class|session)\s+(?P<n>\d{{1,2}})\s*[:.\-–—]\s*"
+    rf"(?:(?:mon|tue|wed|thu|fri|sat|sun)\w*,?\s+)?(?P<month>{_MONTH_RE})\.?\s+(?P<day>\d{{1,2}})\b", re.I | re.M)
+LECTURE_REF = re.compile(r"\b(?:lecture|class|session)\s*[:#\-–—]?\s*(\d{1,2})\b", re.I)
+
+
+def lecture_dates(text, today, term) -> dict:
+    """Lecture number → (date, heading) from schedule lines such as
+    "Lecture 5: Tuesday, October 13 — Agent-Computer Interfaces"."""
+    out = {}
+    for m in LECTURE_HEADING.finditer(text):
+        month = next(i for i, name in enumerate(MONTHS, 1) if m.group("month").lower()[:3] == name[:3])
+        heading = m.group(0).strip(" \t-•*·")
+        w = resolve({"title": "", "quote": heading, "when": {"type": "date", "month": month, "day": int(m.group("day"))}},
+                    today, term, {})
+        if w.value:
+            out.setdefault(int(m.group("n")), (w.value[:10], heading))
+    return out
+
+
+def _before_lecture(it, lectures, under=None) -> When | None:
+    """A reading for Lecture N ("[Required — Lecture 5]") is due the day
+    before that lecture. `under`: the schedule row the item sits under, for
+    a reading listed in the schedule itself (titles starting "Read")."""
+    if under:
+        if not re.match(r"(read|review|skim)\b", it["title"], re.I):
+            return None
+        day = date.fromisoformat(under.value[:10])
+    else:
+        m = LECTURE_REF.search(_norm(it["quote"])) or LECTURE_REF.search(_norm(it["title"]))
+        if not m or int(m.group(1)) not in lectures:
+            return None
+        iso, heading = lectures[int(m.group(1))]
+        day = date.fromisoformat(iso)
+        it["quote"] = f"{heading} … {it['quote'].strip()}"
+    return When((day - timedelta(days=1)).isoformat())
 
 
 COMPARED = ("due", "start", "end", "deadline", "window", "repeat", "until", "skip", "location", "provisional")
@@ -730,13 +851,6 @@ def course_number(s: str) -> str:
 def _propose_item(con, clock, source_id, it, course, when: When, prior, matched, question=None):
     """question: the (merged) question the item waits on, if the model drafted one."""
     kind, field = KIND.get(it["kind"], (None, None))
-    if not question and kind in ("deadlines", "events", "projects") and not when.value:
-        # A deliverable or session without a stated date must be asked about.
-        # An undated task is just proposed undated.
-        question = inbox.ask(con, clock, source_id, f"When is “{it['title']}”{'' if kind == 'events' else ' due'}? "
-                             "The document doesn't say.", it["quote"])
-    if when.ask:  # e.g. which day of the week: worth asking, but the item stands without it
-        inbox.ask(con, clock, source_id, when.ask, it["quote"])
     if not kind:
         return
     data = {"title": it["title"]}
