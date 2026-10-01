@@ -313,6 +313,29 @@ def locate(quote: str, text: str):
     return None
 
 
+LEADING_DATE = re.compile(
+    r"^\W*((?:(?:mon|tue|wed|thu|fri|sat|sun)\w*,?\s+)?(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\.?\s+\d{1,2}(?:st|nd|rd|th)?\b,?)\s*(.+)$",
+    re.I | re.S)
+
+
+def row_quote(quote: str, text: str) -> str | None:
+    """A schedule row quoted as "<date> <deliverable>", skipping the row's
+    other cells without marking the gap ("Wed Oct 21 Proposal one-pager",
+    with the day's topic and papers in between). Accepted, as
+    "<date> … <deliverable>", when both are in the document within a row's
+    reach of each other; returns that quote, else None."""
+    m = LEADING_DATE.match(quote or "")
+    if not m or len(_words(m.group(2))) < 1:
+        return None
+    fixed = f"{m.group(1).strip()} … {m.group(2).strip()}"
+    at = locate(fixed, text)
+    if not at:
+        return None
+    # the same row: no other date line between the date and the deliverable
+    between = text[at[0]:at[1]].split("\n")[1:]
+    return None if any(DATE_HEADING.match(line) and not DATE_HEADING.match(line).group("week") for line in between) else fixed
+
+
 def _norm_keep_len(s: str) -> str:
     """Lower-case with typographic marks unified, same length as the input,
     so word offsets point into the original text."""
@@ -504,6 +527,9 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
 
     def keep(x, title):
         if quoted(x.get("quote"), text):
+            return True
+        if (row := row_quote(x.get("quote"), text)):
+            x["quote"] = row  # "Wed Oct 21 Proposal one-pager" → "Wed Oct 21 … Proposal one-pager"
             return True
         dropped.append({"title": title, "quote": x.get("quote"), "reason": "quote not found in the document"})
         return False

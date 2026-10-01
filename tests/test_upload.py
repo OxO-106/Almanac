@@ -404,3 +404,16 @@ def test_someone_named_only_in_passing_is_not_taken_for_the_instructor(client, l
     upload(client, "kim.txt", doc.encode())
     assert [q["text"] for q in inbox(client)["questions"]] == [
         "Who teaches CS 239: Autonomous Software Engineering Agents? The document doesn't name the instructor."]
+
+
+def test_a_schedule_row_quoted_as_date_and_deliverable_is_kept(client, llm):
+    # The model leaves out the row's topic and papers without marking the gap.
+    text = ("Wed Oct 21\nDistributed Training:\nMemory Optimization\nZeRO: Memory Optimizations Toward Training Trillion Parameter Models\n"
+            "ZeRO-Infinity: Breaking the GPU Memory Wall for Extreme Scale Deep Learning\nProposal\none-pager\n"
+            "Mon Oct 26\nDistributed Training:\nParallelism\n")
+    one_pager = item(title="Proposal one-pager", quote="Wed Oct 21 Proposal one-pager", when={"type": "date", "month": 10, "day": 21})
+    llm.replies = [course_reply([]), items_reply(one_pager)]
+    src = upload(client, "ding.txt", text.encode())
+    (p,) = inbox(client)["proposals"]
+    assert (p["summary"], p["ops"][0]["data"]["due"], p["quote"]) == ("Proposal one-pager", "2026-10-21", "Wed Oct 21 … Proposal one-pager")
+    assert src["dropped"] == []
