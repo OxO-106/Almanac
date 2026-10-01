@@ -17,7 +17,7 @@ from datetime import date, timedelta
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from . import canvas, goals, inbox, ingest, merge
+from . import goals, inbox, ingest, merge, questions
 from .clock import local
 from .db import WRITE
 from . import plan
@@ -149,32 +149,12 @@ def _exists(con, proposal_id) -> bool:
 
 def _options(con, question_id) -> list[str]:
     """Answers to offer as buttons, when the question has a fixed set."""
-    row = con.execute("select meta from questions where id = ?", (question_id,)).fetchone()
-    meta = json.loads(row["meta"]) if row and row["meta"] else {}
-    if meta.get("type") == "canvas_section":
-        return [f"{c['number']} · {c['instructor']}" for c in (dict(r) for r in con.execute(
-            f"select * from courses where id in ({','.join('?' * len(meta['courses']))})", meta["courses"]))]
-    return []
+    return questions.option_labels(con, question_id)
 
 
 # ---- answering a question -----------------------------------------------------
 
-ANSWER_PROMPT = """The student answered a question the assistant asked. For each numbered item waiting on the answer, report the date the answer gives for it, as written. A calendar date → {"type":"date","month":M,"day":D} (with "time":"HH:MM" and type "datetime" if a time is given). A weekday → {"type":"weekday","weekday":"MO".."SU"} (add "next_week": true for "next <day>"). "tomorrow", "in 3 days" → {"type":"in_days","days":N}. If the answer gives no date for an item, {"type":"unknown"}."""
-
-ANSWER_SCHEMA = {"type": "object", "properties": {"items": {"type": "array", "items": {"type": "object", "properties": {
-    "n": {"type": "integer"}, "when": ingest.WHEN}, "required": ["n", "when"]}}}, "required": ["items"]}
-
 DATE_FIELD = {"deadlines": "due", "tasks": "due", "events": "start", "projects": "deadline"}
-
-
-def _fmt_time(hhmm: str) -> str:
-    h, m = int(hhmm[:2]), hhmm[3:5]
-    return f"{h % 12 or 12}:{m} {'PM' if h >= 12 else 'AM'}"
-
-
-def _fmt(value: str) -> str:
-    d = date.fromisoformat(value[:10])
-    return f"{d:%a %b} {d.day}" + (f", {value[11:16]}" if len(value) > 10 else "")
 
 
 # "Not yet" in its many forms: at the start of a short answer ("haven't sign
@@ -220,119 +200,23 @@ def _snooze(con, clock, question_id, days):
 
 
 def _answer(con, llm, clock, question, text, message_id=None):
+    """A reply to the open question: "not yet" asks again later; anything else
+    goes to the handler for what the question is for (questions.py)."""
     q0 = con.execute("select status, answer, answered_at, snoozed_until from questions where id = ?", (question["id"],)).fetchone()
     _record(con, message_id, "questions_before", [question["id"], dict(q0) if q0 else None])
     if (days := _later(text, _urgent(con, question))) is not None:
-        # Not decided yet: keep the question and ask again later, not "noted".
         _snooze(con, clock, question["id"], days)
         return
-    row = con.execute("select meta from questions where id = ?", (question["id"],)).fetchone()
-    meta = json.loads(row["meta"]) if row and row["meta"] else {}
-    if meta.get("type") == "canvas_section":
-        linked = canvas.answer_section(con, question, meta, text)
-        if not linked:  # keep the question open and say what's needed
-            _say(con, clock, "assistant", "I couldn't tell which one you meant. Could you name the instructor?",
-                 question["id"])
-            return
-        with WRITE:
-            con.execute("update questions set answer = ?, status = 'answered', answered_at = ? where id = ?",
-                        (text, local(clock.now()).strftime("%Y-%m-%dT%H:%M"), question["id"]))
-        n = con.execute("select count(*) from proposals where question_id = ? and status = 'pending'", (question["id"],)).fetchone()[0]
-        _say(con, clock, "assistant", linked + (f" {n} suggestion{'s are' if n > 1 else ' is'} ready in Suggestions." if n else ""))
-        return
-    with WRITE:
-        con.execute("update questions set answer = ?, status = 'answered', answered_at = ? where id = ?",
-                    (text, local(clock.now()).strftime("%Y-%m-%dT%H:%M"), question["id"]))
-    waiting = [inbox._proposal(con, r["id"]) for r in con.execute(
-        "select id from proposals where question_id = ? and status = 'pending' order by id", (question["id"],))]
-    for pid in [p["id"] for p in waiting] + [x for x in meta.get("fills", []) if _exists(con, x)]:
-        r = con.execute("select ops, summary, status, applied from proposals where id = ?", (pid,)).fetchone()
-        if r["status"] == "pending":  # an accepted one is changed through the gate instead
-            _record(con, message_id, "proposals_before", [pid, r["ops"], r["summary"]])
-    filled = []
-    # "Who teaches …?": the answer is the instructor of the waiting course
-    for p in waiting:
-        o = p["ops"][0]
-        name = " ".join(text.strip().rstrip(".").split())
-        if o["op"] == "create" and o["kind"] == "courses" and o["data"].get("instructor") == "Not stated" \
-                and 0 < len(name.split()) <= 5 and len(name) <= 60:
-            o["data"]["instructor"] = name
-            with WRITE:
-                con.execute("update proposals set ops = ?, summary = ? where id = ?",
-                            (json.dumps(p["ops"]), f"Add course {o['data']['number']} · {name}", p["id"]))
-            filled.append(f"{o['data']['number']} · {name}")
-    undated = [(p, o) for p in waiting for o in p["ops"][:1]
-               if o["op"] == "create" and o["kind"] in DATE_FIELD and not o["data"].get(DATE_FIELD[o["kind"]])]
-    # Items this question dates without holding them up ("Which day in Week 9 is …?"),
-    # whether still a suggestion or already accepted into the plan.
-    for pid in meta.get("fills", []):
-        if not _exists(con, pid):
-            continue
-        p = inbox._proposal(con, pid)
-        o = p["ops"][0]
-        if o["op"] == "create" and o["kind"] in DATE_FIELD and p["status"] in ("pending", "accepted") \
-                and not any(x["id"] == pid for x, _ in undated):
-            undated.append((p, o))
-    today = local(clock.now()).date()
-    term = current_term(con, today)
-    if len(undated) == 1 and (wk := ingest.weekly(text)) and term:
-        # "When is Lecture?" → "MW 2:00pm - 3:50pm": a weekly event; a link in the answer is where
-        p, o = undated[0]
-        if p["status"] == "pending" and o["kind"] in ("events", "deadlines"):
-            link = re.search(r"https?://\S+", text)
-            o["kind"] = "events"
-            o["data"] = ingest.meeting_data(term, wk[0], wk[1], wk[2], o["data"]["title"], o["data"].get("course_id"),
-                                            link.group().rstrip(".,)") if link else None)
-            with WRITE:
-                con.execute("update proposals set ops = ? where id = ?", (json.dumps(p["ops"]), p["id"]))
-            days = "/".join(d[0] + d[1].lower() for d in wk[0])
-            filled.append(f"{o['data']['title']}: every {days}, {_fmt_time(wk[1])}" + (f"–{_fmt_time(wk[2])}" if wk[2] else ""))
-            undated = []
-    if undated:
-        listing = "\n".join(f"{i}. {o['data']['title']}" for i, (_, o) in enumerate(undated))
-        try:
-            got = json.loads(llm.chat([{"role": "system", "content": ANSWER_PROMPT},
-                                       {"role": "user", "content": f"Today is {today:%A, %B %d, %Y}.\nQuestion: {question['text']}\n"
-                                                                   f"Answer: {text}\n\nItems:\n{listing}"}],
-                                      schema=ANSWER_SCHEMA, timeout=300))["items"]
-        except Exception:
-            got = []
-        for g in got:
-            if not (isinstance(g.get("n"), int) and 0 <= g["n"] < len(undated)):
-                continue
-            p, o = undated[g["n"]]
-            # the date must be in the student's own words, like any other quote
-            w = ingest.resolve({"title": o["data"]["title"], "quote": text, "when": g.get("when")},
-                               today, current_term(con, today), {})
-            window = o["data"].get("window") or ""
-            if w.value and window and (g.get("when") or {}).get("type") == "weekday" and not (g["when"].get("next_week")):
-                # "Wednesday" to "which day in Week 5": that week's Wednesday, not this one
-                monday = date.fromisoformat(window[:10])
-                w = ingest.When((monday + timedelta(days=date.fromisoformat(w.value[:10]).weekday())).isoformat())
-            if w.value:
-                field = DATE_FIELD[o["kind"]]
-                if p["status"] == "accepted" and p.get("applied"):
-                    # already in the plan: date it there, through the gate (so Rewind can undo it)
-                    src = con.execute("select source_id from questions where id = ?", (question["id"],)).fetchone()
-                    done = inbox.propose_and_accept(
-                        con, clock, src["source_id"] if src else None, f"Date “{o['data']['title']}”: {_fmt(w.value)}",
-                        [{"op": "update", "kind": o["kind"], "id": p["applied"][0],
-                          "data": {field: w.value, "window": None, "provisional": False}}], text)
-                    if done:
-                        _record(con, message_id, "made", done["id"])
-                else:
-                    o["data"][field] = w.value
-                    o["data"].pop("window", None)  # the day is known now: no longer just "sometime in Week 9"
-                    o["data"].pop("provisional", None)
-                    with WRITE:
-                        con.execute("update proposals set ops = ? where id = ?", (json.dumps(p["ops"]), p["id"]))
-                filled.append(f"{o['data']['title']}: {_fmt(w.value)}")
-    # Only say something when the answer changed something; a plain answer
-    # is acknowledged by the next question's opening ("Got it. Next, …").
-    n = len(waiting)
-    if n or filled:
-        _say(con, clock, "assistant", (f"Updated {'; '.join(filled)}." if filled else "") + (" " if filled and n else "") +
-             (f"{n} suggestion{'s' if n > 1 else ''} that {'were' if n > 1 else 'was'} waiting on this {'are' if n > 1 else 'is'} ready in Suggestions." if n else ""))
+
+    def read(said):  # an answer that's for no particular item, read like a chat message
+        made = _actions(con, llm, clock, said, None, message_id)
+        if made:
+            _say(con, clock, "assistant", "Here's what I'd add. Check the dates are right:", proposals=made)
+
+    questions.answer(con, llm, clock, question["id"], text, questions.Reply(
+        say=lambda t, qid=None: _say(con, clock, "assistant", t, qid),
+        record=lambda key, value: _record(con, message_id, key, value),
+        read=read))
 
 
 # ---- free conversation --------------------------------------------------------
@@ -715,6 +599,8 @@ def rewind(con, message_id) -> str | None:
             e = json.loads(m["effects"]) if m["effects"] else {}
             for pid in reversed(e.get("made", [])):
                 inbox.withdraw(con, pid)
+            for pid in e.get("rejected", []):
+                con.execute("update proposals set status = 'pending', decided_at = null where id = ?", (pid,))
             for qid in e.get("asked", []):
                 con.execute("delete from questions where id = ?", (qid,))
             for pid, ops, summary in reversed(e.get("proposals_before", [])):

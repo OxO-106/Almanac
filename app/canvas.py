@@ -15,7 +15,7 @@ from datetime import date, datetime, timezone
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 
-from . import inbox, ingest, merge
+from . import asks, inbox, ingest, merge
 from .clock import LA, local
 from .db import WRITE, settings
 from .scheduler import JOBS, Job, notify
@@ -106,8 +106,9 @@ def _course_for(con, clock, source_id, code, ask=True):
         return matches[0]["id"], None
     if len(matches) > 1 and ask:
         names = " or ".join(f"{c['number']} · {c['instructor'].split()[-1]}" for c in matches)
-        q = inbox.ask(con, clock, source_id, f"Which of your courses is {sec[0]} ({sec[1]}) on Bruin Learn: {names}?",
-                      meta={"type": "canvas_section", "code": code, "courses": [c["id"] for c in matches]})
+        q = inbox.ask(con, clock, source_id, asks.which_section(sec[0], sec[1], names), None, "section",
+                      {"code": code, "courses": [c["id"] for c in matches]},
+                      [f"{c['number']} · {c['instructor']}" for c in matches])
         return None, q
     return None, None
 

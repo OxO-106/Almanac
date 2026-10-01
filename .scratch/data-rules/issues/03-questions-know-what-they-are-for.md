@@ -4,9 +4,15 @@
 
 **Blocked by:** 02
 
-**Status:** needs-triage
+**Status:** done
 
-- [ ] "October 21st" to "When must you submit the one-pager?" dates (or creates) the one-pager deadline
-- [ ] "MW 2–3:50pm, Zoom link …" to "When is Lecture?" makes a weekly event with the link
-- [ ] "Which slot (Mon Nov 30 or Wed Dec 2)?" shows both as buttons; the answer keeps that slot and drops the other
-- [ ] All question wording comes from one place
+- [x] "October 21st" to "When must you submit the one-pager?" dates (or creates) the one-pager deadline
+- [x] "MW 2–3:50pm, Zoom link …" to "When is Lecture?" makes a weekly event with the link
+- [x] "Which slot (Mon Nov 30 or Wed Dec 2)?" shows both as buttons; the answer keeps that slot and drops the other
+- [x] All question wording comes from one place
+
+## Comments
+
+Built in `app/questions.py` (handlers), `app/asks.py` (all wording) and `inbox.ask(purpose, target, options)`. Purposes: date, instructor, meeting, choice, section, other. A question can still hold suggestions up (`proposals.question_id`); `target` says what the answer acts on. `meta.fills` / `meta.type` were migrated into purpose/target (live DB backup: data/backups/before-question-purposes-20261001-1542.db). Choice options list what each option `adds`; what only unpicked options add is rejected (pending) or removed through the gate (accepted), and Rewind restores it.
+
+The slot-question handler and buttons are built and tested; making the syllabus reader *produce* slot choices (instead of one item per slot) is part of 04.

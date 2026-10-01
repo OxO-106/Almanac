@@ -55,16 +55,33 @@ def propose(con, clock, source_id, summary, ops, quote=None, question_id=None) -
         return _proposal(con, cur.lastrowid)
 
 
-def ask(con, clock, source_id, text, quote=None, meta=None) -> dict:
-    """Queue a Question unless the same one is already open. meta: JSON-able
-    details for questions whose answer code acts on (e.g. a Canvas section)."""
+def ask(con, clock, source_id, text, quote=None, purpose="other", target=None, options=None) -> dict:
+    """Queue a Question unless the same one is already open. purpose, target
+    and options say what the answer is for and acts on (see questions.py)."""
     with WRITE:
         same = con.execute("select * from questions where text = ? and status = 'open'", (text,)).fetchone()
         if same:
             return dict(same)
-        cur = con.execute("insert into questions (source_id, text, quote, created_at, meta) values (?,?,?,?,?)",
-                          (source_id, text, quote, _now(clock), json.dumps(meta) if meta else None))
+        cur = con.execute("insert into questions (source_id, text, quote, created_at, purpose, target, options) values (?,?,?,?,?,?,?)",
+                          (source_id, text, quote, _now(clock), purpose, json.dumps(target or {}),
+                           json.dumps(options) if options else None))
         return dict(con.execute("select * from questions where id = ?", (cur.lastrowid,)).fetchone())
+
+
+def add_target(con, question_id, proposal_id):
+    """The answer to this question acts on what this proposal adds (dates it,
+    names its instructor), whether or not the question holds it up."""
+    with WRITE:
+        row = con.execute("select target from questions where id = ?", (question_id,)).fetchone()
+        target = json.loads(row["target"]) if row and row["target"] else {}
+        if proposal_id not in target.setdefault("proposals", []):
+            target["proposals"].append(proposal_id)
+        con.execute("update questions set target = ? where id = ?", (json.dumps(target), question_id))
+
+
+def set_options(con, question_id, options):
+    with WRITE:
+        con.execute("update questions set options = ? where id = ?", (json.dumps(options), question_id))
 
 
 def withdraw(con, id):
@@ -84,17 +101,6 @@ def propose_and_accept(con, clock, source_id, summary, ops, quote=None) -> dict 
     so it goes through the gate, shows in the item's history and can be undone."""
     p = propose(con, clock, source_id, summary, ops, quote)
     return accept(con, clock, p["id"]) if "id" in p else None
-
-
-def fills(con, question_id, proposal_id):
-    """Record that answering this question gives the date of what the proposal
-    adds (it doesn't hold the proposal up: the item stands without it)."""
-    with WRITE:
-        row = con.execute("select meta from questions where id = ?", (question_id,)).fetchone()
-        meta = json.loads(row["meta"]) if row and row["meta"] else {}
-        if proposal_id not in meta.setdefault("fills", []):
-            meta["fills"].append(proposal_id)
-        con.execute("update questions set meta = ? where id = ?", (json.dumps(meta), question_id))
 
 
 def _resolve(con, value, created):

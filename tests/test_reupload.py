@@ -21,8 +21,10 @@ def test_a_known_course_number_with_a_different_instructor_is_asked_about(client
                    items_reply()]
     upload(client, "kim.txt", SYLLABUS.replace("Robin Ding", "Miryung Kim").encode())
     (course,) = inbox(client)["proposals"]
-    assert course["blocked_by"] == ("You already have CS 239 · Robin Ding. Is CS 239 · Miryung Kim a different course? "
-                                    "If it's the same one, reject this and correct the instructor instead.")
+    assert course["blocked_by"] == "You already have CS 239 · Robin Ding. Is CS 239 · Miryung Kim a different course?"
+    assert client.get("/api/chat").json()["current"]["options"] == ["A different course", "The same course"]
+    client.post("/api/chat", json={"text": "The same course"})  # a button
+    assert course["id"] not in [p["id"] for p in inbox(client)["proposals"]]  # dropped
 
 
 def test_reuploading_an_unchanged_syllabus_proposes_nothing(client, llm):

@@ -13,7 +13,7 @@ from datetime import date, timedelta
 
 from fastapi import APIRouter, HTTPException, Request
 
-from . import inbox, plan
+from . import asks, inbox, plan
 from .clock import local
 from .ingest import capitalize
 
@@ -116,7 +116,7 @@ async def plan_project(id: int, request: Request):
         if st.get("work_kind") in ("paper", "reading"):
             st["size"] = int(stated.group(1)) if stated else None
             if not stated:
-                inbox.ask(s.db, s.clock, None, f"How many pages is the paper for “{p['title']}”?")
+                inbox.ask(s.db, s.clock, None, asks.paper_pages(p["title"]))
         mpu = (pace.get(st.get("work_kind")) or {}).get("minutes_per_unit")
         if mpu and isinstance(st.get("size"), (int, float)) and st["size"] > 0 and st.get("work_kind") in UNITS:
             st["hours"] = mpu * st["size"] / 60

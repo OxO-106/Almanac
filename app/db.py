@@ -96,6 +96,11 @@ COLUMNS = [
     # what a chat message changed, so both can be undone.
     ("proposals", "undo", "text"),
     ("chat_messages", "effects", "text"),
+    # What a question is for (date, instructor, meeting, choice, section, other),
+    # what its answer acts on, and the answers to offer as buttons. See questions.py.
+    ("questions", "purpose", "text"),
+    ("questions", "target", "text"),
+    ("questions", "options", "text"),
 ]
 
 # UCLA Registrar, Annual Academic Calendar 2026-27. Week 1 is the first Monday
@@ -126,6 +131,7 @@ def connect(path: Path) -> sqlite3.Connection:
             con.execute(f"alter table {table} add column {column} {decl}")
     _stable_ids(con)
     _backfill_history(con)
+    _question_purposes(con)
     if not con.execute("select 1 from terms").fetchone():
         con.executemany("insert into terms (name, starts, instruction_begins, week1, instruction_ends, finals_start, ends,"
                         " holidays) values (?,?,?,?,?,?,?,?)", TERMS)
@@ -186,6 +192,27 @@ def _backfill_history(con):
                 elif o["op"] in ("update", "delete") and i < len(undo) and undo[i]:
                     con.execute("insert into history (kind, item_id, op, proposal_id, before, at) values (?,?,?,?,?,?)",
                                 (o["kind"], ref, o["op"], pid, json.dumps(undo[i]), at or ""))
+
+
+def _question_purposes(con):
+    """Questions asked before they knew what they were for: from their old
+    links (meta) and their wording."""
+    rows = con.execute("select id, text, meta from questions where purpose is null").fetchall()
+    with WRITE:
+        for qid, text, meta in rows:
+            meta = json.loads(meta) if meta else {}
+            held = [r[0] for r in con.execute("select id from proposals where question_id = ?", (qid,))]
+            purpose, target, options = "other", {"proposals": held + meta.get("fills", [])}, None
+            if meta.get("type") == "canvas_section":
+                purpose, target = "section", {"code": meta["code"], "courses": meta["courses"]}
+                options = [f"{r[0]} · {r[1]}" for r in con.execute(
+                    f"select number, instructor from courses where id in ({','.join('?' * len(meta['courses']))})", meta["courses"])]
+            elif text.startswith("Who teaches"):
+                purpose = "instructor"
+            elif text.startswith(("When is “", "Which day in Week")) or meta.get("fills"):
+                purpose = "date"
+            con.execute("update questions set purpose = ?, target = ?, options = ? where id = ?",
+                        (purpose, json.dumps(target), json.dumps(options) if options else None, qid))
 
 
 def settings(con: sqlite3.Connection) -> dict:

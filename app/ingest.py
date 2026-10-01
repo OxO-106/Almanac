@@ -14,7 +14,7 @@ from datetime import date, timedelta
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, UploadFile
 
-from . import inbox, merge, plan
+from . import asks, inbox, merge, plan
 from .clock import local
 from .plan import current_term
 from .db import WRITE
@@ -458,9 +458,7 @@ def resolve(it: dict, today: date, term: dict | None, known: dict) -> When:
             if DAY_NAMES[i] in words or DAY_NAMES[i][:3] in words:
                 return When((monday + timedelta(days=i)).isoformat(), provisional=True)
         friday = monday + timedelta(days=4)
-        return When(monday.isoformat(), f"{monday}/{friday}", True,
-                    f"Which day in Week {n} ({monday:%b} {monday.day} – {friday:%b} {friday.day}) is “{it['title']}”? "
-                    "The document only gives the week.")
+        return When(monday.isoformat(), f"{monday}/{friday}", True, asks.which_day(n, monday, friday, it["title"]))
     if t == "weekday" and (when.get("weekday") or "").upper()[:2] in plan.DAYS:
         # "by Friday" = the coming Friday (today counts); "next Friday" = next week's.
         i = plan.DAYS.index(when["weekday"].upper()[:2])
@@ -660,11 +658,12 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
             con.execute("update sources set about = ? where id = ?", ("; ".join(labels), source_id))
         if not instructor:
             # Course identity needs the instructor; ask rather than guess.
-            q = inbox.ask(con, clock, source_id, f"Who teaches {label}? The document doesn't name the instructor.", c["quote"])
+            q = inbox.ask(con, clock, source_id, asks.who_teaches(label), c["quote"], "instructor")
             data = {"number": c["number"], "instructor": "Not stated", **({"title": c["title"]} if c.get("title") else {})}
             p = inbox.propose(con, clock, source_id, f"Add course {c['number']} (edit in the instructor)",
                               [{"op": "create", "kind": "courses", "data": data}], c["quote"], q["id"])
             p = p.get("existing", p)
+            inbox.add_target(con, q["id"], p["id"])
             if p.get("status", "pending") == "pending":
                 courses[c["number"]] = f"$p{p['id']}.0"
             for m in c.get("meetings") or []:  # the class times stand without the instructor
@@ -681,12 +680,14 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
             same_number = con.execute("select number, instructor from courses where lower(replace(number, ' ', '')) = "
                                       "lower(replace(?, ' ', ''))", (c["number"],)).fetchone()
             q = same_number and inbox.ask(
-                con, clock, source_id, f"You already have {same_number['number']} · {same_number['instructor']}. "
-                f"Is {name} a different course? If it's the same one, reject this and correct the instructor instead.",
-                c["quote"])
+                con, clock, source_id, asks.same_course(f"{same_number['number']} · {same_number['instructor']}", name),
+                c["quote"], "choice")
             p = inbox.propose(con, clock, source_id, f"Add course {name}",
                               [{"op": "create", "kind": "courses", "data": data}], c["quote"], q["id"] if q else None)
             p = p.get("existing", p)  # already pending from an earlier upload: link to that one
+            if q:  # "the same course" drops the new one
+                inbox.set_options(con, q["id"], [{"label": "A different course", "adds": [p["id"]]},
+                                                 {"label": "The same course", "adds": []}])
             if p.get("status") == "pending":
                 courses[c["number"]] = f"$p{p['id']}.0"
         for m in c.get("meetings") or []:
@@ -756,7 +757,7 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
         d = draft(it.get("question") or (it["title"] if it["kind"] == "question" else ""), it["quote"])
         if d is None and kind in ("deadlines", "events", "projects") and not w.value and i not in weekly_ids:
             # A deliverable or session without a stated date must be asked about.
-            d = draft(f"When is “{it['title']}”{'' if kind == 'events' else ' due'}? The document doesn't say.", it["quote"], False)
+            d = draft(asks.when_is(it["title"], kind), it["quote"], False)
             required.append(d)
         if d is not None:
             item_draft[i] = d
@@ -777,7 +778,8 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
             return final[d]
         q, quote = final[d]
         if q not in asked:
-            asked[q] = inbox.ask(con, clock, source_id, q, quote)
+            # code's own questions (when is it due, which day) are for a date; the model's are read like chat
+            asked[q] = inbox.ask(con, clock, source_id, q, quote, "date" if d in required else "other")
         return asked[q]
 
     for d in range(len(drafts)):
@@ -799,9 +801,11 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
                 no_class.append(resolved[i].value[:10])
             continue
         course = courses.get(course_number(it.get("course") or "")) or only
-        made = _propose_item(con, clock, source_id, it, course, resolved[i], prior, matched, ask_draft(item_draft.get(i)))
-        if made and (q := ask_draft(week_draft.get(i))):
-            inbox.fills(con, q["id"], made["id"])  # "Which day in Week 9…?": its answer dates this item
+        held = ask_draft(item_draft.get(i))
+        made = _propose_item(con, clock, source_id, it, course, resolved[i], prior, matched, held)
+        for q in (held, ask_draft(week_draft.get(i))):  # their answers act on this item ("which day in Week 9…?")
+            if made and q:
+                inbox.add_target(con, q["id"], made["id"])
 
     for course, short, m in meetings:
         _propose_meetings(con, clock, source_id, course, short, m, term, no_class, prior, matched)
@@ -993,7 +997,8 @@ def _propose_meetings(con, clock, source_id, course, short, m, term, no_class, p
     if not days or not term:
         return None
     if not start:
-        inbox.ask(con, clock, source_id, f"What time does {short} meet on {'/'.join(days)}? The document doesn't say.", m["quote"])
+        inbox.ask(con, clock, source_id, asks.meeting_time(short, days), m["quote"], "meeting",
+                  {"course": course, "short": short, "days": days, "title": title})
         return None
     data = meeting_data(term, days, start, end, title or f"{short.split(' · ')[0]} class", course, m.get("location"), no_class)
     return _emit(con, clock, source_id, "events", data, m["quote"], None, prior, matched,
