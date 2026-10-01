@@ -912,7 +912,7 @@ def _duplicate(it, when, seen) -> bool:
     return False
 
 
-def _propose_meetings(con, clock, source_id, course, short, m, term, no_class, prior, matched):
+def _propose_meetings(con, clock, source_id, course, short, m, term, no_class, prior, matched, title=None):
     """Regular class meetings → one weekly Event over the term's instruction
     weeks, skipping holidays on those days and the document's no-class days."""
     days = [d for d in (m.get("days") or "").upper().replace(" ", "").split(",") if d in plan.DAYS]
@@ -928,7 +928,7 @@ def _propose_meetings(con, clock, source_id, course, short, m, term, no_class, p
         first += timedelta(days=1)
     holidays = [h[:10] for h in term["holidays"].splitlines()
                 if plan.DAYS[date.fromisoformat(h[:10]).weekday()] in days]
-    data = {"title": f"{short.split(' · ')[0]} class", "start": f"{first}T{start[:5]}", "repeat": ",".join(days),
+    data = {"title": title or f"{short.split(' · ')[0]} class", "start": f"{first}T{start[:5]}", "repeat": ",".join(days),
             "until": term["instruction_ends"]}
     if end:
         data["end"] = f"{first}T{end[:5]}"
@@ -938,7 +938,8 @@ def _propose_meetings(con, clock, source_id, course, short, m, term, no_class, p
         data["course_id"] = course
     if skip := sorted(set(holidays + no_class)):
         data["skip"] = ",".join(skip)
-    return _emit(con, clock, source_id, "events", data, m["quote"], None, prior, matched, f"{short} class meetings")
+    return _emit(con, clock, source_id, "events", data, m["quote"], None, prior, matched,
+                 f"{title} (weekly)" if title else f"{short} class meetings")
 
 
 KIND = {"deadline": ("deadlines", "due"), "event": ("events", "start"), "task": ("tasks", "due"),

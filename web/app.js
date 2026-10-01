@@ -417,6 +417,13 @@ const isRef = v => typeof v === "string" && /^\$(p\d+\.)?\d+$/.test(v);
 let inboxCache = [];
 
 function describeOps(p) {
+  const kinds = new Set(p.ops.map(o => o.op + o.kind));
+  if (p.ops.length > 2 && kinds.size === 1 && p.ops[0].op === "create") {
+    // e.g. a task after each class: "17 tasks, due Mon, Oct 5 – Wed, Dec 2"
+    const one = (KINDS[p.ops[0].kind]?.one || p.ops[0].kind).toLowerCase();
+    const dates = p.ops.map(o => o.data?.due || o.data?.start || o.data?.deadline || o.data?.do_date).filter(Boolean).sort();
+    return `${p.ops.length} ${one}s` + (dates.length ? `, ${p.ops[0].kind === "events" ? "" : "due "}${fmtDay(dates[0])} – ${fmtDay(dates[dates.length - 1])}` : "");
+  }
   return p.ops.map(o => {
     const d = o.data || {}, one = KINDS[o.kind]?.one.toLowerCase() || o.kind;
     if (o.op === "delete") return `remove this ${one}`;

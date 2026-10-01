@@ -538,7 +538,8 @@ def _actions(con, llm, clock, text, reply_id, message_id=None) -> list[int] | No
                     c = con.execute("select number, instructor from courses where id = ?", (course,)).fetchone() if course is not None else None
                     short = f"{c['number']} · {c['instructor'].split()[-1]}" if c else title
                     m = {"days": ",".join(days), "start": a.get("start_time"), "end": a.get("end_time"), "quote": a["quote"]}
-                    p = ingest._propose_meetings(con, clock, source, course, short, m, term, [], {}, set())
+                    # one of their courses: "COM SCI 269 class"; otherwise the name they used
+                    p = ingest._propose_meetings(con, clock, source, course, short, m, term, [], {}, set(), None if c else title)
                     if p:
                         made.append(p["id"])
                         meetings[course] = p["ops"][0]["data"]
@@ -546,7 +547,7 @@ def _actions(con, llm, clock, text, reply_id, message_id=None) -> list[int] | No
             if table == "tasks" and a.get("each_class"):
                 ops = _each_class(con, title, course, meetings.get(course), today, term)
                 if ops:
-                    p = inbox.propose(con, clock, source, f"{title} after each class, before the next ({len(ops)} tasks)", ops, a["quote"])
+                    p = inbox.propose(con, clock, source, f"{title} after each class, before the next", ops, a["quote"])
                     if "id" in p:
                         made.append(p["id"])
                     continue

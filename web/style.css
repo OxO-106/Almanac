@@ -186,7 +186,9 @@ section > h2 .meta { font-weight: 400; }
 .typing i { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); animation: pulse 1.2s infinite; }
 .typing i:nth-child(2) { animation-delay: .2s; } .typing i:nth-child(3) { animation-delay: .4s; }
 .sugg { border: 1px solid #E3E7EA; border-radius: 14px; overflow: hidden; }
-.sugg .item { padding: 11px 18px; }
+.sugg .item { padding: 11px 18px; flex-wrap: wrap; row-gap: 2px; }
+.sugg .item .title { flex: 1 1 220px; }
+.sugg .item .meta { flex: 0 1 auto; max-width: 100%; font-size: 12px; color: var(--muted); text-align: right; }
 .sugg .item:last-of-type { border-bottom: 0; }
 .sugg .foot { display: flex; gap: 8px; align-items: center; padding: 11px 18px; background: #F8FAFB; border-top: 1px solid var(--line-soft); }
 .sugg .added { font-size: 12px; color: var(--muted); }
