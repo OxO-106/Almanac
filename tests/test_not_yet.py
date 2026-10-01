@@ -41,7 +41,7 @@ def test_when_to_ask_again_can_be_said(client, question):
 
 
 def test_a_real_answer_is_still_an_answer(client, question):
-    assert answer(client, "Not yet sure between ReAct and Reflexion, probably ReAct because I already read it twice") == "Thanks, noted."
+    assert answer(client, "Not yet sure between ReAct and Reflexion, probably ReAct because I already read it twice").endswith("That's all I wanted to ask for now.")
 
 
 @pytest.mark.parametrize("text", ["not yet", "Don't know", "idk", "No idea", "still deciding", "I haven't chosen", "dunno, next week"])

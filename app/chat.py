@@ -57,16 +57,36 @@ def _current(con, clock):
     return None
 
 
+LEADS = ["Got it.", "Okay.", "Good to know.", "All right.", "Understood."]
+
+
 def _ask_next(con, clock):
+    """Ask the next question. Right after an answer it opens with a short
+    acknowledgement (varied, so it doesn't read like a form); after the
+    last one, a closing line."""
     if _current(con, clock):
         return
+    recent = [dict(r) for r in con.execute("select m.*, s.about from chat_messages m left join questions q on q.id = m.question_id "
+                                           "left join sources s on s.id = q.source_id order by m.id desc limit 2")]
+    answered = len(recent) == 2 and recent[0]["role"] == "user" and recent[1]["question_id"]
+    lead = LEADS[recent[0]["id"] % len(LEADS)] + " " if answered else ""
     queue = _eligible(con, clock)
-    if queue:
-        q = queue[0]
-        # name the course, not the file; a file name only if the course is unknown
-        name = q.get("source_about") or " ".join((q.get("source_title") or "").rsplit(".", 1)[0].replace("_", " ").split())
-        about = f"Quick question about {name}: " if name and q.get("source_kind") != "chat" and name not in q["text"] else ""
-        _say(con, clock, "assistant", about + q["text"], q["id"], q["quote"])
+    if not queue:
+        if answered:
+            _say(con, clock, "assistant", lead + "That's all I wanted to ask for now.")
+        return
+    q = queue[0]
+    # name the course, not the file; a file name only if the course is unknown
+    name = q.get("source_about") or " ".join((q.get("source_title") or "").rsplit(".", 1)[0].replace("_", " ").split())
+    about = ""
+    if name and q.get("source_kind") != "chat" and name not in q["text"]:
+        if answered and recent[1]["about"] == q.get("source_about"):
+            about = f"One more about {name.split(':')[0]}: "  # same course as the last one: its code is enough
+        elif answered:
+            about = f"Next, about {name}: "
+        else:
+            about = f"Quick question about {name}: "
+    _say(con, clock, "assistant", lead + about + q["text"], q["id"], q["quote"])
 
 
 def state(con, clock) -> dict:
@@ -160,7 +180,7 @@ def _answer(con, llm, clock, question, text):
             con.execute("update questions set answer = ?, status = 'answered', answered_at = ? where id = ?",
                         (text, local(clock.now()).strftime("%Y-%m-%dT%H:%M"), question["id"]))
         n = con.execute("select count(*) from proposals where question_id = ? and status = 'pending'", (question["id"],)).fetchone()[0]
-        _say(con, clock, "assistant", f"Thanks. {linked}" + (f" {n} item{'s are' if n > 1 else ' is'} ready in Suggestions." if n else ""))
+        _say(con, clock, "assistant", linked + (f" {n} suggestion{'s are' if n > 1 else ' is'} ready in Suggestions." if n else ""))
         return
     with WRITE:
         con.execute("update questions set answer = ?, status = 'answered', answered_at = ? where id = ?",
@@ -203,10 +223,12 @@ def _answer(con, llm, clock, question, text):
                 with WRITE:
                     con.execute("update proposals set ops = ? where id = ?", (json.dumps(p["ops"]), p["id"]))
                 filled.append(f"{o['data']['title']}: {_fmt(w.value)}")
+    # Only say something when the answer changed something; a plain answer
+    # is acknowledged by the next question's opening ("Got it. Next, …").
     n = len(waiting)
-    ack = "Thanks, noted." if not n else "Thanks. " + (f"{'; '.join(filled)}. " if filled else "") + \
-        f"{n} item{'s that were' if n > 1 else ' that was'} waiting on this {'are' if n > 1 else 'is'} ready in Suggestions."
-    _say(con, clock, "assistant", ack)
+    if n:
+        _say(con, clock, "assistant", (f"{'; '.join(filled)}. " if filled else "") +
+             f"{n} suggestion{'s' if n > 1 else ''} that {'were' if n > 1 else 'was'} waiting on this {'are' if n > 1 else 'is'} ready in Suggestions.")
 
 
 # ---- free conversation --------------------------------------------------------

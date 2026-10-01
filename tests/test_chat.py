@@ -67,7 +67,7 @@ def test_replying_answers_the_question_and_moves_on(client):
     c = say(client, "P10, on Nov 5")
     assert client.get(f"/api/questions/{q['id']}").json()["answer"] == "P10, on Nov 5"
     texts = assistant_texts(c)
-    assert "1 item that was waiting on this is ready in Suggestions." in texts[-2]
+    assert texts[-2] == "1 suggestion that was waiting on this is ready in Suggestions."
     assert "Which team are you on?" in texts[-1]
     assert client.post(f"/api/proposals/{blocked['id']}/accept").status_code == 200
 
@@ -109,3 +109,16 @@ def test_the_chat_badge_counts_waiting_questions(client):
     ask(client, src, "A?")
     ask(client, src, "B?")
     assert client.get("/api/chat/badge").json() == {"questions": 2}
+
+
+def test_a_plain_answer_is_acknowledged_by_the_next_question_not_a_thanks(client):
+    src = source(client)
+    ask(client, src, "Which paper are you presenting?")
+    ask(client, src, "Which team are you on?")
+    chat(client)
+    texts = assistant_texts(say(client, "P10"))
+    assert not any("Thanks" in t for t in texts)
+    assert texts[-1].split(". ", 1)[0] + "." in ("Got it.", "Okay.", "Good to know.", "All right.", "Understood.")
+    assert texts[-1].endswith("Which team are you on?")
+    texts = assistant_texts(say(client, "Team 3"))
+    assert texts[-1].endswith("That's all I wanted to ask for now.")
