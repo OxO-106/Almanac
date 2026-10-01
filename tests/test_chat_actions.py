@@ -179,3 +179,17 @@ def test_a_question_with_fixed_answers_offers_them(client):
     client.post("/api/courses", json={"number": "CS 239", "instructor": "Miryung Kim"})
     connect(client, Feed())
     assert chat(client)["current"]["options"] == ["CS 239 · Robin Ding", "CS 239 · Miryung Kim"]
+
+
+def test_one_thing_said_once_is_suggested_once(client, llm):
+    llm.replies = ["ok", actions(act(), act(type="deadline"))]
+    say(client, "I need to email Prof. Smith about research by Friday")
+    assert len(proposals(client)) == 1
+
+
+def test_a_weekday_the_model_turned_into_a_date_counts_when_said(client, llm):
+    llm.replies = ["ok", actions(act(when={"type": "date", "month": 10, "day": 2}),
+                                 act(title="Call home", quote="call home", when={"type": "date", "month": 10, "day": 2}))]
+    say(client, "I need to email Prof. Smith about research by Friday, and call home")
+    due = {p["summary"]: p["ops"][0]["data"].get("due") for p in proposals(client)}
+    assert due == {"Email Prof. Smith about research": "2026-10-02", "Call home": None}

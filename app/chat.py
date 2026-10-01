@@ -244,7 +244,7 @@ def _messages(con, llm, clock, text, focus=None):
         "select role, text from chat_messages where id > ? order by id desc limit ?", (upto, HISTORY + 1))][::-1][:-1]
     system = ("You are Almanac, a personal assistant for a university student. Be brief and warm. Never invent facts "
               "about their courses or dates; if you don't know, ask. When they mention things to do, plans or goals, say "
-              "you'll add suggestions to their Inbox for them to confirm; don't claim anything is already scheduled.\n\n"
+              "you'll suggest adding them, for them to confirm; don't claim anything is already scheduled. No emoji.\n\n"
               + _context(con, clock) + goals.focus_text(con, focus)
               + (f"\n\nEarlier in this conversation (summary):\n{summary}" if summary else ""))
     return [{"role": "system", "content": system}, *history, {"role": "user", "content": text}]
@@ -310,10 +310,12 @@ def _actions(con, llm, clock, text, reply_id) -> list[int] | None:
     term = current_term(con, today)
     source = None
     made = []
+    seen = set()
     for a in acts:
         title = ingest.capitalize((a.get("title") or "").strip())
-        if not title or not ingest.quoted(a.get("quote"), text):
-            continue
+        if not title or title.lower() in seen or not ingest.quoted(a.get("quote"), text):
+            continue  # (models sometimes list one thing as both a task and a deadline)
+        seen.add(title.lower())
         source = source or _chat_source(con, clock, text)
         kind = a.get("type")
         if kind == "question":

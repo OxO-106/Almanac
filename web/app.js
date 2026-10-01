@@ -1,41 +1,88 @@
+// Almanac. The assistant talks; the plan sits underneath.
+
 const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
+const js = v => esc(JSON.stringify(v));  // a value inside an inline handler attribute
 const api = async (path, opts = {}) => {
   const r = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts });
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
   return r.status === 204 ? null : r.json();
 };
 const send = (method, path, body) => api(path, { method, body: JSON.stringify(body) });
+const detail = e => { try { return JSON.parse(e.message.replace(/^\d+ /, "")).detail; } catch { return e.message; } };
 
-// ---- formatting -------------------------------------------------------------
-
-const TZ = "America/Los_Angeles";
-const asDate = s => new Date(s.length === 10 ? s + "T12:00" : s);  // local wall-clock strings
-const fmtDay = s => asDate(s).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
-const fmtTime = s => s.length > 10 ? asDate(s).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }) : "";
-const fmtWhen = (s, win) => win ? `week of ${fmtDay(win.slice(0, 10))} (day not stated)` : s ? `${fmtDay(s)}${s.length > 10 ? " " + fmtTime(s) : ""}` : "";
-
-let lookups = { courses: [], goals: [], projects: [] };
-const courseName = id => { const c = lookups.courses.find(c => c.id === id); return c ? `${c.number} · ${c.instructor.split(" ").pop()}` : ""; };
-const tag = (id) => id ? `<span class="tag">${esc(courseName(id))}</span>` : "";
-const prov = x => x.provisional ? `<span class="tag prov" title="Provisional in its source">provisional</span>` : "";
-
-async function loadLookups() {
-  const [courses, goals, projects] = await Promise.all(["courses", "goals", "projects"].map(k => api(`/api/${k}`)));
-  lookups = { courses, goals, projects };
+function toast(html) {
+  const t = $("#toast");
+  t.innerHTML = html;
+  t.hidden = false;
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => t.hidden = true, 7000);
 }
 
-// ---- item forms --------------------------------------------------------------
+const ICON = {
+  play: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4l13 8-13 8z"/></svg>',
+  plus: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
+  clip: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.4 11.1l-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/></svg>',
+  up: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
+  left: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>',
+  right: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg>',
+  x: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>',
+  doc: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/></svg>',
+};
+
+// ---- dates -------------------------------------------------------------------
+// Plan times are Los Angeles wall-clock strings: "2026-10-05" or "2026-10-05T16:00".
+
+const asDate = s => new Date(s.length === 10 ? s + "T12:00" : s);
+const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+const monday = d => addDays(d, -((d.getDay() + 6) % 7));
+const fmtDay = s => asDate(s).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+const fmtLong = s => asDate(s).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+const fmtTime = s => s && s.length > 10 ? asDate(s).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }) : "";
+const fmtWhen = (s, win) => win ? `week of ${fmtDay(win.slice(0, 10))}` : s ? fmtDay(s) + (s.length > 10 ? `, ${fmtTime(s)}` : "") : "";
+const hours = s => s.length > 10 ? Number(s.slice(11, 13)) + Number(s.slice(14, 16)) / 60 : null;
+const est = m => !m ? "" : m < 60 ? `${m} min` : `~${Math.round(m / 30) / 2} h`;
+let todayIso = iso(new Date());
+
+// ---- what the app knows ------------------------------------------------------
+
+const PALETTE = ["#7C98B3", "#536B78", "#ACCBE1", "#637081", "#9DB4C8", "#3E525D", "#CEE5F2", "#8A9AA6"];
+const TINTS = ["#DDEAF3", "#D9E1E6", "#E6F0F7", "#DEE2E7", "#E1EAF1", "#D7DEE2", "#EEF5FA", "#E3E7EA"];
+let lookups = { courses: [], goals: [], projects: [], terms: [] };
+const courseIdx = id => lookups.courses.findIndex(c => c.id === id);
+const courseColor = id => courseIdx(id) < 0 ? "#C9D3DA" : PALETTE[courseIdx(id) % PALETTE.length];
+const courseTint = id => courseIdx(id) < 0 ? "#EEF2F5" : TINTS[courseIdx(id) % TINTS.length];
+const courseName = id => { const c = lookups.courses.find(c => c.id === id); return c ? `${c.number} · ${c.instructor.split(" ").pop()}` : ""; };
+const courseTag = id => id ? `<span class="course"><i class="swatch" style="background:${courseColor(id)}"></i>${esc(courseName(id))}</span>` : "";
+
+async function loadLookups() {
+  const [courses, goals, projects, terms] = await Promise.all(["courses", "goals", "projects", "terms"].map(k => api(`/api/${k}`)));
+  lookups = { courses, goals, projects, terms };
+  const links = courses.map(c => `<a href="#course/${c.id}" data-view="course/${c.id}"><i class="swatch" style="background:${courseColor(c.id)}"></i><span>${esc(courseName(c.id))}</span></a>`).join("");
+  $("#course-links").innerHTML = links || `<a href="#inbox"><span class="meta">Upload a syllabus to add one</span></a>`;
+  $("#sheet-courses").innerHTML = links;
+}
+
+function termWeek(day) {
+  const t = lookups.terms.find(t => t.starts <= day && day <= t.ends);
+  if (!t) return "";
+  const w = Math.floor((asDate(day) - asDate(t.week1)) / 864e5 / 7) + 1;
+  return day > t.instruction_ends ? (day >= (t.finals_start || t.ends) ? "Finals" : "") : w >= 1 ? `Week ${w}` : "Week 0";
+}
+
+// ---- editing (the plan behind the conversation) --------------------------------
 
 const KINDS = {
-  goals: { one: "Goal", fields: [["title", "text", "Title"], ["why", "text", "Why"], ["horizon", ["", "quarter", "year", "multi-year"], "Horizon"]] },
+  goals: { one: "Goal", fields: [["title", "text", "Title"], ["why", "text", "Why it matters"], ["horizon", ["", "quarter", "year", "multi-year"], "Horizon"]] },
   projects: { one: "Project", fields: [["title", "text", "Title"], ["goal_id", "goals", "Goal"], ["course_id", "courses", "Course"],
     ["deadline", "datetime", "Deadline"], ["team", "check", "Team project"], ["notes", "area", "Notes"]] },
   tasks: { one: "Task", fields: [["title", "text", "Title"], ["project_id", "projects", "Project"], ["course_id", "courses", "Course"],
-    ["due", "datetime", "Due"], ["do_date", "date", "Do date"], ["work_kind", ["", "paper", "slides", "other"], "Work kind"],
+    ["due", "datetime", "Due"], ["do_date", "date", "Do it on"], ["work_kind", ["", "paper", "reading", "slides", "writing", "other"], "Kind of work"],
     ["size", "number", "Size (pages, slides…)"], ["notes", "area", "Notes"]] },
-  events: { one: "Event", fields: [["title", "text", "Title"], ["course_id", "courses", "Course"], ["start", "datetime", "Start"],
-    ["end", "datetime", "End"], ["repeat", "days", "Repeats weekly on"], ["until", "date", "Until"], ["location", "text", "Location"]] },
+  events: { one: "Event", fields: [["title", "text", "Title"], ["course_id", "courses", "Course"], ["start", "datetime", "Starts"],
+    ["end", "datetime", "Ends"], ["repeat", "days", "Repeats weekly on"], ["until", "date", "Until"], ["location", "text", "Where"]] },
   deadlines: { one: "Deadline", fields: [["title", "text", "Title"], ["course_id", "courses", "Course"], ["project_id", "projects", "Project"], ["due", "datetime", "Due"]] },
   courses: { one: "Course", fields: [["number", "text", "Number (e.g. CS 239)"], ["instructor", "text", "Instructor"], ["title", "text", "Title"]] },
   memories: { one: "Memory", fields: [["text", "area", "What to remember"], ["topic", "text", "Topic (e.g. work habits, people)"]] },
@@ -49,12 +96,12 @@ function input([name, type, label], v) {
   v = v ?? "";
   let el;
   if (Array.isArray(type)) el = `<select name="${name}">${type.map(o => `<option ${o === v ? "selected" : ""}>${o}</option>`).join("")}</select>`;
-  else if (lookups[type]) el = `<select name="${name}" data-int><option value="">—</option>${lookups[type].map(o =>
-    `<option value="${o.id}" ${o.id === v ? "selected" : ""}>${esc(o.title || courseName(o.id))}</option>`).join("")}</select>`;
+  else if (lookups[type]) el = `<select name="${name}" data-int><option value="">None</option>${lookups[type].map(o =>
+    `<option value="${o.id}" ${o.id === v ? "selected" : ""}>${esc(o.title && type !== "courses" ? o.title : courseName(o.id))}</option>`).join("")}</select>`;
   else if (type === "area") el = `<textarea name="${name}" rows="3">${esc(v)}</textarea>`;
   else if (type === "check") return `<label class="check"><input type="checkbox" name="${name}" ${v ? "checked" : ""}> ${label}</label>`;
   else if (type === "days") el = `<span class="days">${DAYS.map(d => `<label><input type="checkbox" name="${name}" value="${d}" ${v.includes(d) ? "checked" : ""}>${d}</label>`).join("")}</span>`;
-  else if (type === "datetime") el = `<span class="dt"><input type="date" name="${name}" value="${v.slice(0, 10)}"><input type="time" name="${name}__t" value="${v.slice(11, 16)}"></span>`;
+  else if (type === "datetime") el = `<span class="dt"><input type="date" name="${name}" value="${v.slice(0, 10)}"><input type="time" name="${name}__t" value="${v.slice(11, 16)}" aria-label="${label} time"></span>`;
   else el = `<input type="${type}" name="${name}" value="${esc(v)}" ${type === "number" ? 'step="any"' : ""}>`;
   return `<label>${label}${el}</label>`;
 }
@@ -65,7 +112,7 @@ function readForm(root, kind) {  // root: a form or any element holding the inpu
     const el = root.querySelector(`[name="${name}"]`);
     if (!el) continue;
     if (type === "check") out[name] = el.checked;
-    else if (type === "days") out[name] = [...root.querySelectorAll(`[name=${name}]:checked`)].map(c => c.value).join(",") || null;
+    else if (type === "days") out[name] = $$(`[name=${name}]:checked`, root).map(c => c.value).join(",") || null;
     else if (type === "datetime") { const t = root.querySelector(`[name="${name}__t"]`).value; out[name] = el.value ? (t ? `${el.value}T${t}` : el.value) : null; }
     else if (type === "number") out[name] = el.value === "" ? null : Number(el.value);
     else if (el.dataset.int !== undefined) out[name] = el.value ? Number(el.value) : null;
@@ -83,10 +130,10 @@ async function openEditor(kind, item = null, preset = {}) {
     ${k.fields.map(f => input(f, v[f[0]])).join("")}
     <p class="error" hidden></p>
     <div class="actions">
-      ${item ? `<button type="button" class="danger" data-act="delete">Delete</button>` : ""}
+      ${item ? `<button type="button" class="btn quiet danger" data-act="delete">Delete</button>` : ""}
       <span class="grow"></span>
-      <button type="button" data-act="cancel">Cancel</button>
-      <button class="primary">Save</button>
+      <button type="button" class="btn" data-act="cancel">Cancel</button>
+      <button class="btn primary">Save</button>
     </div></form>`;
   const form = $("form", dlg);
   form.addEventListener("click", async e => {
@@ -99,214 +146,291 @@ async function openEditor(kind, item = null, preset = {}) {
     try {
       await send(item ? "PATCH" : "POST", item ? `/api/${kind}/${item.id}` : `/api/${kind}`, readForm(form, kind));
       dlg.close(); render();
-    } catch (err) { const p = $(".error", form); p.hidden = false; p.textContent = err.message; }
+    } catch (err) { const p = $(".error", form); p.hidden = false; p.textContent = detail(err); }
   });
   dlg.showModal();
 }
+
+async function edit(kind, id) { openEditor(kind, await api(`/api/${kind}/${id}`)); }
 
 async function toggleTask(id, done) {
   await send("PATCH", `/api/tasks/${id}`, { status: done ? "done" : "open" });
   render();
 }
 
-// ---- rows --------------------------------------------------------------------
+const taskItem = t => `<div class="item ${t.status === "done" ? "done" : ""}">
+  <input type="checkbox" ${t.status === "done" ? "checked" : ""} onchange="toggleTask(${t.id}, this.checked)" aria-label="Done: ${esc(t.title)}">
+  <a class="title" onclick='edit("tasks", ${t.id})'>${esc(t.title)}</a>
+  ${courseTag(t.course_id)}
+  <span class="est">${t.status === "done" ? "done" : esc(est(t.estimate_min))}</span>
+  ${t.status === "done" ? "" : `<button class="play" onclick="startTimer(${t.id})" aria-label="Start a timer on ${esc(t.title)}">${ICON.play}</button>`}
+</div>`;
 
-const taskRow = t => `<li class="row ${t.status === "done" ? "done" : ""}">
-  <input type="checkbox" ${t.status === "done" ? "checked" : ""} onchange="toggleTask(${t.id}, this.checked)">
-  ${t.status === "done" ? "" : `<button class="play" title="Start a timer" aria-label="Start a timer on ${esc(t.title)}" onclick="startTimer(${t.id})">▶</button>`}
-  <a class="title" onclick='edit("tasks", ${t.id})'>${esc(t.title)}</a>${tag(t.course_id)}${prov(t)}
-  <span class="meta">${t.due ? "due " + esc(fmtWhen(t.due, t.window)) : ""}</span></li>`;
-const eventRow = e => `<li class="row"><span class="time">${esc(fmtTime(e.start))}</span>
-  <a class="title" onclick='edit("events", ${e.id})'>${esc(e.title)}</a>${tag(e.course_id)}${prov(e)}
-  <span class="meta">${e.end ? "until " + esc(fmtTime(e.end)) : ""}${e.location ? " · " + esc(e.location) : ""}</span></li>`;
-const deadlineRow = d => `<li class="row"><span class="time">${esc(fmtTime(d.due) || "all day")}</span>
-  <a class="title" onclick='edit("deadlines", ${d.id})'>${esc(d.title)}</a>${tag(d.course_id)}${prov(d)}</li>`;
-const section = (title, rows, empty) => `<section><h3>${title}</h3>${rows.length ? `<ul>${rows.join("")}</ul>` : `<p class="empty">${empty}</p>`}</section>`;
+// ---- the composer --------------------------------------------------------------
 
-async function edit(kind, id) { openEditor(kind, await api(`/api/${kind}/${id}`)); }
+let pendingChat = null;  // a message typed on Today, sent once Chat opens
 
-// ---- views -------------------------------------------------------------------
+const composer = (placeholder, onsubmit) => `<form class="composer" onsubmit="${onsubmit}">
+  <label class="sr" for="say">Message Almanac</label>
+  <textarea id="say" name="text" rows="1" placeholder="${esc(placeholder)}"
+    onkeydown="if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); this.form.requestSubmit(); }"></textarea>
+  <label class="icon-btn" title="Add a syllabus or document">${ICON.clip}<span class="sr">Add a syllabus or document</span>
+    <input type="file" multiple accept=".pdf,.docx,.txt,.md" hidden onchange="uploadFiles(this.files)"></label>
+  <button class="icon-btn send" aria-label="Send">${ICON.up}</button>
+</form>`;
 
-const views = {
-  async today() {
-    const [h, t, b] = await Promise.all([api("/api/health"), api("/api/today"), api("/api/briefing"), loadLookups()]);
-    const date = asDate(t.date).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
-    const canNotify = !["localhost", "127.0.0.1"].includes(location.hostname) && !pushOn() && "Notification" in window && Notification.permission === "default";
-    const briefing = b ? `<section class="card briefing"><h3>Morning briefing</h3>
-        ${b.catchup.length ? `<p><b>While Almanac was off:</b> ${b.catchup.map(esc).join("; ")}</p>` : ""}
-        ${b.coming_up.length ? `<p><b>Coming up:</b> ${b.coming_up.map(d => `${esc(d.title)} (${esc(fmtWhen(d.due, d.window))})`).join(", ")}</p>` : ""}
-        ${b.carried_over.length ? `<p><b>Carried over:</b> ${b.carried_over.map(x => esc(x.title)).join(", ")}</p>` : ""}
-        ${b.questions ? `<p><a href="#chat">${b.questions} question${b.questions > 1 ? "s" : ""} waiting in Chat</a></p>` : ""}
-        ${!b.catchup.length && !b.coming_up.length && !b.carried_over.length && !b.questions ? "<p>A clear runway. Nothing urgent.</p>" : ""}</section>` : "";
-    return `
-      <header class="head"><div><h1>Today</h1><p class="sub">${esc(date)}</p></div>
-        <button class="primary" onclick='openEditor("tasks", null, {do_date: "${t.date}"})'>Add task</button></header>
-      ${h.ai.ready ? "" : `<div class="notice">The assistant is unavailable: ${esc(h.ai.message)}</div>`}
-      ${canNotify ? `<p class="hint"><a class="linkish" href="#settings">Turn on notifications</a> on this device for the morning briefing and check-ins.</p>` : ""}
-      ${briefing}
-      ${t.overdue.length ? section("Carried over", t.overdue.map(taskRow), "") : ""}
-      ${section("To do today", t.tasks.map(taskRow), "Nothing planned for today.")}
-      ${section("Schedule", t.events.map(eventRow), "No events today.")}
-      ${t.deadlines.length ? section("Due today", t.deadlines.map(deadlineRow), "") : ""}
-      ${t.done.length ? section("Done", t.done.map(taskRow), "") : ""}`;
-  },
-
-  async plan() {
-    const tab = sessionStorage.getItem("planTab") || "tasks";
-    const [items] = await Promise.all([api(`/api/${tab}`), loadLookups()]);
-    const describe = {
-      tasks: taskRow,
-      events: e => `<li class="row"><a class="title" onclick='edit("events", ${e.id})'>${esc(e.title)}</a>${tag(e.course_id)}${prov(e)}
-        <span class="meta">${e.repeat ? `${esc(e.repeat.replaceAll(",", "/"))} ${esc(fmtTime(e.start))}` : esc(fmtWhen(e.start, e.window))}</span></li>`,
-      deadlines: d => `<li class="row"><a class="title" onclick='edit("deadlines", ${d.id})'>${esc(d.title)}</a>${tag(d.course_id)}${prov(d)}
-        <span class="meta">${esc(fmtWhen(d.due, d.window)) || "date unknown"}</span></li>`,
-      projects: p => `<li class="row"><a class="title" onclick='edit("projects", ${p.id})'>${esc(p.title)}</a>${tag(p.course_id)}
-        <span class="meta">${p.deadline ? "by " + esc(fmtWhen(p.deadline)) : ""}</span>
-        ${p.deadline ? `<button class="small" onclick="planProject(${p.id}, this)">Plan it</button>` : ""}</li>`,
-      goals: g => `<li class="row"><a class="title" onclick='edit("goals", ${g.id})'>${esc(g.title)}</a>
-        <span class="meta">${esc(g.horizon || "")}</span></li>`,
-      courses: c => `<li class="row"><a class="title" onclick='edit("courses", ${c.id})'>${esc(c.number)} · ${esc(c.instructor)}</a>
-        <span class="meta">${esc(c.title || "")}</span></li>`,
-      terms: t => `<li class="row"><a class="title" onclick='edit("terms", ${t.id})'>${esc(t.name)}</a>
-        <span class="meta">Week 1 = ${esc(fmtDay(t.week1))} · classes end ${esc(fmtDay(t.instruction_ends))}</span></li>`,
-    }[tab];
-    return `
-      <header class="head"><h1>Plan</h1><button class="primary" onclick='openEditor("${tab}")'>Add ${KINDS[tab].one.toLowerCase()}</button></header>
-      <div class="tabs">${Object.keys(KINDS).map(k =>
-        `<button class="${k === tab ? "on" : ""}" onclick='sessionStorage.setItem("planTab", "${k}"); render()'>${KINDS[k].one}s</button>`).join("")}</div>
-      ${items.length ? `<ul>${items.map(describe).join("")}</ul>` : `<p class="empty">No ${KINDS[tab].one.toLowerCase()}s yet.</p>`}`;
-  },
-};
-
-// ---- calendar ----------------------------------------------------------------
-
-const cal = { mode: sessionStorage.getItem("calMode") || "week", anchor: null };
-const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
-const monday = d => addDays(d, -((d.getDay() + 6) % 7));
-const courseColor = id => lookups.courses.find(c => c.id === id)?.color || "var(--muted)";
-
-function chip(kind, x) {
-  const color = courseColor(x.course_id);
-  const label = (x.window ? "Wk · " : "") + (kind === "events" ? `${fmtTime(x.start)} ${x.title}` : kind === "deadlines" ? `⚑ ${x.title}` : x.title);
-  const cls = ["chip", kind, x.provisional ? "prov" : "", x.status === "done" ? "done" : "", x.unscheduled ? "unsched" : ""].join(" ");
-  const drag = kind === "tasks" ? `draggable="true" ondragstart="event.dataTransfer.setData('text/plain', ${x.id})"` : "";
-  const title = [x.title, courseName(x.course_id), x.window ? "sometime this week, day not stated" : "", x.provisional ? "provisional" : "", x.unscheduled ? "no do date yet (shown on due day)" : ""].filter(Boolean).join(" · ");
-  return `<div class="${cls}" style="--c:${color}" ${drag} title="${esc(title)}" onclick='edit("${kind}", ${x.id})'>${esc(label)}</div>`;
-}
-
-async function dropTask(e, day) {
+function sayFromToday(e) {
   e.preventDefault();
-  e.currentTarget.classList.remove("over");
-  await send("PATCH", `/api/tasks/${e.dataTransfer.getData("text/plain")}`, { do_date: day });
-  render();
+  const text = e.target.elements.text.value.trim();
+  if (!text) return;
+  pendingChat = text;
+  location.hash = "#chat";
 }
 
-function calNav(step) {
-  const a = cal.anchor;
-  cal.anchor = step === 0 ? null : cal.mode === "week" ? addDays(a, 7 * step) : new Date(a.getFullYear(), a.getMonth() + step, 1);
+// ---- Today -------------------------------------------------------------------
+
+let hiddenOffers = new Set();
+
+async function answerQuestion(text) {
+  if (!text?.trim()) return;
+  await send("POST", "/api/chat", { text: text.trim() });
   render();
 }
+async function skipQuestion() { await api("/api/chat/skip", { method: "POST" }); render(); }
 
-views.calendar = async () => {
-  const today = asDate((await api("/api/today")).date);
-  cal.anchor ??= today;
-  const a = cal.anchor;
-  const first = cal.mode === "week" ? monday(a) : monday(new Date(a.getFullYear(), a.getMonth(), 1));
-  const days = cal.mode === "week" ? 7 : Math.ceil(((new Date(a.getFullYear(), a.getMonth() + 1, 0) - first) / 864e5 + 1) / 7) * 7;
-  const [data] = await Promise.all([api(`/api/calendar?start=${iso(first)}&end=${iso(addDays(first, days - 1))}`), loadLookups()]);
-  const by = {};
-  const put = (day, html) => (by[day] ??= []).push(html);
-  data.events.forEach(e => put(e.start.slice(0, 10), chip("events", e)));
-  data.deadlines.forEach(d => put(d.due.slice(0, 10), chip("deadlines", d)));
-  data.tasks.forEach(t => put(t.do_date, chip("tasks", t)));
-  data.unscheduled.forEach(t => put(t.due.slice(0, 10), chip("tasks", { ...t, unscheduled: true })));
-  const title = cal.mode === "week"
-    ? `${fmtDay(iso(first))} – ${fmtDay(iso(addDays(first, 6)))}`
-    : a.toLocaleDateString("en-US", { month: "long", year: "numeric" });
-  const cells = Array.from({ length: days }, (_, i) => {
-    const d = addDays(first, i), day = iso(d);
-    const out = cal.mode === "month" && d.getMonth() !== a.getMonth();
-    return `<div class="day ${day === iso(today) ? "today" : ""} ${out ? "out" : ""}"
-      ondragover="event.preventDefault(); this.classList.add('over')" ondragleave="this.classList.remove('over')" ondrop="dropTask(event, '${day}')">
-      <div class="dnum">${cal.mode === "week" ? d.toLocaleDateString("en-US", { weekday: "short" }) + " " : ""}${d.getDate()}</div>
-      ${(by[day] || []).join("")}</div>`;
-  }).join("");
-  const legend = lookups.courses.map(c => `<span class="legend" style="--c:${c.color}">${esc(c.number)} · ${esc(c.instructor)}</span>`).join("");
-  return `
-    <header class="head"><h1>${esc(title)}</h1>
-      <div class="calbar">
-        <button onclick="calNav(-1)" aria-label="Previous">‹</button><button onclick="calNav(0)">Today</button><button onclick="calNav(1)" aria-label="Next">›</button>
-        <span class="tabs">${["week", "month"].map(m => `<button class="${m === cal.mode ? "on" : ""}" onclick='cal.mode="${m}"; sessionStorage.setItem("calMode", "${m}"); render()'>${m[0].toUpperCase() + m.slice(1)}</button>`).join("")}</span>
-      </div></header>
-    ${legend ? `<p class="legends">${legend}</p>` : ""}
-    <div class="grid ${cal.mode}">${cal.mode === "month" ? ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map(d => `<div class="dow">${d}</div>`).join("") : ""}${cells}</div>
-    <p class="hint">Drag a task to another day to change its do date. Dashed = provisional; faded = no do date yet.</p>`;
+async function offer() {
+  const [c, box] = await Promise.all([api("/api/chat"), api("/api/inbox")]);
+  if (c.current) {
+    const q = c.current;
+    const opts = q.options?.length
+      ? q.options.map(o => `<button class="btn" onclick="answerQuestion(${js(o)})">${esc(o)}</button>`).join("")
+      : "";
+    return `<section class="offer" aria-label="A question">
+      <p>${esc(q.text)}</p>
+      ${opts ? `<div class="row-actions">${opts}<button class="btn quiet" onclick="skipQuestion()">Ask me tomorrow</button></div>`
+             : `<form onsubmit="event.preventDefault(); answerQuestion(this.elements.a.value)"><label class="sr" for="qa">Your answer</label>
+                  <input id="qa" name="a" placeholder="Your answer" autocomplete="off"><button class="btn primary">Answer</button>
+                  <button type="button" class="btn quiet" onclick="skipQuestion()">Later</button></form>`}
+      ${c.waiting ? `<span class="from">${c.waiting} more after this one, in <a href="#chat">Chat</a>.</span>` : ""}
+    </section>`;
+  }
+  const ready = box.proposals.filter(p => !p.blocked_by && !hiddenOffers.has(p.id));
+  if (!ready.length) return "";
+  const p = ready[0];
+  inboxCache = box.proposals;
+  return `<section class="offer" aria-label="A suggestion">
+    <p>Shall I add this? <strong style="font-weight:500">${esc(p.summary)}</strong></p>
+    <span class="from">${esc(describeOps(p))}${p.source ? ` · from ${esc(p.source.title)}` : ""}</span>
+    <div class="row-actions">
+      <button class="btn primary" onclick="proposalAction(${p.id}, 'accept')">Yes, add it</button>
+      <button class="btn" onclick="editProposal(${p.id})">Change something</button>
+      <button class="btn quiet" onclick="hiddenOffers.add(${p.id}); render()">Not now</button>
+      ${ready.length > 1 ? `<a class="btn quiet" href="#inbox">See all ${ready.length}</a>` : ""}
+    </div></section>`;
+}
+
+const views = {};
+
+views.today = async () => {
+  const [h, t, n] = await Promise.all([api("/api/health"), api("/api/today"), api("/api/note"), loadLookups()]);
+  todayIso = t.date;
+  const soonEnd = iso(addDays(asDate(t.date), 14));
+  const [cal, ask] = await Promise.all([api(`/api/calendar?start=${iso(addDays(asDate(t.date), 1))}&end=${soonEnd}`), offer()]);
+  const week = termWeek(t.date);
+  const comingUp = [...cal.deadlines.map(d => ({ ...d, kind: "deadlines", at: d.due })),
+                    ...cal.unscheduled.map(x => ({ ...x, kind: "tasks", at: x.due }))].sort((a, b) => a.at.localeCompare(b.at)).slice(0, 6);
+  const soon = d => (asDate(d) - asDate(t.date)) / 864e5 <= 4;
+  const todays = [...t.overdue, ...t.tasks, ...t.done];
+  const notify = !["localhost", "127.0.0.1"].includes(location.hostname) && !pushOn() && "Notification" in window && Notification.permission === "default";
+  if (n.written_by === "plain") setTimeout(() => location.hash.startsWith("#today") || !location.hash ? refreshNote() : 0, 15000);
+  return `<div class="page">
+    <header class="head">
+      <div class="dateline">${esc(fmtLong(t.date))}${week ? ` · ${week}` : ""}</div>
+      <h1 id="note-h">${esc(n.headline)}</h1>
+      <p class="voice" id="note-b">${esc(n.body)}</p>
+    </header>
+    ${h.ai.ready ? "" : `<div class="notice">I can't think right now: ${esc(h.ai.message)} Your plan still works.</div>`}
+    ${ask}
+    <section aria-labelledby="h-today">
+      <h2 id="h-today">Today${todays.length ? ` <span class="meta">${t.done.length} of ${todays.length} done</span>` : ""}</h2>
+      ${t.overdue.length ? `<div class="meta">Still open from earlier</div>${t.overdue.map(taskItem).join("")}<div class="meta" style="margin-top:8px">Planned for today</div>` : ""}
+      ${[...t.tasks, ...t.done].map(taskItem).join("") || `<p class="empty">Nothing planned for today.</p>`}
+      ${t.deadlines.map(d => `<div class="item"><span class="when-row" style="padding:0"><span class="when due" style="width:auto">Due today</span></span>
+        <a class="title" onclick='edit("deadlines", ${d.id})'>${esc(d.title)}</a>${courseTag(d.course_id)}</div>`).join("")}
+      <button class="add-row" onclick='openEditor("tasks", null, {do_date: ${js(t.date)}})'>${ICON.plus}Add something for today</button>
+    </section>
+    ${t.events.length ? `<section aria-labelledby="h-sched"><h2 id="h-sched">Schedule</h2>
+      ${t.events.map(e => `<div class="slot">
+        <div class="time">${e.start.length > 10 ? `${esc(fmtTime(e.start))}${e.end ? `<br>${esc(fmtTime(e.end))}` : ""}` : "All day"}</div>
+        <div class="body"><a class="title" style="color:inherit;text-decoration:none;font-weight:500;cursor:pointer" onclick='edit("events", ${e.id})'>${esc(e.title)}</a>
+          <span class="meta">${[courseName(e.course_id), e.location].filter(Boolean).map(esc).join(" · ")}${e.provisional ? ` <span class="tag-prov">provisional</span>` : ""}</span></div>
+      </div>`).join("")}</section>` : ""}
+    <section aria-labelledby="h-next"><h2 id="h-next">Coming up</h2>
+      ${comingUp.map(x => `<div class="when-row"><span class="when ${soon(x.at) ? "due" : ""}">${esc(fmtDay(x.at))}</span>
+        <a class="what" onclick='edit("${x.kind}", ${x.id})'>${esc(x.title)}</a><span class="meta">${esc(courseName(x.course_id))}</span></div>`).join("")
+        || `<p class="empty">Nothing due in the next two weeks that I know of.</p>`}
+    </section>
+    ${notify ? `<p class="meta"><a href="#settings">Turn on notifications</a> on this device for the morning note and check-ins.</p>` : ""}
+  </div>
+  ${composer("Reply, or tell me what's new…", "sayFromToday(event)")}`;
 };
 
-// ---- inbox -------------------------------------------------------------------
-
-const isRef = v => typeof v === "string" && /^\$(p\d+\.)?\d+$/.test(v);
-
-function describeOp(o, inbox) {
-  const k = KINDS[o.kind], d = o.data || {};
-  if (o.op === "delete") return `Delete ${k.one.toLowerCase()} #${o.id}`;
-  const verb = o.op === "create" ? "New" : "Change";
-  const name = (o.kind === "courses" && d.number ? `${d.number} · ${d.instructor || "?"}` : d.title || d.text) || `#${o.id}`;
-  const when = d.do_date ? `do ${fmtDay(d.do_date)}` : d.due ? `due ${fmtWhen(d.due, d.window)}` : d.start ? (d.repeat ? `${d.repeat.replaceAll(",", "/")} ${fmtTime(d.start)}${d.end ? "–" + fmtTime(d.end) : ""} until ${fmtDay(d.until)}${d.skip ? `, not ${d.skip.split(",").map(fmtDay).join(", ")}` : ""}` : fmtWhen(d.start, d.window)) : d.deadline ? `by ${fmtWhen(d.deadline)}` : "";
-  const course = typeof d.course_id === "number" ? courseName(d.course_id) : isRef(d.course_id) ? "course pending above" : "";
-  const changed = o.op === "update" ? Object.keys(d).join(", ") : "";
-  return `<span class="opverb">${verb} ${k.one.toLowerCase()}</span> <b>${esc(name)}</b>
-    ${[when, course, changed && "changes " + changed].filter(Boolean).map(s => `<span class="meta-inline">${esc(s)}</span>`).join("")}
-    ${d.provisional ? prov(d) : ""}`;
-}
-
-async function refreshBadge() {
+async function refreshNote() {
   try {
-    const [{ count }, { questions }] = await Promise.all([api("/api/inbox"), api("/api/chat/badge")]);
-    for (const [view, n] of [["inbox", count], ["chat", questions]]) {
-      const b = $(`#nav [data-view=${view}] .badge`);
-      b.textContent = n || "";
-      b.hidden = !n;
-    }
+    const n = await api("/api/note");
+    if (n.written_by === "assistant" && $("#note-h")) { $("#note-h").textContent = n.headline; $("#note-b").textContent = n.body; }
   } catch { }
 }
 
-function toast(text) {
-  const t = $("#toast");
-  t.innerHTML = text;
-  t.hidden = false;
-  clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => t.hidden = true, 7000);
+// ---- Chat --------------------------------------------------------------------
+
+// Just enough markdown for replies: **bold**, *italic*, `code`, "- " lists, paragraphs.
+const md = s => esc(s).split(/\n{2,}/).map(par => {
+  const lines = par.split("\n");
+  if (lines.every(l => /^[-•] /.test(l))) return `<ul>${lines.map(l => `<li>${l.slice(2)}</li>`).join("")}</ul>`;
+  return `<p>${lines.join("<br>")}</p>`;
+}).join("").replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<i>$2</i>").replace(/`([^`]+)`/g, "<code>$1</code>");
+
+const chatFocus = () => { try { return JSON.parse(sessionStorage.getItem("chatFocus")); } catch { return null; } };
+function unfocus() { try { sessionStorage.removeItem("chatFocus"); } catch { } render(); }
+const hhmm = s => fmtTime(s).replace(" ", " ");
+
+function suggestionCard(m) {
+  const pending = m.proposals.filter(p => p.status === "pending");
+  const rows = m.proposals.map(p => `<label class="item">
+    ${p.status === "pending" ? `<input type="checkbox" checked data-p="${p.id}">` : ""}
+    <span class="title">${esc(p.summary)}</span>
+    <span class="meta">${p.status === "pending" ? esc(describeOps(p)) : p.status === "accepted" ? "added" : "skipped"}</span></label>`).join("");
+  return `<div class="sugg">${rows}
+    ${pending.length ? `<div class="foot">
+      <button class="btn primary small" onclick="acceptChecked(this)">${pending.length > 1 ? "Add these" : "Add it"}</button>
+      <button class="btn small" onclick="editProposal(${pending[0].id})">Change something</button></div>` : ""}</div>`;
 }
-const detail = e => { try { return JSON.parse(e.message.replace(/^\d+ /, "")).detail; } catch { return e.message; } };
+
+async function acceptChecked(button) {
+  const ids = $$("input[data-p]:checked", button.closest(".sugg")).map(i => Number(i.dataset.p));
+  button.disabled = true;
+  for (const id of ids) { try { await api(`/api/proposals/${id}/accept`, { method: "POST" }); } catch (e) { toast(esc(detail(e))); } }
+  render();
+}
+
+views.chat = async () => {
+  const [c] = await Promise.all([api("/api/chat"), loadLookups()]);
+  const focus = chatFocus();
+  let lastDay = "";
+  const turns = c.messages.map(m => {
+    const day = m.created_at.slice(0, 10);
+    const sep = day !== lastDay ? `<div class="day-sep">${esc(fmtLong(day))}</div>` : "";
+    lastDay = day;
+    if (m.role === "user") return `${sep}<div class="mine">${esc(m.text)}</div>`;
+    const isCurrent = c.current?.id === m.id;
+    const body = isCurrent
+      ? `<div class="ask-card"><p class="q">${esc(m.text)}</p>
+          ${m.quote ? `<div class="from">From the source: “${esc(m.quote)}”</div>` : ""}
+          ${c.current.options?.length ? `<div class="row-actions">${c.current.options.map(o => `<button class="btn" onclick="answerQuestion(${js(o)})">${esc(o)}</button>`).join("")}</div>` : ""}
+          <div class="row-actions"><button class="btn quiet small" onclick="chatAction('skip')">Ask me tomorrow</button>
+            <button class="btn quiet small" onclick="chatAction('dismiss')">Not relevant to me</button>
+            ${c.waiting ? `<span class="meta">${c.waiting} more after this</span>` : ""}</div></div>`
+      : `<div class="say">${md(m.text)}</div>`;
+    return `${sep}<article class="turn"><div class="who"><b>Almanac</b> · ${esc(hhmm(m.created_at))}</div>${body}
+      ${m.proposals?.length ? suggestionCard(m) : ""}</article>`;
+  }).join("");
+  setTimeout(() => {
+    scrollTo(0, document.body.scrollHeight);
+    if (pendingChat) { const t = pendingChat; pendingChat = null; sendChat(t); } else $("#say")?.focus();
+  });
+  return `<div class="page">
+    ${focus ? `<span class="focus-chip">About ${esc(focus.title)} <button class="icon-btn" style="width:26px;height:26px" onclick="unfocus()" aria-label="Stop focusing">${ICON.x}</button></span>` : ""}
+    <div class="thread" id="thread">${turns || `<article class="turn"><div class="say">Tell me what's going on: classes, plans, things you keep meaning to do. I'll keep track and check in.</div></article>`}</div>
+  </div>
+  ${composer(c.current ? "Your answer…" : "Message Almanac…", "chatSend(event)")}`;
+};
+
+async function chatAction(action) { await api(`/api/chat/${action}`, { method: "POST" }); render(); }
+
+function chatSend(e) {
+  e.preventDefault();
+  const box = e.target.elements.text, text = box.value.trim();
+  if (!text) return;
+  box.value = "";
+  sendChat(text);
+}
+
+async function sendChat(text) {
+  const thread = $("#thread");
+  thread.insertAdjacentHTML("beforeend", `<div class="mine">${esc(text)}</div>
+    <article class="turn" id="live"><div class="who"><b>Almanac</b></div><div class="say"><span class="typing"><i></i><i></i><i></i></span></div></article>`);
+  scrollTo(0, document.body.scrollHeight);
+  const say = $("#live .say");
+  let reply = "", proposed = 0;
+  try {
+    const r = await fetch("/api/chat/stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, focus: chatFocus() }) });
+    if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+    const reader = r.body.getReader(), dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const events = buf.split("\n\n");
+      buf = events.pop();
+      for (const ev of events) {
+        const e = JSON.parse(ev.replace(/^data: /, ""));
+        if (e.type === "token") { reply += e.text; say.innerHTML = md(reply); scrollTo(0, document.body.scrollHeight); }
+        else if (e.type === "done") proposed = e.proposed;
+      }
+    }
+  } catch (err) { toast(esc(detail(err))); }
+  if (proposed === null) toast("I couldn't pick out what to add from that: the model didn't answer in time (another app may be using it). Try again in a bit.");
+  render();
+}
+
+// ---- Suggestions ---------------------------------------------------------------
+
+const isRef = v => typeof v === "string" && /^\$(p\d+\.)?\d+$/.test(v);
+let inboxCache = [];
+
+function describeOps(p) {
+  return p.ops.map(o => {
+    const d = o.data || {}, one = KINDS[o.kind]?.one.toLowerCase() || o.kind;
+    if (o.op === "delete") return `remove this ${one}`;
+    if (o.op === "update") return Object.entries(d).map(([k, v]) =>
+      k === "course_id" ? `course: ${isRef(v) ? "the new course" : courseName(v)}` : k === "project_id" ? "link it to its project"
+        : k === "do_date" ? `move to ${fmtDay(v)}` : k === "status" ? (v === "done" ? "mark it done" : "reopen it")
+        : ["due", "start", "deadline"].includes(k) ? `${fmtWhen(v)}` : k).join(", ");
+    const when = d.do_date ? `on ${fmtDay(d.do_date)}` : d.due ? `due ${fmtWhen(d.due, d.window)}` : d.start
+      ? (d.repeat ? `${d.repeat.split(",").map(x => x[0] + x[1].toLowerCase()).join("/")} ${fmtTime(d.start)}${d.end ? `–${fmtTime(d.end)}` : ""}` : fmtWhen(d.start, d.window))
+      : d.deadline ? `by ${fmtWhen(d.deadline)}` : "no date yet";
+    return o.kind === "courses" ? `new course${d.title ? `: ${d.title}` : ""}` : o.kind === "memories" ? "to remember" : `${one}, ${when}`;
+  }).join("; ");
+}
 
 async function proposalAction(id, action) {
-  try {
-    await api(`/api/proposals/${id}/${action}`, { method: "POST" });
-  } catch (e) { toast(esc(detail(e))); }
+  try { await api(`/api/proposals/${id}/${action}`, { method: "POST" }); } catch (e) { toast(esc(detail(e))); }
   render();
 }
 
 async function acceptAll(sourceId) {
   const r = await api(`/api/sources/${sourceId}/accept-all`, { method: "POST" });
-  if (r.skipped.length) toast(`Accepted ${r.accepted}. Skipped:<br>` + r.skipped.map(s => `• ${esc(s.summary)}: ${esc(s.reason)}`).join("<br>"));
+  if (r.skipped.length) toast(`Added ${r.accepted}. Not yet:<br>` + r.skipped.map(s => `• ${esc(s.summary)}: ${esc(s.reason)}`).join("<br>"));
   render();
 }
 
-let inboxCache = [];
 async function editProposal(id) {
   await loadLookups();
-  const p = inboxCache.find(p => p.id === id);
+  const p = inboxCache.find(p => p.id === id) || (await api("/api/inbox")).proposals.find(p => p.id === id);
+  if (!p) return;
   const dlg = $("#editor");
-  dlg.innerHTML = `<form method="dialog"><h2>Edit before accepting</h2>
-    ${p.quote ? `<blockquote>${esc(p.quote)}</blockquote>` : ""}
-    ${p.ops.map((o, i) => o.op === "delete" ? `<p>${describeOp(o)}</p>` : `<fieldset data-i="${i}"><legend>${esc(KINDS[o.kind].one)}</legend>
+  dlg.innerHTML = `<form method="dialog"><h2>Before I add it</h2>
+    ${p.quote ? `<p class="why">“${esc(p.quote)}”</p>` : ""}
+    ${p.ops.map((o, i) => o.op === "delete" ? `<p>Remove “${esc(o.id)}”</p>` : `<fieldset data-i="${i}"><legend>${esc(KINDS[o.kind].one)}</legend>
       ${KINDS[o.kind].fields.filter(f => !isRef(o.data?.[f[0]]) && (o.op === "create" || f[0] in o.data)).map(f => input(f, o.data?.[f[0]])).join("")}</fieldset>`).join("")}
     <p class="error" hidden></p>
-    <div class="actions"><span class="grow"></span><button type="button" data-act="cancel">Cancel</button><button class="primary">Accept</button></div></form>`;
+    <div class="actions"><button type="button" class="btn quiet" data-act="reject">Don't add</button><span class="grow"></span>
+      <button type="button" class="btn" data-act="cancel">Cancel</button><button class="btn primary">Add it</button></div></form>`;
   const form = $("form", dlg);
   $("[data-act=cancel]", form).onclick = () => dlg.close();
+  $("[data-act=reject]", form).onclick = async () => { await proposalAction(id, "reject"); dlg.close(); };
   form.onsubmit = async e => {
     e.preventDefault();
     const ops = p.ops.map((o, i) => {
@@ -317,7 +441,7 @@ async function editProposal(id) {
       return { ...o, data };
     });
     try { await send("POST", `/api/proposals/${id}/accept`, { ops }); dlg.close(); render(); }
-    catch (err) { const el = $(".error", form); el.hidden = false; el.textContent = err.message; }
+    catch (err) { const el = $(".error", form); el.hidden = false; el.textContent = detail(err); }
   };
   dlg.showModal();
 }
@@ -327,9 +451,9 @@ async function uploadFiles(files, replaces = null) {
     const body = new FormData();
     body.append("file", f);
     const r = await fetch(`/api/uploads${replaces ? `?replaces=${replaces}` : ""}`, { method: "POST", body });
-    if (!r.ok) toast(esc(`${f.name}: ${await r.text()}`));
+    toast(r.ok ? `Reading ${esc(f.name)}. What I find will show up in <a href="#inbox">Suggestions</a>.` : esc(`${f.name}: ${await r.text()}`));
   }
-  render();
+  if (location.hash.startsWith("#inbox")) render();
 }
 
 async function retryUpload(id, button) {
@@ -339,63 +463,223 @@ async function retryUpload(id, button) {
 }
 
 const uploadRow = s => {
-  const status = s.status === "processing" ? `<span class="spin"></span> Reading…`
-    : s.status === "failed" ? `<span class="bad">Failed</span>` : "Done";
-  const dropped = s.dropped.length ? `<details><summary>${s.dropped.length} item${s.dropped.length > 1 ? "s" : ""} dropped</summary>
-    <ul>${s.dropped.map(d => `<li><b>${esc(d.title)}</b>: ${esc(d.reason)}<blockquote>${esc(d.quote || "")}</blockquote></li>`).join("")}</ul></details>` : "";
-  const retry = s.status === "failed" ? `<button class="small" onclick="retryUpload(${s.id}, this)">Retry</button>` : "";
-  const again = s.status === "processing" ? "" : `<label class="linkish" title="Upload an updated copy: only changes will be proposed">New version
-    <input type="file" accept=".pdf,.docx,.txt,.md" hidden onchange="uploadFiles(this.files, ${s.id})"></label>`;
-  return `<li class="row upload"><span class="title">${esc(s.title)}</span><span class="meta">${status}</span>${retry}${again}</li>
-    ${s.error ? `<li class="uperror">${esc(s.error)}</li>` : ""}${dropped ? `<li class="updropped">${dropped}</li>` : ""}`;
+  const status = s.status === "processing" ? `<span class="spin"></span> reading…` : s.status === "failed" ? `<span class="bad">couldn't read it</span>` : "read";
+  const dropped = s.dropped.length ? `<details class="upload-note"><summary>${s.dropped.length} thing${s.dropped.length > 1 ? "s" : ""} I left out (not found word for word)</summary>
+    <ul>${s.dropped.map(d => `<li>${esc(d.title)}: “${esc(d.quote || "")}”</li>`).join("")}</ul></details>` : "";
+  return `<div class="upload">${ICON.doc}<span class="name">${esc(s.title)}</span><span class="meta">${status}</span>
+    ${s.status === "failed" ? `<button class="btn small" onclick="retryUpload(${s.id}, this)">Try again</button>` : ""}
+    ${s.status !== "processing" ? `<label class="btn small quiet" title="Upload an updated copy: only changes will be suggested">New version
+      <input type="file" accept=".pdf,.docx,.txt,.md" hidden onchange="uploadFiles(this.files, ${s.id})"></label>` : ""}</div>
+    ${s.error ? `<div class="upload-note">${esc(s.error)}</div>` : ""}${dropped}`;
 };
 
 let pollTimer;
 views.inbox = async () => {
   const [box, sources] = await Promise.all([api("/api/inbox"), api("/api/sources"), loadLookups()]);
   clearTimeout(pollTimer);
-  if (sources.some(s => s.status === "processing")) pollTimer = setTimeout(() => location.hash === "#inbox" && render(), 3000);
-  const uploads = `<section class="uploads">
-    <label class="drop" ondragover="event.preventDefault(); this.classList.add('over')" ondragleave="this.classList.remove('over')"
-      ondrop="event.preventDefault(); this.classList.remove('over'); uploadFiles(event.dataTransfer.files)">
-      <input type="file" multiple accept=".pdf,.docx,.txt,.md" hidden onchange="uploadFiles(this.files)">
-      <b>Upload a syllabus or document</b><span>PDF, DOCX or TXT. Drop files here or click to choose.</span></label>
-    ${sources.length ? `<ul>${sources.slice(0, 5).map(uploadRow).join("")}</ul>` : ""}</section>`;
+  if (sources.some(s => s.status === "processing")) pollTimer = setTimeout(() => location.hash.startsWith("#inbox") && render(), 3000);
   inboxCache = box.proposals;
   const ready = box.proposals.filter(p => !p.blocked_by), waiting = box.proposals.filter(p => p.blocked_by);
   const groups = {};
   for (const p of ready) (groups[p.source?.id ?? 0] ??= { source: p.source, items: [] }).items.push(p);
-  const card = p => `<li class="card ${p.blocked_by ? "blocked" : ""}">
+  const card = p => `<div class="card ${p.blocked_by ? "waiting" : ""}">
     <p class="summary">${esc(p.summary)}</p>
-    <ul class="ops">${p.ops.map(o => `<li>${describeOp(o)}</li>`).join("")}</ul>
-    ${p.quote ? `<blockquote>${esc(p.quote)}</blockquote>` : ""}
-    ${p.blocked_by ? `<p class="waiting">Waiting on your answer in <a href="#chat">Chat</a>: ${esc(p.blocked_by)}</p>` : ""}
-    <div class="actions">
-      <button class="primary" ${p.blocked_by ? "disabled" : ""} onclick="proposalAction(${p.id}, 'accept')">Accept</button>
-      <button ${p.blocked_by ? "disabled" : ""} onclick="editProposal(${p.id})">Edit</button>
-      <button onclick="proposalAction(${p.id}, 'reject')">Reject</button>
-    </div></li>`;
-  const proposals = Object.values(groups).map(g => `<section>
-      <div class="grouphead"><h3>${esc(g.source?.title || "Plans")}</h3>
-        ${g.source && g.items.length > 1 ? `<button onclick="acceptAll(${g.source.id})">Accept all ${g.items.length}</button>` : ""}</div>
-      <ul>${g.items.map(card).join("")}</ul></section>`).join("");
-  const later = waiting.length ? `<details class="later"><summary>${waiting.length} more waiting on your answers in Chat</summary>
-    <ul>${waiting.map(card).join("")}</ul></details>` : "";
-  return `<h1>Inbox</h1><p class="sub">Nothing changes in your plan until you accept it.</p>
-    ${uploads}${proposals || `<p class="empty">Nothing to review.</p>`}${later}`;
+    <p class="detail">${esc(describeOps(p))}</p>
+    ${p.quote ? `<p class="why">“${esc(p.quote)}”</p>` : ""}
+    ${p.blocked_by ? `<p class="detail">Waiting on your answer in <a href="#chat">Chat</a>: ${esc(p.blocked_by)}</p>` : `<div class="row-actions">
+      <button class="btn primary small" onclick="proposalAction(${p.id}, 'accept')">Add it</button>
+      <button class="btn small" onclick="editProposal(${p.id})">Change something</button>
+      <button class="btn quiet small" onclick="proposalAction(${p.id}, 'reject')">Don't add</button></div>`}
+  </div>`;
+  const listed = Object.values(groups).map(g => `<section>
+    <div class="group-head"><h2>${esc(g.source?.title || "From planning")}</h2>
+      ${g.source && g.items.length > 1 ? `<button class="btn small" onclick="acceptAll(${g.source.id})">Add all ${g.items.length}</button>` : ""}</div>
+    ${g.items.map(card).join("")}</section>`).join("");
+  return `<div class="page">
+    <header class="head"><h1>Suggestions</h1>
+      <p class="voice small">${ready.length ? `${ready.length} thing${ready.length > 1 ? "s" : ""} I'd like to add. Nothing changes until you say yes.` : "Nothing waiting. Send me a syllabus or tell me in Chat, and I'll suggest what to add."}</p></header>
+    <section>
+      <label class="drop" ondragover="event.preventDefault(); this.classList.add('over')" ondragleave="this.classList.remove('over')"
+        ondrop="event.preventDefault(); this.classList.remove('over'); uploadFiles(event.dataTransfer.files)">
+        ${ICON.doc}<span><b>Add a syllabus or document</b><br>PDF, DOCX or text. Drop it here or click.</span>
+        <input type="file" multiple accept=".pdf,.docx,.txt,.md" hidden onchange="uploadFiles(this.files)"></label>
+      ${sources.slice(0, 6).map(uploadRow).join("")}
+    </section>
+    ${listed}
+    ${waiting.length ? `<details class="later"><summary>${waiting.length} more waiting on your answers</summary>${waiting.map(card).join("")}</details>` : ""}
+  </div>`;
 };
 
-async function planProject(id, button) {
-  button.disabled = true;
-  button.textContent = "Planning…";
-  try {
-    const r = await send("POST", `/api/projects/${id}/plan`, {});
-    toast(`${esc(r.proposal.summary)}. Review it in your <a href="#inbox">Inbox</a>.` + (r.warnings.length ? `<br>${r.warnings.map(esc).join("<br>")}` : ""));
-  } catch (e) { toast(esc(detail(e))); }
+// ---- Calendar ------------------------------------------------------------------
+
+const cal = { mode: sessionStorage.getItem("calMode") || "week", anchor: null, day: null };
+const narrow = () => matchMedia("(max-width: 760px)").matches;
+const HOUR = 56;
+
+function calNav(step) {
+  const a = cal.anchor;
+  cal.anchor = step === 0 ? null : cal.mode === "month" && !narrow() ? new Date(a.getFullYear(), a.getMonth() + step, 1) : addDays(a, 7 * step);
+  cal.day = step === 0 ? null : cal.day && iso(addDays(asDate(cal.day), 7 * step));
   render();
 }
 
-// ---- goals -------------------------------------------------------------------
+async function dropTask(e, day) {
+  e.preventDefault();
+  e.currentTarget.classList.remove("over");
+  await send("PATCH", `/api/tasks/${e.dataTransfer.getData("text/plain")}`, { do_date: day });
+  render();
+}
+
+function weekLine(data, first) {
+  // what a person would say about the week, from the numbers
+  const name = i => addDays(first, i).toLocaleDateString("en-US", { weekday: "long" });
+  const load = Array(7).fill(0);
+  for (const e of data.events) if (e.end && e.start.length > 10) load[Math.round((asDate(e.start.slice(0, 10)) - first) / 864e5)] += hours(e.end) - hours(e.start);
+  const long = load.map((h, i) => [h, i]).filter(([h]) => h >= 3);
+  const due = data.deadlines.filter(d => d.due.slice(0, 10) >= todayIso);
+  const parts = [];
+  if (long.length) {
+    const names = long.map(([, i]) => name(i));
+    const avg = Math.round(long.reduce((s, [h]) => s + h, 0) / long.length * 2) / 2;
+    parts.push(`${names.length > 1 ? names.slice(0, -1).join(", ") + " and " + names.at(-1) + " are your long days" : names[0] + " is your long day"}: about ${avg} hours of class${names.length > 1 ? " each" : ""}.`);
+  }
+  if (due.length) parts.push(`${due.length === 1 ? `One thing is due: ${due[0].title}, ${fmtDay(due[0].due)}` : `${due.length} things are due, the first ${due[0].title} on ${fmtDay(due[0].due)}`}.`);
+  return parts.join(" ") || "A quiet week on the calendar so far.";
+}
+
+function chipFor(kind, x) {
+  const label = kind === "deadlines" ? `Due: ${x.title}` : kind === "events" ? `${x.start.length > 10 ? fmtTime(x.start) + " " : ""}${x.title}` : `○ ${x.title}`;
+  const cls = ["chip", kind === "tasks" ? "task" : kind === "deadlines" ? "dl" : "ev2", x.status === "done" ? "done" : "", x.provisional || x.window ? "prov" : "", x.unscheduled ? "faint" : ""].join(" ");
+  const drag = kind === "tasks" ? `draggable="true" ondragstart="event.dataTransfer.setData('text/plain', ${x.id})"` : "";
+  const tip = [x.title, courseName(x.course_id), x.window ? "sometime that week (the day isn't stated)" : "", x.provisional ? "provisional" : "", x.unscheduled ? "no day to do it yet" : ""].filter(Boolean).join(" · ");
+  return `<div class="${cls}" ${drag} title="${esc(tip)}" onclick='edit("${kind}", ${x.id})'>${esc(label)}</div>`;
+}
+
+views.calendar = async () => {
+  const t = await api("/api/today");
+  todayIso = t.date;
+  const today = asDate(t.date);
+  cal.anchor ??= today;
+  return narrow() ? agenda(today) : cal.mode === "month" ? month(today) : weekGrid(today);
+};
+
+function calHeader(title, line) {
+  return `<header class="head">
+    <div class="cal-bar"><h1>${esc(title)}</h1>
+      <button class="icon-btn" onclick="calNav(-1)" aria-label="Previous">${ICON.left}</button>
+      <button class="btn small" onclick="calNav(0)">Today</button>
+      <button class="icon-btn" onclick="calNav(1)" aria-label="Next">${ICON.right}</button>
+      ${narrow() ? "" : `<div class="seg" role="group" aria-label="View">${["week", "month"].map(m => `<button class="${m === cal.mode ? "on" : ""}" onclick='cal.mode="${m}"; sessionStorage.setItem("calMode", "${m}"); render()'>${m[0].toUpperCase() + m.slice(1)}</button>`).join("")}</div>`}
+    </div>
+    ${line ? `<p class="voice small">${esc(line)}</p>` : ""}</header>`;
+}
+
+function layoutLanes(events) {
+  // events that overlap share the column side by side: event → [lane, lanes in its group]
+  const out = new Map();
+  const byDay = {};
+  for (const e of events) (byDay[e.start.slice(0, 10)] ??= []).push(e);
+  for (const list of Object.values(byDay)) {
+    list.sort((a, b) => a.start.localeCompare(b.start));
+    let group = [], ends = [], groupEnd = -1;
+    const close = () => group.forEach(([e, l]) => out.set(e, [l, ends.length]));
+    for (const e of list) {
+      const s = hours(e.start), f = e.end ? hours(e.end) : s + 1;
+      if (s >= groupEnd) { close(); group = []; ends = []; }
+      let lane = ends.findIndex(x => x <= s);
+      if (lane < 0) { lane = ends.length; ends.push(f); } else ends[lane] = f;
+      group.push([e, lane]);
+      groupEnd = Math.max(groupEnd, f);
+    }
+    close();
+  }
+  return out;
+}
+
+async function weekGrid(today) {
+  const first = monday(cal.anchor);
+  const [data] = await Promise.all([api(`/api/calendar?start=${iso(first)}&end=${iso(addDays(first, 6))}`), loadLookups()]);
+  const timed = data.events.filter(e => e.start.length > 10);
+  // the hours that matter this week: an hour either side of its classes and events
+  const lo = timed.length ? Math.max(6, Math.min(...timed.map(e => Math.floor(hours(e.start)))) - 1) : 8;
+  const hi = timed.length ? Math.min(24, Math.max(...timed.map(e => Math.ceil(e.end ? hours(e.end) : hours(e.start) + 1))) + 1) : 18;
+  const lanes = layoutLanes(timed);
+  const days = [...Array(7)].map((_, i) => iso(addDays(first, i)));
+  const allday = Object.fromEntries(days.map(d => [d, []]));
+  data.events.filter(e => e.start.length === 10).forEach(e => allday[e.start]?.push(chipFor("events", e)));
+  data.deadlines.forEach(d => allday[d.due.slice(0, 10)]?.push(chipFor("deadlines", d)));
+  data.tasks.forEach(x => allday[x.do_date]?.push(chipFor("tasks", x)));
+  data.unscheduled.forEach(x => allday[x.due.slice(0, 10)]?.push(chipFor("tasks", { ...x, unscheduled: true })));
+  const now = new Date(), nowH = now.getHours() + now.getMinutes() / 60;
+  const head = days.map(d => `<div class="dh ${d === todayIso ? "today" : ""}">${asDate(d).toLocaleDateString("en-US", { weekday: "short" })}<b>${asDate(d).getDate()}</b></div>`).join("");
+  const top = days.map(d => `<div class="allday ${d === todayIso ? "today" : ""}" ondragover="event.preventDefault(); this.classList.add('over')"
+      ondragleave="this.classList.remove('over')" ondrop="dropTask(event, '${d}')">${allday[d].join("")}</div>`).join("");
+  const cols = days.map(d => `<div class="col ${d === todayIso ? "today" : ""}" style="height:${(hi - lo) * HOUR}px">
+      ${[...Array(hi - lo)].map((_, i) => `<div class="hl" style="top:${i * HOUR}px"></div>`).join("")}
+      ${timed.filter(e => e.start.slice(0, 10) === d).map(e => {
+        const s = hours(e.start), f = e.end ? hours(e.end) : s + 1, [lane, of] = lanes.get(e);
+        const place = of > 1 ? `left:calc(${(100 / of) * lane}% + 3px);right:calc(${100 - (100 / of) * (lane + 1)}% + 3px);` : "";
+        return `<div class="ev ${e.provisional ? "prov" : ""}" style="${place}top:${(s - lo) * HOUR + 1}px;height:${Math.max(22, (f - s) * HOUR - 3)}px;--c:${courseTint(e.course_id)}"
+          onclick='edit("events", ${e.id})' title="${esc(e.title)}"><b>${esc(e.title)}</b>${esc(fmtTime(e.start))}${e.end ? `–${esc(fmtTime(e.end))}` : ""}${e.location ? ` · ${esc(e.location)}` : ""}</div>`;
+      }).join("")}
+      ${d === todayIso && nowH >= lo && nowH <= hi ? `<div class="now" style="top:${(nowH - lo) * HOUR}px"></div>` : ""}</div>`).join("");
+  const legend = lookups.courses.map(c => `<span><i class="swatch" style="background:${courseColor(c.id)}"></i>${esc(courseName(c.id))}</span>`).join("");
+  return `<div class="page cal">
+    ${calHeader(`${fmtDay(days[0]).replace(/^\w+, /, "")} – ${fmtDay(days[6]).replace(/^\w+, /, "")}`, weekLine(data, first))}
+    ${legend ? `<div class="legend">${legend}</div>` : ""}
+    <div class="week"><div></div>${head}<div class="gutter" style="padding-top:8px">all day</div>${top}
+      <div class="hours">${[...Array(hi - lo)].map((_, i) => `<div>${((lo + i) % 12) || 12} ${lo + i < 12 ? "AM" : "PM"}</div>`).join("")}</div>${cols}</div>
+    <p class="meta">Drag a task to another day to move it. Dashed: the source didn't fix the day or time.</p>
+  </div>`;
+}
+
+async function month(today) {
+  const a = cal.anchor, first = monday(new Date(a.getFullYear(), a.getMonth(), 1));
+  const n = Math.ceil(((new Date(a.getFullYear(), a.getMonth() + 1, 0) - first) / 864e5 + 1) / 7) * 7;
+  const [data] = await Promise.all([api(`/api/calendar?start=${iso(first)}&end=${iso(addDays(first, n - 1))}`), loadLookups()]);
+  const by = {};
+  const put = (d, html) => (by[d] ??= []).push(html);
+  data.events.forEach(e => put(e.start.slice(0, 10), chipFor("events", e)));
+  data.deadlines.forEach(d => put(d.due.slice(0, 10), chipFor("deadlines", d)));
+  data.tasks.forEach(x => put(x.do_date, chipFor("tasks", x)));
+  data.unscheduled.forEach(x => put(x.due.slice(0, 10), chipFor("tasks", { ...x, unscheduled: true })));
+  const cells = [...Array(n)].map((_, i) => {
+    const d = addDays(first, i), day = iso(d);
+    return `<div class="cell ${d.getMonth() !== a.getMonth() ? "out" : ""} ${day === todayIso ? "today" : ""}" ondragover="event.preventDefault(); this.classList.add('over')"
+      ondragleave="this.classList.remove('over')" ondrop="dropTask(event, '${day}')"><span class="n">${d.getDate()}</span>${(by[day] || []).join("")}</div>`;
+  }).join("");
+  return `<div class="page cal">
+    ${calHeader(a.toLocaleDateString("en-US", { month: "long", year: "numeric" }), "")}
+    <div class="month">${["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map(d => `<div class="dow">${d}</div>`).join("")}${cells}</div></div>`;
+}
+
+async function agenda(today) {
+  const first = monday(cal.anchor);
+  const days = [...Array(7)].map((_, i) => iso(addDays(first, i)));
+  cal.day = cal.day && days.includes(cal.day) ? cal.day : days.includes(todayIso) ? todayIso : days[0];
+  const [data] = await Promise.all([api(`/api/calendar?start=${days[0]}&end=${days[6]}`), loadLookups()]);
+  const on = d => [
+    ...data.events.filter(e => e.start.slice(0, 10) === d).map(e => ({ t: e.start.length > 10 ? fmtTime(e.start) : "All day", sort: e.start, html:
+      `<div class="box ev ${e.provisional ? "unset" : ""}" style="--c:${courseTint(e.course_id)}" onclick='edit("events", ${e.id})'><span>${esc(e.title)}</span>
+       <span class="meta">${[e.end ? `until ${fmtTime(e.end)}` : "", courseName(e.course_id), e.location].filter(Boolean).map(esc).join(" · ")}</span></div>` })),
+    ...data.deadlines.filter(x => x.due.slice(0, 10) === d).map(x => ({ t: "Due", due: true, sort: x.due, html:
+      `<div class="box dl" onclick='edit("deadlines", ${x.id})'><span>${esc(x.title)}</span><span class="meta">${esc(courseName(x.course_id))}</span></div>` })),
+    ...data.tasks.filter(x => x.do_date === d).map(x => ({ t: "Any time", sort: d, html:
+      `<div class="box" onclick='edit("tasks", ${x.id})'><span style="${x.status === "done" ? "text-decoration:line-through;color:var(--faint)" : ""}">${esc(x.title)}</span>
+       <span class="meta">${[courseName(x.course_id), est(x.estimate_min)].filter(Boolean).map(esc).join(" · ")}</span></div>` })),
+  ].sort((a, b) => a.sort.localeCompare(b.sort));
+  const strip = days.map(d => `<button class="${d === cal.day ? "on" : ""}" onclick="cal.day='${d}'; render()" aria-pressed="${d === cal.day}">
+      ${asDate(d).toLocaleDateString("en-US", { weekday: "narrow" })}<b>${asDate(d).getDate()}</b>${on(d).length ? "<i></i>" : ""}</button>`).join("");
+  const later = days.filter(d => d > cal.day && on(d).length);
+  const dayBlock = d => `<div class="day">${d === cal.day ? "" : `<h2>${esc(fmtLong(d))}</h2>`}
+    ${on(d).map(x => `<div class="ag"><div class="t ${x.due ? "due" : ""}">${esc(x.t)}</div>${x.html}</div>`).join("") || `<p class="empty">Nothing on this day.</p>`}</div>`;
+  return `<div class="page cal">
+    ${calHeader(asDate(cal.day).toLocaleDateString("en-US", { month: "long" }), "")}
+    <div class="strip" role="group" aria-label="This week">${strip}</div>
+    <div class="agenda">${dayBlock(cal.day)}${later.map(dayBlock).join("")}</div></div>`;
+}
+
+// ---- Goals -------------------------------------------------------------------
 
 function discuss(kind, id, title) {
   try { sessionStorage.setItem("chatFocus", JSON.stringify({ kind, id, title })); } catch { }
@@ -407,104 +691,206 @@ async function suggestNextSteps(button) {
   button.textContent = "Thinking…";
   try {
     const r = await api("/api/goals/next-steps", { method: "POST" });
-    toast(r.proposed ? `Suggested ${r.proposed} next step${r.proposed > 1 ? "s" : ""}. Review in your <a href="#inbox">Inbox</a>.`
-                     : "Every goal already has something to do (or a suggestion waiting).");
+    toast(r.proposed ? `I suggested ${r.proposed} next step${r.proposed > 1 ? "s" : ""}. They're in <a href="#inbox">Suggestions</a>.`
+                     : "Every goal already has something to do, or a suggestion waiting.");
+  } catch (e) { toast(esc(detail(e))); }
+  render();
+}
+
+async function planProject(id, button) {
+  button.disabled = true;
+  button.textContent = "Planning…";
+  try {
+    const r = await send("POST", `/api/projects/${id}/plan`, {});
+    toast(`${esc(r.proposal.summary)}. It's in <a href="#inbox">Suggestions</a>.` + (r.warnings.length ? `<br>${r.warnings.map(esc).join("<br>")}` : ""));
   } catch (e) { toast(esc(detail(e))); }
   render();
 }
 
 const projectCard = p => {
   const total = p.open + p.done, pct = total ? Math.round(100 * p.done / total) : 0;
-  return `<li class="card project">
-    <div class="grouphead"><a class="title" onclick='edit("projects", ${p.id})'><b>${esc(p.title)}</b></a>${tag(p.course_id)}
-      <span class="meta">${p.deadline ? "by " + esc(fmtWhen(p.deadline)) : ""}</span></div>
+  return `<div class="card">
+    <div class="group-head"><a class="summary" style="flex:1;color:inherit;text-decoration:none;cursor:pointer" onclick='edit("projects", ${p.id})'>${esc(p.title)}</a>
+      ${courseTag(p.course_id)}<span class="meta">${p.deadline ? `by ${esc(fmtWhen(p.deadline))}` : ""}</span></div>
     <div class="bar"><span style="width:${pct}%"></span></div>
-    <p class="from">${p.done}/${total} done${p.next ? ` · next: <b>${esc(p.next.title)}</b>${p.next.do_date ? " (" + esc(fmtDay(p.next.do_date)) + ")" : ""}` : total ? "" : " · no tasks yet"}</p>
-    <div class="actions">
-      ${p.deadline ? `<button class="small" onclick="planProject(${p.id}, this)">Plan it</button>` : ""}
-      <button class="small" onclick='discuss("projects", ${p.id}, ${JSON.stringify(p.title).replace(/'/g, "&#39;")})'>Discuss</button>
-    </div></li>`;
+    <p class="detail">${total ? `${p.done} of ${total} done` : "No steps yet"}${p.next ? `. Next: <b style="font-weight:500">${esc(p.next.title)}</b>${p.next.do_date ? `, ${esc(fmtDay(p.next.do_date))}` : ""}` : ""}</p>
+    <div class="row-actions">
+      ${p.deadline ? `<button class="btn small" onclick="planProject(${p.id}, this)">${total ? "Replan it" : "Plan it with me"}</button>` : ""}
+      <button class="btn small quiet" onclick="discuss('projects', ${p.id}, ${js(p.title)})">Talk it through</button>
+    </div></div>`;
 };
 
 views.goals = async () => {
   const [b] = await Promise.all([api("/api/board"), loadLookups()]);
   const goals = b.goals.map(g => `<section class="goal">
-      <div class="grouphead"><div><h2>${esc(g.title)}</h2><p class="from">${[g.horizon, g.why && "why: " + g.why].filter(Boolean).map(esc).join(" · ")}</p></div>
-        <span><button class="small" onclick='discuss("goals", ${g.id}, ${JSON.stringify(g.title).replace(/'/g, "&#39;")})'>Discuss</button>
-        <button class="small" onclick='openEditor("projects", null, {goal_id: ${g.id}})'>Add project</button></span></div>
-      ${g.projects.length ? `<ul>${g.projects.map(projectCard).join("")}</ul>` : `<p class="empty">No projects yet.</p>`}</section>`).join("");
-  return `<header class="head"><div><h1>Goals</h1><p class="sub">Every active goal should always have a next step.</p></div>
-      <span><button onclick="suggestNextSteps(this)">Suggest next steps</button> <button class="primary" onclick='openEditor("goals")'>Add goal</button></span></header>
-    ${goals || `<p class="empty">No goals yet. Tell the assistant in Chat what you're working toward, or add one.</p>`}
-    ${b.projects.length ? `<section><h3>Other projects</h3><ul>${b.projects.map(projectCard).join("")}</ul></section>` : ""}`;
+    <div class="group-head"><h2>${esc(g.title)}</h2>
+      <button class="btn small quiet" onclick="discuss('goals', ${g.id}, ${js(g.title)})">Talk it through</button>
+      <button class="btn small" onclick='openEditor("projects", null, {goal_id: ${g.id}})'>Add a project</button></div>
+    ${g.why || g.horizon ? `<p class="voice small" style="margin:0">${esc([g.why, g.horizon && `(${g.horizon})`].filter(Boolean).join(" "))}</p>` : ""}
+    ${g.projects.map(projectCard).join("") || `<p class="empty">No projects yet. I can suggest a first step.</p>`}</section>`).join("");
+  return `<div class="page">
+    <header class="head"><h1>Goals</h1>
+      <p class="voice small">What you're working toward. I'll make sure each one always has a next step.</p>
+      <div class="row-actions"><button class="btn primary" onclick='openEditor("goals")'>Add a goal</button>
+        <button class="btn" onclick="suggestNextSteps(this)">Suggest next steps</button></div></header>
+    ${goals || `<p class="empty">No goals yet. Tell me in <a href="#chat">Chat</a> what you're working toward, or add one.</p>`}
+    ${b.projects.length ? `<section><h2>Other projects</h2>${b.projects.map(projectCard).join("")}</section>` : ""}
+  </div>`;
 };
 
-// ---- archive -----------------------------------------------------------------
+// ---- a course ----------------------------------------------------------------
+
+views.course = async (id) => {
+  id = Number(id);
+  await loadLookups();
+  const c = lookups.courses.find(c => c.id === id);
+  if (!c) return `<div class="page"><p class="empty">That course isn't in your plan.</p></div>`;
+  const [deadlines, tasks, events, projects] = await Promise.all(["deadlines", "tasks", "events", "projects"].map(k => api(`/api/${k}?course_id=${id}`)));
+  const t = await api("/api/today");
+  const upcoming = [...deadlines.filter(d => d.due && d.due.slice(0, 10) >= t.date).map(d => ({ ...d, kind: "deadlines", at: d.due })),
+                    ...events.filter(e => !e.repeat && e.start.slice(0, 10) >= t.date).map(e => ({ ...e, kind: "events", at: e.start })),
+                    ...tasks.filter(x => x.status === "open").map(x => ({ ...x, kind: "tasks", at: x.do_date || x.due || "9999" }))]
+    .sort((a, b) => a.at.localeCompare(b.at));
+  const meets = events.filter(e => e.repeat);
+  return `<div class="page">
+    <header class="head"><div class="dateline"><i class="swatch" style="background:${courseColor(id)}"></i> ${esc(c.number)}</div>
+      <h1>${esc(c.title || courseName(id))}</h1>
+      <p class="voice small">${esc(c.number)} with ${esc(c.instructor)}.</p>
+      <div class="row-actions"><button class="btn small" onclick='edit("courses", ${id})'>Edit course</button></div></header>
+    ${meets.length ? `<section><h2>Class</h2>${meets.map(e => `<div class="when-row"><span class="when">${esc(e.repeat.split(",").map(x => x[0] + x[1].toLowerCase()).join("/"))}</span>
+      <a class="what" onclick='edit("events", ${e.id})'>${esc(fmtTime(e.start))}${e.end ? `–${esc(fmtTime(e.end))}` : ""}${e.location ? ` · ${esc(e.location)}` : ""}</a></div>`).join("")}</section>` : ""}
+    <section><h2>Coming up</h2>
+      ${upcoming.map(x => `<div class="when-row"><span class="when ${x.kind === "deadlines" ? "due" : ""}">${x.at === "9999" ? "No date" : esc(fmtDay(x.at))}</span>
+        <a class="what" onclick='edit("${x.kind}", ${x.id})'>${x.kind === "deadlines" ? "Due: " : ""}${esc(x.title)}</a></div>`).join("") || `<p class="empty">Nothing coming up.</p>`}</section>
+    ${projects.length ? `<section><h2>Projects</h2>${projects.map(p => `<div class="when-row"><span class="when">${p.deadline ? esc(fmtDay(p.deadline)) : ""}</span>
+      <a class="what" onclick='edit("projects", ${p.id})'>${esc(p.title)}</a></div>`).join("")}</section>` : ""}
+  </div>`;
+};
+
+// ---- Plan (everything, by kind) ------------------------------------------------
+
+views.plan = async () => {
+  const tab = sessionStorage.getItem("planTab") || "tasks";
+  const [items] = await Promise.all([api(`/api/${tab}`), loadLookups()]);
+  const row = {
+    tasks: taskItem,
+    events: e => `<div class="when-row"><span class="when">${e.repeat ? esc(e.repeat.split(",").map(x => x[0] + x[1].toLowerCase()).join("/")) : esc(fmtDay(e.start))}</span>
+      <a class="what" onclick='edit("events", ${e.id})'>${esc(e.title)}</a><span class="meta">${esc(fmtTime(e.start))}</span></div>`,
+    deadlines: d => `<div class="when-row"><span class="when due">${d.due ? esc(fmtDay(d.due)) : "No date"}</span>
+      <a class="what" onclick='edit("deadlines", ${d.id})'>${esc(d.title)}</a><span class="meta">${esc(courseName(d.course_id))}</span></div>`,
+    projects: p => `<div class="when-row"><span class="when">${p.deadline ? esc(fmtDay(p.deadline)) : ""}</span>
+      <a class="what" onclick='edit("projects", ${p.id})'>${esc(p.title)}</a><span class="meta">${esc(courseName(p.course_id))}</span></div>`,
+    goals: g => `<div class="when-row"><span class="when">${esc(g.horizon || "")}</span><a class="what" onclick='edit("goals", ${g.id})'>${esc(g.title)}</a></div>`,
+    courses: c => `<div class="when-row"><span class="when"><i class="swatch" style="background:${courseColor(c.id)}"></i></span>
+      <a class="what" onclick='edit("courses", ${c.id})'>${esc(c.number)} · ${esc(c.instructor)}</a><span class="meta">${esc(c.title || "")}</span></div>`,
+    terms: t => `<div class="when-row"><span class="when">${esc(t.name)}</span><a class="what" onclick='edit("terms", ${t.id})'>Week 1 starts ${esc(fmtDay(t.week1))}; classes end ${esc(fmtDay(t.instruction_ends))}</a></div>`,
+  }[tab];
+  const tabs = ["tasks", "events", "deadlines", "projects", "goals", "courses", "terms"];
+  return `<div class="page">
+    <header class="head"><h1>Plan</h1><p class="voice small">Everything I'm keeping track of, by kind.</p>
+      <div class="tabs">${tabs.map(k => `<button class="${k === tab ? "on" : ""}" onclick='sessionStorage.setItem("planTab", "${k}"); render()'>${KINDS[k].one}s</button>`).join("")}</div></header>
+    <section>${items.map(row).join("") || `<p class="empty">No ${KINDS[tab].one.toLowerCase()}s yet.</p>`}
+      <button class="add-row" onclick='openEditor("${tab}")'>${ICON.plus}Add a ${KINDS[tab].one.toLowerCase()}</button></section>
+  </div>`;
+};
+
+// ---- What I remember ---------------------------------------------------------
+
+async function saveCapacity(e) {
+  e.preventDefault();
+  const f = e.target.elements;
+  try { await send("PUT", "/api/capacity", { weekday: Number(f.weekday.value), weekend: Number(f.weekend.value) }); toast("Saved."); }
+  catch (err) { toast(esc(detail(err))); }
+}
+
+views.memory = async () => {
+  const [mems, cap] = await Promise.all([api("/api/memories"), api("/api/capacity")]);
+  const byTopic = {};
+  for (const m of mems) (byTopic[m.topic || "Other things"] ??= []).push(m);
+  return `<div class="page">
+    <header class="head"><h1>What I remember</h1>
+      <p class="voice small">Everything I know about you, and use when I plan. I only remember what you've said yes to.</p></header>
+    <section><h2>How much you want to do in a day</h2>
+      <form class="capacity" onsubmit="saveCapacity(event)">
+        <label>Weekdays <input name="weekday" type="number" min="0" max="16" step="0.5" value="${cap.weekday}"> hours</label>
+        <label>Weekends <input name="weekend" type="number" min="0" max="16" step="0.5" value="${cap.weekend}"> hours</label>
+        <button class="btn small">Save</button></form>
+      <p class="meta">A soft limit. I'll tell you when a day goes over; I won't stop you.</p></section>
+    ${Object.entries(byTopic).map(([t, ms]) => `<section><h2>${esc(t[0].toUpperCase() + t.slice(1))}</h2>${ms.map(m =>
+      `<div class="item"><a class="title" onclick='edit("memories", ${m.id})'>${esc(m.text)}</a></div>`).join("")}</section>`).join("")
+      || `<p class="empty">Nothing yet. When you tell me things in Chat (how fast you read, when you work best), I'll ask before I remember them.</p>`}
+    <button class="add-row" onclick='openEditor("memories")'>${ICON.plus}Tell me something to remember</button>
+  </div>`;
+};
+
+// ---- Reviews -----------------------------------------------------------------
 
 const KIND_NAME = { weekly: "Week", monthly: "Month", quarterly: "Quarter" };
 
 views.archive = async (id) => {
   const list = await api("/api/overviews");
-  if (!list.length) return `<h1>Archive</h1><p class="empty">Your weekly overview arrives Sunday at 8pm; monthly on the last day of the month; quarterly at the end of each term.</p>`;
+  if (!list.length) return `<div class="page"><header class="head"><h1>Reviews</h1>
+    <p class="voice small">Each Sunday at 8pm I'll look back at your week here. Months on their last day, quarters when the term ends.</p></header></div>`;
   id = Number(id) || list[0].id;
   const o = await api(`/api/overviews/${id}`);
-  const span = `${fmtDay(o.period_start)} – ${fmtDay(o.period_end)}`;
-  const items = (xs, f) => xs.length ? `<ul>${xs.map(x => `<li class="row">${f(x)}</li>`).join("")}</ul>` : `<p class="empty">None.</p>`;
-  return `<div class="archive"><aside><h3>Overviews</h3><ul>${list.map(x => `<li><a href="#archive/${x.id}" class="${x.id === id ? "on" : ""}">
-      ${KIND_NAME[x.kind]} · ${esc(fmtDay(x.period_start))} – ${esc(fmtDay(x.period_end))}</a></li>`).join("")}</ul></aside>
-    <article><h1>${KIND_NAME[o.kind]} in review</h1><p class="sub">${esc(span)}</p>
-      <blockquote class="assess">${esc(o.assessment)}</blockquote>
-      <section><h3>Time spent</h3>${items(o.hours, h => `<span class="title">${esc(h.name)}</span><span class="meta">${h.hours}h</span>`)}</section>
-      ${o.record ? `<section><h3>What you did this quarter</h3>${o.record.map(g => `<h4>${esc(g.goal)}</h4><ul>${g.done.map(t => `<li class="row">${esc(t)}</li>`).join("")}</ul>`).join("") || `<p class="empty">Nothing recorded.</p>`}</section>`
-        : `<section><h3>Done (${o.completed.length})</h3>${items(o.completed, t => `<span class="title">${esc(t.title)}</span><span class="meta">${esc(t.goal)}</span>`)}</section>
-      <section><h3>Slipped (${o.slipped.length})</h3>${items(o.slipped, t => `<span class="title">${esc(t.title)}</span><span class="meta">planned ${esc(fmtDay(t.do_date))}</span>`)}</section>`}
-      ${o.goals ? `<section><h3>Goals</h3>${items(o.goals, g => `<span class="title">${esc(g.goal)}</span><span class="meta">${g.done}/${g.total} tasks done</span>`)}</section>` : ""}
-      ${o.stalled_goals.length ? `<section><h3>No movement</h3>${items(o.stalled_goals, g => `<span class="title">${esc(g)}</span>`)}</section>` : ""}
-      ${o.next ? `<section><h3>Next week</h3>${items(o.next, x => `<span class="title">${esc(x.title)}</span><span class="meta">${esc(fmtWhen(x.at))}</span>`)}</section>` : ""}
+  const rows = (xs, f) => xs.map(f).join("") || `<p class="empty">None.</p>`;
+  return `<div class="reviews">
+    <aside><h2 style="margin-bottom:8px">Reviews</h2>${list.map(x => `<a href="#archive/${x.id}" class="${x.id === id ? "on" : ""}">
+      ${KIND_NAME[x.kind]} of ${esc(fmtDay(x.period_start).replace(/^\w+, /, ""))}</a>`).join("")}</aside>
+    <article class="page" style="max-width:none">
+      <header class="head"><div class="dateline">${esc(fmtDay(o.period_start))} – ${esc(fmtDay(o.period_end))}</div>
+        <h1>Your ${KIND_NAME[o.kind].toLowerCase()}</h1><p class="voice">${esc(o.assessment)}</p></header>
+      <section><h2>Time spent</h2>${rows(o.hours, h => `<div class="when-row"><span class="when">${h.hours} h</span><span class="what">${esc(h.name)}</span></div>`)}</section>
+      ${o.record ? `<section><h2>What you did this quarter</h2>${o.record.map(g => `<h2 style="font-weight:500;margin-top:8px">${esc(g.goal)}</h2>${g.done.map(x => `<div class="item"><span class="title">${esc(x)}</span></div>`).join("")}`).join("") || `<p class="empty">Nothing recorded.</p>`}</section>`
+        : `<section><h2>Done <span class="meta">${o.completed.length}</span></h2>${rows(o.completed, x => `<div class="item"><span class="title">${esc(x.title)}</span><span class="meta">${esc(x.goal)}</span></div>`)}</section>
+           <section><h2>Slipped <span class="meta">${o.slipped.length}</span></h2>${rows(o.slipped, x => `<div class="when-row"><span class="when">${esc(fmtDay(x.do_date))}</span><span class="what">${esc(x.title)}</span></div>`)}</section>`}
+      ${o.goals ? `<section><h2>Goals</h2>${rows(o.goals, g => `<div class="when-row"><span class="when">${g.done} of ${g.total}</span><span class="what">${esc(g.goal)}</span></div>`)}</section>` : ""}
+      ${o.stalled_goals.length ? `<section><h2>No movement yet</h2>${o.stalled_goals.map(g => `<div class="item"><span class="title">${esc(g)}</span></div>`).join("")}</section>` : ""}
+      ${o.next ? `<section><h2>Next week</h2>${rows(o.next, x => `<div class="when-row"><span class="when">${esc(fmtDay(x.at))}</span><span class="what">${esc(x.title)}</span></div>`)}</section>` : ""}
     </article></div>`;
 };
 
-// ---- settings ----------------------------------------------------------------
+// ---- Settings ----------------------------------------------------------------
 
 async function saveCanvas(e) {
   e.preventDefault();
   try {
     await send("PUT", "/api/canvas", { url: e.target.elements.url.value.trim() });
     const r = await api("/api/canvas/fetch", { method: "POST" });
-    toast(r.new ? `Connected. ${r.new} new from Bruin Learn in your <a href="#inbox">Inbox</a>.` : "Connected. Nothing new right now.");
+    toast(r.new ? `Connected. ${r.new} new from Bruin Learn in <a href="#inbox">Suggestions</a>.` : "Connected. Nothing new right now.");
   } catch (err) { toast(esc(detail(err))); }
   render();
 }
 
 async function fetchCanvas(button) {
   button.disabled = true;
-  try {
-    const r = await api("/api/canvas/fetch", { method: "POST" });
-    toast(`${r.new} new, ${r.changed} changed, ${r.removed} removed.`);
-  } catch (err) { toast(esc(detail(err))); }
+  try { const r = await api("/api/canvas/fetch", { method: "POST" }); toast(`${r.new} new, ${r.changed} changed, ${r.removed} removed.`); }
+  catch (err) { toast(esc(detail(err))); }
   render();
 }
 
 views.settings = async () => {
   const [c, h] = await Promise.all([api("/api/canvas"), api("/api/health")]);
   const status = !c.connected ? "" : c.status === "error"
-    ? `<p class="bad">The link stopped working (${esc(c.error || "")}). Paste a new one below.</p>`
-    : `<p class="from">Connected (${esc(c.link)}). Checked every 3 hours${c.checked ? `, last at ${esc(fmtWhen(c.checked))}` : ""}.
-       <button class="small" onclick="fetchCanvas(this)">Check now</button>
-       <button class="small" onclick='api("/api/canvas", {method: "DELETE"}).then(render)'>Disconnect</button></p>`;
-  return `<h1>Settings</h1><p class="sub">Connections and how the assistant runs.</p>
-    <section class="card"><h3>Bruin Learn calendar</h3>
-      <p>New and changed assignments arrive in your Inbox. In Bruin Learn: Calendar → Calendar Feed, copy the link.
-         It works like a password, so it stays on this PC.</p>
+    ? `<p class="detail" style="color:#8E3B2E">The link stopped working (${esc(c.error || "")}). Paste a new one below.</p>`
+    : `<p class="detail">Connected (${esc(c.link)}). I check it every 3 hours${c.checked ? `, last at ${esc(fmtWhen(c.checked))}` : ""}.</p>
+       <div class="row-actions"><button class="btn small" onclick="fetchCanvas(this)">Check now</button>
+       <button class="btn small quiet" onclick='api("/api/canvas", {method: "DELETE"}).then(render)'>Disconnect</button></div>`;
+  return `<div class="page">
+    <header class="head"><h1>Settings</h1></header>
+    <section class="card"><h2>Bruin Learn calendar</h2>
+      <p class="detail">New and changed assignments come to Suggestions. In Bruin Learn: Calendar → Calendar Feed, copy the link. It works like a password, so it stays on this PC.</p>
       ${status}
-      <form class="inline" onsubmit="saveCanvas(event)"><input name="url" type="url" placeholder="https://bruinlearn.ucla.edu/feeds/calendars/….ics" required>
-        <button class="primary">${c.connected ? "Replace link" : "Connect"}</button></form></section>
+      <form class="inline" onsubmit="saveCanvas(event)"><label class="sr" for="feed">Feed link</label>
+        <input id="feed" name="url" type="url" placeholder="https://bruinlearn.ucla.edu/feeds/calendars/….ics" required>
+        <button class="btn ${c.connected ? "" : "primary"}">${c.connected ? "Replace link" : "Connect"}</button></form></section>
     ${pushSection()}
-    <section class="card"><h3>Assistant</h3>
-      <p class="from">Chat: ${esc(h.ai.model)} ${h.ai.ready ? "(ready)" : `(${esc(h.ai.message)})`}. Reading documents: the 35B model when it's downloaded. Everything runs on this PC.</p></section>`;
+    <section class="card"><h2>The assistant</h2>
+      <p class="detail">Chat runs on ${esc(h.ai.model)} ${h.ai.ready ? "(ready)" : `(${esc(h.ai.message)})`}; reading documents uses the larger model when it's downloaded. Everything runs on this PC.</p></section>
+  </div>`;
 };
 
-// ---- push (iPhone Home Screen app, laptop) ----------------------------------
+// ---- push (the iPhone Home Screen app, a laptop) ------------------------------
 
 const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
 const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
@@ -513,13 +899,13 @@ const pushOn = () => { try { return localStorage.getItem("pushOn") === "1"; } ca
 
 function pushSection() {
   let body;
-  if (isIOS && !standalone) body = `<p>On iPhone, notifications work from the Home Screen app: tap <b>Share</b> → <b>Add to Home Screen</b>, open Almanac from there, and come back to Settings.</p>`;
-  else if (!pushSupported) body = `<p class="from">This browser can't receive push notifications. Open windows still show them.</p>`;
-  else if (pushOn()) body = `<p>On for this device. <button class="small" onclick="testPush(this)">Send a test</button>
-      <button class="small" onclick="pushOff()">Turn off</button></p>`;
-  else body = `<p>Get the morning briefing, check-ins and reminders here even when Almanac is closed.</p>
-      <button class="primary" onclick="pushOnDevice(this)">Turn on notifications</button>`;
-  return `<section class="card"><h3>Notifications on this device</h3>${body}</section>`;
+  if (isIOS && !standalone) body = `<p class="detail">On iPhone, notifications work from the Home Screen app: tap <b>Share</b>, then <b>Add to Home Screen</b>, open Almanac from there and come back here.</p>`;
+  else if (!pushSupported) body = `<p class="detail">This browser can't receive notifications when Almanac is closed. Open windows still show them.</p>`;
+  else if (pushOn()) body = `<p class="detail">On for this device.</p><div class="row-actions"><button class="btn small" onclick="testPush(this)">Send a test</button>
+      <button class="btn small quiet" onclick="pushOff()">Turn off</button></div>`;
+  else body = `<p class="detail">The morning note, check-ins and reminders, even when Almanac is closed.</p>
+      <div class="row-actions"><button class="btn primary" onclick="pushOnDevice(this)">Turn on notifications</button></div>`;
+  return `<section class="card"><h2>Notifications on this device</h2>${body}</section>`;
 }
 
 const b64ToBytes = s => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)), c => c.charCodeAt(0));
@@ -527,7 +913,7 @@ const b64ToBytes = s => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, 
 async function pushOnDevice(button) {
   button.disabled = true;
   try {
-    if (await Notification.requestPermission() !== "granted") throw new Error("Notifications were not allowed. You can allow them in this device's settings.");
+    if (await Notification.requestPermission() !== "granted") throw new Error("Notifications weren't allowed. You can allow them in this device's settings.");
     const reg = await navigator.serviceWorker.register("/sw.js");
     await navigator.serviceWorker.ready;
     const { key } = await api("/api/push/key");
@@ -559,116 +945,34 @@ async function testPush(button) {
 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => { });
 
-// ---- memory ------------------------------------------------------------------
+// ---- the frame ---------------------------------------------------------------
 
-async function saveCapacity(e) {
-  e.preventDefault();
-  const f = e.target.elements;
-  try { await send("PUT", "/api/capacity", { weekday: Number(f.weekday.value), weekend: Number(f.weekend.value) }); toast("Saved."); }
-  catch (err) { toast(esc(detail(err))); }
+function toggleSheet(open) {
+  const s = $("#sheet");
+  s.hidden = open === undefined ? !s.hidden : !open;
+  $("#tabs .more").setAttribute("aria-expanded", String(!s.hidden));
 }
+$("#sheet").addEventListener("click", e => { if (e.target.id === "sheet" || e.target.closest("a")) toggleSheet(false); });
 
-views.memory = async () => {
-  const [mems, cap] = await Promise.all([api("/api/memories"), api("/api/capacity")]);
-  const byTopic = {};
-  for (const m of mems) (byTopic[m.topic || "Other"] ??= []).push(m);
-  return `<header class="head"><div><h1>Memory</h1><p class="sub">Everything the assistant knows about you. Nothing is remembered without your OK.</p></div>
-      <button class="primary" onclick='openEditor("memories")'>Add</button></header>
-    <section><h3>Daily capacity</h3>
-      <form class="capacity" onsubmit="saveCapacity(event)">
-        <label>Weekdays <input name="weekday" type="number" min="0" max="16" step="0.5" value="${cap.weekday}"> h</label>
-        <label>Weekends <input name="weekend" type="number" min="0" max="16" step="0.5" value="${cap.weekend}"> h</label>
-        <button>Save</button></form>
-      <p class="hint">A soft limit on planned work per day. Plans warn when a day goes over; they don't block you.</p></section>
-    ${Object.entries(byTopic).map(([t, ms]) => `<section><h3>${esc(t)}</h3><ul>${ms.map(m =>
-      `<li class="row"><a class="title" onclick='edit("memories", ${m.id})'>${esc(m.text)}</a></li>`).join("")}</ul></section>`).join("")
-      || `<p class="empty">Nothing yet. Things you tell the assistant in Chat will be suggested here for your OK.</p>`}`;
-};
-
-// ---- chat --------------------------------------------------------------------
-
-async function chatSend(e) {
-  e.preventDefault();
-  const box = e.target.elements.text, text = box.value.trim();
-  if (!text) return;
-  box.value = "";
-  const log = $(".chatlog");
-  log.insertAdjacentHTML("beforeend", `<div class="msg user">${esc(text)}</div><div class="msg assistant typing"><span></span><span></span><span></span></div>`);
-  log.scrollTop = log.scrollHeight;
-  const bubble = log.lastElementChild;
-  let reply = "", proposed = 0;
+async function refreshBadges() {
   try {
-    const r = await fetch("/api/chat/stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, focus: chatFocus() }) });
-    if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
-    const reader = r.body.getReader(), dec = new TextDecoder();
-    let buf = "";
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      const events = buf.split("\n\n");
-      buf = events.pop();
-      for (const ev of events) {
-        const e = JSON.parse(ev.replace(/^data: /, ""));
-        if (e.type === "token") {
-          reply += e.text;
-          bubble.classList.remove("typing");
-          bubble.innerHTML = md(reply);
-          log.scrollTop = log.scrollHeight;
-        } else if (e.type === "done") proposed = e.proposed;
-      }
-    }
-  } catch (err) { toast(esc(detail(err))); }
-  if (proposed === null) toast("I couldn't pick out suggestions from that message: the model didn't answer in time (another app may be using it). Try again in a bit.");
-  else if (proposed) toast(`Added ${proposed} suggestion${proposed > 1 ? "s" : ""} to your <a href="#inbox">Inbox</a>.`);
-  render();
+    const [{ count }, { questions }] = await Promise.all([api("/api/inbox"), api("/api/chat/badge")]);
+    $$("[data-badge=inbox]").forEach(b => { b.textContent = count || ""; b.hidden = !count; });
+    $$("[data-badge=inbox-dot]").forEach(b => b.hidden = !count);
+    $$("[data-badge=chat]").forEach(b => b.hidden = !questions);
+  } catch { }
 }
-
-async function chatAction(action) {
-  await api(`/api/chat/${action}`, { method: "POST" });
-  render();
-}
-
-// Just enough markdown for chat replies: **bold**, *italic*, `code`, "- " lists.
-const md = s => esc(s)
-  .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<i>$2</i>").replace(/`([^`]+)`/g, "<code>$1</code>")
-  .replace(/(^|\n)[-•] (.*)(?=\n|$)/g, "$1<li>$2</li>").replace(/(<li>.*<\/li>)(?!\n?<li>)/gs, "<ul>$1</ul>")
-  .replace(/\n/g, "<br>").replace(/<br>(<\/?(ul|li))/g, "$1").replace(/(<\/(ul|li)>)<br>/g, "$1");
-
-const chatFocus = () => { try { return JSON.parse(sessionStorage.getItem("chatFocus")); } catch { return null; } };
-function unfocus() { try { sessionStorage.removeItem("chatFocus"); } catch { } render(); }
-
-views.chat = async () => {
-  const c = await api("/api/chat");
-  const focus = chatFocus();
-  const msgs = c.messages.map(m => `<div class="msg ${m.role}">${m.role === "assistant" ? md(m.text) : esc(m.text).replace(/\n/g, "<br>")}
-    ${m.quote && c.current?.id === m.id ? `<blockquote>${esc(m.quote)}</blockquote>` : ""}</div>`).join("");
-  const chips = c.current ? `<div class="chips">
-      <button onclick="chatAction('skip')">Skip for now</button>
-      <button onclick="chatAction('dismiss')">Not relevant to me</button>
-      ${c.waiting ? `<span class="meta">${c.waiting} more question${c.waiting > 1 ? "s" : ""} after this</span>` : ""}</div>` : "";
-  setTimeout(() => { const l = $(".chatlog"); if (l) l.scrollTop = l.scrollHeight; $("#chatinput")?.focus(); });
-  return `<div class="chat">
-    <h1>Chat</h1>
-    ${focus ? `<p class="focus">About: <b>${esc(focus.title)}</b> <button class="small" onclick="unfocus()" aria-label="Stop focusing">✕</button></p>` : ""}
-    <div class="chatlog">${msgs || `<p class="empty">Tell me what's going on: classes, plans, things you keep meaning to do.</p>`}</div>
-    ${chips}
-    <form class="chatbar" onsubmit="chatSend(event)">
-      <textarea id="chatinput" name="text" rows="1" placeholder="${c.current ? "Your answer…" : "Message Almanac…"}"
-        onkeydown="if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); this.form.requestSubmit(); }"></textarea>
-      <button class="primary">Send</button></form></div>`;
-};
 
 async function render() {
-  document.body.classList.remove("sheet");
-  refreshBadge();
-  const [name, arg] = (location.hash.slice(1) || "today").split("/");
-  document.querySelectorAll("#nav a").forEach(a => a.classList.toggle("active", a.dataset.view === name));
-  $("#nav .more").classList.toggle("active", !!$(`#nav a.extra[data-view="${name}"]`));
+  toggleSheet(false);
+  refreshBadges();
+  const route = location.hash.slice(1) || "today";
+  const [name, arg] = route.split("/");
+  $$("[data-view]").forEach(a => a.classList.toggle("active", a.dataset.view === route || a.dataset.view === name));
   try {
     $("#view").innerHTML = await (views[name] || views.today)(arg);
   } catch (e) {
-    $("#view").innerHTML = `<div class="notice">Couldn't load this page: ${esc(e.message)}</div>`;
+    $("#view").innerHTML = `<div class="page"><div class="notice">I couldn't load this page: ${esc(e.message)}</div></div>`;
   }
 }
 
@@ -677,7 +981,7 @@ async function render() {
 async function startTimer(id) { await api(`/api/tasks/${id}/timer/start`, { method: "POST" }); showTimer(); }
 async function stopTimer() {
   const r = await api("/api/timer/stop", { method: "POST" });
-  toast(`Stopped: ${r.minutes} min this time, ${r.spent_min} min on this task so far.`);
+  toast(`Stopped: ${r.minutes} min this time, ${r.spent_min} min on it so far.`);
   showTimer(); render();
 }
 async function keepTimer() { await api("/api/timer/keep", { method: "POST" }); showTimer(); }
@@ -689,15 +993,15 @@ async function showTimer() {
   el.hidden = !t;
   if (!t) return;
   const m = t.elapsed_min;
-  el.innerHTML = `<span class="dot"></span><span class="what">${esc(t.task.title)}</span>
+  el.innerHTML = `<span class="live"></span><span class="what">${esc(t.task.title)}</span>
     <span class="elapsed">${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}</span>
-    ${t.asking ? `<button class="small" onclick="keepTimer()">Keep going</button>` : ""}
-    <button class="small" onclick="stopTimer()">Stop</button>`;
+    ${t.asking ? `<button class="btn small" onclick="keepTimer()">Still going</button>` : ""}
+    <button class="btn small" onclick="stopTimer()">Stop</button>`;
 }
 setInterval(showTimer, 30000);
 showTimer();
 
-// ---- notifications -----------------------------------------------------------
+// ---- notifications -------------------------------------------------------------
 // The server keeps a list; each device remembers the last one it showed.
 
 async function pollNotifications() {
@@ -707,7 +1011,7 @@ async function pollNotifications() {
     const list = await api(`/api/notifications?after=${seen ?? 0}`);
     if (seen !== null) {
       for (const n of list) {
-        // On this PC the tray icon pops notifications; a device with push gets them pushed.
+        // on this PC the tray icon pops notifications; a device with push gets them pushed
         const local = ["localhost", "127.0.0.1"].includes(location.hostname);
         if (!local && !pushOn() && "Notification" in window && Notification.permission === "granted") {
           const note = new Notification(n.title, { body: n.body || "", tag: `almanac-${n.id}` });
@@ -715,10 +1019,9 @@ async function pollNotifications() {
         } else toast(`<b>${esc(n.title)}</b><br>${esc(n.body || "")}`);
       }
     }
-    // first visit on a device: start from now instead of replaying history
     const last = list.length ? list[list.length - 1].id : seen ?? (await api("/api/notifications?after=0")).slice(-1)[0]?.id ?? 0;
     try { localStorage.setItem("seenNotification", String(last)); } catch { }
-    if (list.length) refreshBadge();
+    if (list.length) refreshBadges();
   } catch { }
 }
 setInterval(pollNotifications, 30000);

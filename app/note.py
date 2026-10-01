@@ -5,6 +5,7 @@ rewrites it in a warmer voice, from those facts only, once a day (and again
 when the 9am briefing runs). Until it has, or if it can't, the plain note
 stands: Today never waits on the model."""
 
+import hashlib
 import json
 import threading
 from datetime import date, timedelta
@@ -88,11 +89,16 @@ def _facts_text(f) -> str:
     return "\n".join(lines)
 
 
-def _save(con, day, note, by):
+def _save(con, day, note, by, facts_key):
     with WRITE:
-        con.execute("insert into notes (date, headline, body, written_by) values (?,?,?,?) on conflict(date) do update set "
-                    "headline = excluded.headline, body = excluded.body, written_by = excluded.written_by",
-                    (day, note["headline"], note["body"], by))
+        con.execute("insert into notes (date, headline, body, written_by, facts) values (?,?,?,?,?) on conflict(date) do update set "
+                    "headline = excluded.headline, body = excluded.body, written_by = excluded.written_by, facts = excluded.facts",
+                    (day, note["headline"], note["body"], by, facts_key))
+
+
+def _key(f) -> str:
+    """What the note depends on, minus the clock: a changed plan means a new note."""
+    return hashlib.sha1(_facts_text(f).split("\n", 1)[1].encode()).hexdigest()
 
 
 def write(con, llm, clock):
@@ -112,7 +118,7 @@ def write(con, llm, clock):
             got = json.loads(raw)
             headline, body = (got.get("headline") or "").strip(), (got.get("body") or "").strip()
             if headline and body:
-                _save(con, day, {"headline": headline, "body": body}, "assistant")
+                _save(con, day, {"headline": headline, "body": body}, "assistant", _key(f))
         except Exception:
             pass  # the plain note stays
         finally:
@@ -128,8 +134,9 @@ def get_note(request: Request):
     now = local(s.clock.now()).replace(tzinfo=None)
     day = now.date().isoformat()
     row = s.db.execute("select * from notes where date = ?", (day,)).fetchone()
-    if not row:
-        _save(s.db, day, plain(facts(s.db, now)), "plain")
+    f = facts(s.db, now)
+    if not row or row["facts"] != _key(f):  # first look today, or the plan changed since
+        _save(s.db, day, plain(f), "plain", _key(f))
         write(s.db, s.llm, s.clock)
         row = s.db.execute("select * from notes where date = ?", (day,)).fetchone()
     return {"date": day, "headline": row["headline"], "body": row["body"], "written_by": row["written_by"]}

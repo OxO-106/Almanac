@@ -76,7 +76,8 @@ COLUMNS = [
     ("sources", "replaced_by", "integer"),
     ("sources", "about", "text"),
     ("questions", "meta", "text"),
-    ("chat_messages", "proposals", "text"),  # JSON ids of suggestions a message presents  # JSON for questions whose answer code acts on, e.g. a Canvas section  # the course(s) a document is for, e.g. "COM SCI 269: Advanced Topics in AI"
+    ("chat_messages", "proposals", "text"),
+    ("notes", "facts", "text"),  # hash of the facts a note was written from  # JSON ids of suggestions a message presents  # JSON for questions whose answer code acts on, e.g. a Canvas section  # the course(s) a document is for, e.g. "COM SCI 269: Advanced Topics in AI"
     ("events", "skip", "text"),  # comma-separated dates a recurring event doesn't happen
     ("questions", "snoozed_until", "text"),
     ("projects", "slips", "integer not null default 0"),  # times a Replan was needed  # UTC; "skip for now" in chat

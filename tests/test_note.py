@@ -60,3 +60,15 @@ def test_the_note_is_refreshed_when_the_morning_briefing_runs(client, clock, llm
     at(clock, "2026-10-01T09:00")
     client.post("/api/scheduler/tick")
     assert client.get("/api/note").json()["written_by"] == "assistant"
+
+
+def test_the_note_is_rewritten_when_the_day_changes(client, clock, llm):
+    at(clock, "2026-10-01T08:30")
+    llm.replies = [json.dumps({"headline": "Morning. Nothing on today.", "body": "A clear day."})]
+    assert client.get("/api/note").json()["body"] == "A clear day."
+    client.post("/api/tasks", json={"title": "Read ReAct before class", "do_date": "2026-10-01"})
+    llm.replies = [json.dumps({"headline": "Morning. One thing today.", "body": "Read ReAct before class."})]
+    assert client.get("/api/note").json()["body"] == "Read ReAct before class."
+    assert "Read ReAct before class" in llm.requests[-1]["messages"][-1]["content"]
+    client.get("/api/note")
+    assert len(llm.requests) == 2  # unchanged facts: no new note

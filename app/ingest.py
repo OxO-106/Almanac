@@ -345,7 +345,11 @@ def resolve(it: dict, today: date, term: dict | None, known: dict) -> When:
     when, quote = it.get("when") or {}, it["quote"]
     t, words = when.get("type"), _words(quote)
     if t in ("date", "datetime"):
-        if not date_in_quote(when, quote) or not (d := _explicit(when, today)):
+        d = _explicit(when, today)
+        # stated as a date, or as a weekday the model turned into this week's date ("by Friday" → Oct 2)
+        said = d and (date_in_quote(when, quote) or (
+            0 <= (d - today).days < 7 and (DAY_NAMES[d.weekday()] in words or DAY_NAMES[d.weekday()][:3] in words)))
+        if not said:
             return When()
         time = when.get("time") if t == "datetime" and time_in_quote(when.get("time"), quote) else None
         return When(d.isoformat() + (f"T{time[:5]}" if time else ""))
