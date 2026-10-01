@@ -167,6 +167,11 @@ ANSWER_SCHEMA = {"type": "object", "properties": {"items": {"type": "array", "it
 DATE_FIELD = {"deadlines": "due", "tasks": "due", "events": "start", "projects": "deadline"}
 
 
+def _fmt_time(hhmm: str) -> str:
+    h, m = int(hhmm[:2]), hhmm[3:5]
+    return f"{h % 12 or 12}:{m} {'PM' if h >= 12 else 'AM'}"
+
+
 def _fmt(value: str) -> str:
     d = date.fromisoformat(value[:10])
     return f"{d:%a %b} {d.day}" + (f", {value[11:16]}" if len(value) > 10 else "")
@@ -273,8 +278,22 @@ def _answer(con, llm, clock, question, text, message_id=None):
         if o["op"] == "create" and o["kind"] in DATE_FIELD and p["status"] in ("pending", "accepted") \
                 and not any(x["id"] == pid for x, _ in undated):
             undated.append((p, o))
+    today = local(clock.now()).date()
+    term = current_term(con, today)
+    if len(undated) == 1 and (wk := ingest.weekly(text)) and term:
+        # "When is Lecture?" → "MW 2:00pm - 3:50pm": a weekly event; a link in the answer is where
+        p, o = undated[0]
+        if p["status"] == "pending" and o["kind"] in ("events", "deadlines"):
+            link = re.search(r"https?://\S+", text)
+            o["kind"] = "events"
+            o["data"] = ingest.meeting_data(term, wk[0], wk[1], wk[2], o["data"]["title"], o["data"].get("course_id"),
+                                            link.group().rstrip(".,)") if link else None)
+            with WRITE:
+                con.execute("update proposals set ops = ? where id = ?", (json.dumps(p["ops"]), p["id"]))
+            days = "/".join(d[0] + d[1].lower() for d in wk[0])
+            filled.append(f"{o['data']['title']}: every {days}, {_fmt_time(wk[1])}" + (f"–{_fmt_time(wk[2])}" if wk[2] else ""))
+            undated = []
     if undated:
-        today = local(clock.now()).date()
         listing = "\n".join(f"{i}. {o['data']['title']}" for i, (_, o) in enumerate(undated))
         try:
             got = json.loads(llm.chat([{"role": "system", "content": ANSWER_PROMPT},

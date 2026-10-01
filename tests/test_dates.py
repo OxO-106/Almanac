@@ -181,3 +181,43 @@ def test_answering_with_tomorrow_dates_a_waiting_suggestion(client, llm, clock):
     d = data(props(client)["Midterm assessment"])
     assert d["due"] == (clock.now().date() + __import__("datetime").timedelta(days=1)).isoformat()
     assert "window" not in d and "provisional" not in d
+
+
+CS259 = """CS 259 Seminal Achievements in Computer Science
+Lecture: MW 2:00pm - 3:50pm
+Short presentations each week.
+"""
+
+
+def test_class_times_are_kept_when_the_instructor_is_not_named(client, llm):
+    llm.replies = [json.dumps({"courses": [{"number": "CS 259", "instructor": "", "title": "Seminal Achievements in Computer Science",
+                                            "quote": "CS 259 Seminal Achievements in Computer Science",
+                                            "meetings": [{"days": "MO,WE", "start": "14:00", "end": "15:50", "quote": "Lecture: MW 2:00pm - 3:50pm"}]}]}),
+                   items_reply()]
+    upload(client, "cs259.pdf.txt", CS259.encode())
+    cls = data(props(client)["CS 259 class meetings"])
+    assert (cls["repeat"], cls["start"][11:], cls["end"][11:]) == ("MO,WE", "14:00", "15:50")
+
+
+def test_a_lecture_item_with_a_weekly_time_becomes_a_weekly_event_not_a_question(client, llm):
+    llm.replies = [json.dumps({"courses": [{"number": "CS 259", "instructor": "", "title": "Seminal Achievements in Computer Science",
+                                            "quote": "CS 259 Seminal Achievements in Computer Science", "meetings": []}]}),
+                   items_reply(item(kind="event", title="Lecture", course="CS 259", quote="Lecture: MW 2:00pm - 3:50pm", when={"type": "unknown"}))]
+    upload(client, "cs259.txt", CS259.encode())
+    cls = data(props(client)["CS 259 class meetings"])
+    assert (cls["repeat"], cls["start"][11:], cls["end"][11:]) == ("MO,WE", "14:00", "15:50")
+    assert not any("When is" in q["text"] for q in inbox(client)["questions"])
+
+
+def test_answering_when_with_a_weekly_time_and_a_link_makes_a_weekly_event(client, llm):
+    src = client.post("/api/sources", json={"kind": "document", "title": "x.pdf", "text": "x"}).json()
+    q = client.post("/api/questions", json={"source_id": src["id"], "text": "When is “Lecture”? The document doesn't say."}).json()
+    client.post("/api/proposals", json={"source_id": src["id"], "summary": "Lecture", "question_id": q["id"],
+                                        "ops": [{"op": "create", "kind": "deadlines", "data": {"title": "Lecture"}}]})
+    client.get("/api/chat")
+    client.post("/api/chat", json={"text": "Lecture: MW 2:00pm - 3:50pm\nAnd it's online, so add this Zoom Link: https://ucla.zoom.us/j/123"})
+    (p,) = inbox(client)["proposals"]
+    o = p["ops"][0]
+    assert o["kind"] == "events"
+    assert (o["data"]["repeat"], o["data"]["start"][11:], o["data"]["end"][11:], o["data"]["location"]) == ("MO,WE", "14:00", "15:50", "https://ucla.zoom.us/j/123")
+    assert "Updated Lecture: every Mo/We, 2:00 PM–3:50 PM." in client.get("/api/chat").json()["messages"][-1]["text"]

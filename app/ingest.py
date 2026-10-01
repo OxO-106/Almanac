@@ -665,6 +665,9 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
             p = p.get("existing", p)
             if p.get("status", "pending") == "pending":
                 courses[c["number"]] = f"$p{p['id']}.0"
+            for m in c.get("meetings") or []:  # the class times stand without the instructor
+                if quoted(m.get("quote"), text):
+                    meetings.append((courses.get(c["number"]), c["number"], m))
             continue
         known = con.execute("select id from courses where lower(replace(number, ' ', '')) = lower(replace(?, ' ', '')) "
                             "and lower(instructor) = lower(?)", (c["number"], c["instructor"])).fetchone()
@@ -726,6 +729,10 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
         # No date and no lecture even on a second look: a general instruction, not a task to plan.
         dropped.append({"title": items[i]["title"], "quote": items[i]["quote"], "reason": "no date or lecture stated"})
 
+    # Sessions stated as a weekly time ("Lecture: MW 2:00pm - 3:50pm") become weekly events below.
+    weekly_ids = {i for i in keep_items if items[i]["kind"] == "event" and not resolved[i].value and weekly(items[i]["quote"])}
+    weekly_items = []
+
     # Questions: what only the student can tell us, from a pass of its own (so
     # asking doesn't depend on the item pass remembering to), from the items,
     # and the ones code must ask (no date; only a week). All are drafts, merged
@@ -745,7 +752,7 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
         it, w = items[i], resolved[i]
         kind = KIND.get(it["kind"], (None,))[0]
         d = draft(it.get("question") or (it["title"] if it["kind"] == "question" else ""), it["quote"])
-        if d is None and kind in ("deadlines", "events", "projects") and not w.value:
+        if d is None and kind in ("deadlines", "events", "projects") and not w.value and i not in weekly_ids:
             # A deliverable or session without a stated date must be asked about.
             d = draft(f"When is “{it['title']}”{'' if kind == 'events' else ' due'}? The document doesn't say.", it["quote"], False)
             required.append(d)
@@ -777,6 +784,14 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
     no_class = []
     for i in keep_items:
         it = items[i]
+        if i in weekly_ids and (wk := weekly(it["quote"])):
+            # "Lecture: MW 2:00pm - 3:50pm" is a weekly class, not a one-off with a missing date
+            course = courses.get(course_number(it.get("course") or "")) or only
+            number = next((n for n, v in courses.items() if v == course), None) or (it.get("course") or "")
+            lecture = re.match(r"(lectures?|class(es)?|meetings?)\b", it["title"], re.I)
+            m = {"days": ",".join(wk[0]), "start": wk[1], "end": wk[2], "quote": it["quote"]}
+            weekly_items.append((course, number, m, None if lecture else f"{number} {it['title'].lower()}".strip()))
+            continue
         if it["kind"] == "no_class":
             if resolved[i].value and not resolved[i].window:
                 no_class.append(resolved[i].value[:10])
@@ -788,6 +803,8 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
 
     for course, short, m in meetings:
         _propose_meetings(con, clock, source_id, course, short, m, term, no_class, prior, matched)
+    for course, short, m, title in weekly_items:
+        _propose_meetings(con, clock, source_id, course, short, m, term, no_class, prior, matched, title)
 
     # Whatever earlier versions added that this version no longer mentions.
     for (kind, _), row in prior.items():
@@ -912,6 +929,59 @@ def _duplicate(it, when, seen) -> bool:
     return False
 
 
+_DAY_RUN = re.compile(r"(m|tu|t|w|th|r|f|sa|su)+")
+
+
+def weekly(words_text: str):
+    """(days, start, end) of a weekly time stated in words: "MW 2:00pm - 3:50pm",
+    "Tuesdays and Thursdays, 4-5:50 p.m.", "TTh 10am". None if days or a start
+    time aren't both there. Times are 24-hour "HH:MM"; end may be None."""
+    q = _norm(words_text).replace(".", "")
+    days, repeating = [], "every" in q.split()
+    for w in re.findall(r"[a-z]+", q):
+        for i, name in enumerate(DAY_NAMES):
+            if w.startswith(name[:3]) and (w in (name, name + "s", name[:3], name[:4]) or w.startswith(name)):
+                days.append(plan.DAYS[i])
+                repeating |= w == name + "s"  # "Mondays"
+        if len(w) >= 2 and _DAY_RUN.fullmatch(w) and w not in ("am", "pm", "th"):
+            repeating = True  # "MW", "TTh"
+            for tok in re.findall(r"th|tu|sa|su|[mtwrf]", w):
+                days.append({"m": "MO", "t": "TU", "tu": "TU", "w": "WE", "th": "TH", "r": "TH", "f": "FR", "sa": "SA", "su": "SU"}[tok])
+    days = [d for d in plan.DAYS if d in days]
+    m = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:-|to)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b", q) \
+        or re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b()()()", q)
+    if not days or not m:
+        return None
+    h1, m1, ap1, h2, m2, ap2 = m.groups()
+    if not (repeating or h2):  # "Due Friday at 5pm" is one day, not every week
+        return None
+    ap1 = ap1 or ap2
+
+    def hhmm(h, mm, ap):
+        h = int(h) % 12 + (12 if ap == "pm" else 0)
+        return f"{h:02d}:{mm or '00'}"
+    return days, hhmm(h1, m1, ap1), (hhmm(h2, m2, ap2) if h2 else None)
+
+
+def meeting_data(term, days, start, end, title, course=None, location=None, no_class=()) -> dict:
+    """A weekly Event over the term's instruction weeks, skipping holidays on those days."""
+    first = date.fromisoformat(term["week1"]) - timedelta(days=7)
+    while first.isoformat() < term["instruction_begins"] or plan.DAYS[first.weekday()] not in days:
+        first += timedelta(days=1)
+    holidays = [h[:10] for h in term["holidays"].splitlines()
+                if plan.DAYS[date.fromisoformat(h[:10]).weekday()] in days]
+    data = {"title": title, "start": f"{first}T{start[:5]}", "repeat": ",".join(days), "until": term["instruction_ends"]}
+    if end:
+        data["end"] = f"{first}T{end[:5]}"
+    if location:
+        data["location"] = location
+    if course is not None:
+        data["course_id"] = course
+    if skip := sorted(set(holidays + list(no_class))):
+        data["skip"] = ",".join(skip)
+    return data
+
+
 def _propose_meetings(con, clock, source_id, course, short, m, term, no_class, prior, matched, title=None):
     """Regular class meetings → one weekly Event over the term's instruction
     weeks, skipping holidays on those days and the document's no-class days."""
@@ -923,21 +993,7 @@ def _propose_meetings(con, clock, source_id, course, short, m, term, no_class, p
     if not start:
         inbox.ask(con, clock, source_id, f"What time does {short} meet on {'/'.join(days)}? The document doesn't say.", m["quote"])
         return None
-    first = date.fromisoformat(term["week1"]) - timedelta(days=7)
-    while first.isoformat() < term["instruction_begins"] or plan.DAYS[first.weekday()] not in days:
-        first += timedelta(days=1)
-    holidays = [h[:10] for h in term["holidays"].splitlines()
-                if plan.DAYS[date.fromisoformat(h[:10]).weekday()] in days]
-    data = {"title": title or f"{short.split(' · ')[0]} class", "start": f"{first}T{start[:5]}", "repeat": ",".join(days),
-            "until": term["instruction_ends"]}
-    if end:
-        data["end"] = f"{first}T{end[:5]}"
-    if m.get("location"):
-        data["location"] = m["location"]
-    if course is not None:
-        data["course_id"] = course
-    if skip := sorted(set(holidays + no_class)):
-        data["skip"] = ",".join(skip)
+    data = meeting_data(term, days, start, end, title or f"{short.split(' · ')[0]} class", course, m.get("location"), no_class)
     return _emit(con, clock, source_id, "events", data, m["quote"], None, prior, matched,
                  f"{title} (weekly)" if title else f"{short} class meetings")
 
