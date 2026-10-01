@@ -919,8 +919,22 @@ views.settings = async () => {
     ${pushSection()}
     <section class="card"><h2>The assistant</h2>
       <p class="detail">Chat runs on ${esc(h.ai.model)} ${h.ai.ready ? "(ready)" : `(${esc(h.ai.message)})`}; reading documents uses the larger model when it's downloaded. Everything runs on this PC.</p></section>
+    <section class="card"><h2>Development</h2>
+      <p class="detail">Start over: removes courses, plans, suggestions, questions, chat, uploads, notes and the Bruin Learn link. A backup of the database is kept first. Notifications on your devices keep working.</p>
+      <div class="row-actions"><button class="btn small" onclick="clearAll(this)">Clear everything</button></div></section>
   </div>`;
 };
+
+// Development only: delete with app/dev.py.
+async function clearAll(button) {
+  if (!confirm("Clear everything in Almanac? A backup of the database is kept, but the app starts empty.")) return;
+  button.disabled = true;
+  try {
+    const r = await api("/api/dev/clear-all", { method: "POST" });
+    toast(`Cleared. Backup: ${esc(r.backup)}`);
+  } catch (e) { toast(esc(detail(e))); }
+  refreshBadges(); render();
+}
 
 // ---- push (the iPhone Home Screen app, a laptop) ------------------------------
 
