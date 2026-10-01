@@ -57,6 +57,32 @@ def _current(con, clock):
     return None
 
 
+def _course_label(con, q) -> str:
+    """How a question names its course: code, instructor and name, e.g.
+    "CS 239 · Robin Ding: Large Language Models and Code Intelligence", so two
+    courses sharing a number aren't mixed up. The instructor is looked up now,
+    since it may have been answered after the document was read."""
+    about = q.get("source_about") or ""
+    if not about:
+        return " ".join((q.get("source_title") or "").rsplit(".", 1)[0].replace("_", " ").split())
+    labels = []
+    for part in about.split("; "):
+        head, _, title = part.partition(": ")
+        if " · " not in head:
+            who = None
+            for r in con.execute("select ops, applied, status from proposals where source_id = ? and status != 'rejected'", (q["source_id"],)):
+                op = json.loads(r["ops"])[0]
+                if op.get("op") != "create" or op.get("kind") != "courses" or op["data"].get("number") != head:
+                    continue
+                who = op["data"].get("instructor")
+                if r["status"] == "accepted" and r["applied"]:
+                    row = con.execute("select instructor from courses where id = ?", (json.loads(r["applied"])[0],)).fetchone()
+                    who = row["instructor"] if row else who
+            head = f"{head} · {who}" if who and who != "Not stated" else f"{head} (instructor not named yet)"
+        labels.append(f"{head}: {title}" if title else head)
+    return "; ".join(labels)
+
+
 LEADS = ["Got it.", "Okay.", "Good to know.", "All right.", "Understood."]
 
 
@@ -76,10 +102,10 @@ def _ask_next(con, clock):
             _say(con, clock, "assistant", lead + "That's all I wanted to ask for now.")
         return
     q = queue[0]
-    # name the course, not the file; a file name only if the course is unknown
-    name = q.get("source_about") or " ".join((q.get("source_title") or "").rsplit(".", 1)[0].replace("_", " ").split())
+    # name the course (with its instructor), not the file; a file name only if the course is unknown
+    name = _course_label(con, q)
     about = ""
-    if name and q.get("source_kind") != "chat" and name not in q["text"]:
+    if name and q.get("source_kind") != "chat" and name not in q["text"] and not (q.get("source_about") and q["source_about"] in q["text"]):
         if answered and recent[1]["about"] == q.get("source_about"):
             about = f"One more about {name.split(':')[0]}: "  # same course as the last one: its code is enough
         elif answered:

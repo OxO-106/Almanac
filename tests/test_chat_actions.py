@@ -135,8 +135,20 @@ def test_questions_name_the_course_not_the_file(client, llm):
     assert text == "Who teaches COM SCI 269: Advanced Topics in AI: Agentic Learning? The document doesn't name the instructor."
     client.post("/api/chat/skip")
     client.post("/api/questions", json={"source_id": 1, "text": "Which option will you take?"})
-    assert chat(client)["current"]["text"] == ("Quick question about COM SCI 269: Advanced Topics in AI: Agentic Learning: "
-                                               "Which option will you take?")
+    assert chat(client)["current"]["text"] == ("Quick question about COM SCI 269 (instructor not named yet): Advanced Topics in AI: "
+                                               "Agentic Learning: Which option will you take?")
+
+
+def test_questions_name_the_instructor_once_answered(client, llm):
+    from test_upload import SYLLABUS, course_reply, items_reply, upload
+    llm.replies = [course_reply([{"number": "CS 239", "instructor": "", "title": "Autonomous Software Engineering Agents",
+                                  "quote": "Instructor: Robin Ding", "meetings": []}]), items_reply()]
+    upload(client, "kim.txt", SYLLABUS.encode())
+    assert chat(client)["current"]["text"].startswith("Who teaches CS 239")
+    client.post("/api/questions", json={"source_id": 1, "text": "Which paper will you present?"})
+    client.post("/api/chat", json={"text": "Miryung Kim"})
+    assert chat(client)["current"]["text"].endswith(
+        "about CS 239 · Miryung Kim: Autonomous Software Engineering Agents: Which paper will you present?")
 
 
 def test_answering_who_teaches_fills_in_the_instructor(client, llm):
