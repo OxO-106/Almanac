@@ -28,7 +28,8 @@
 }
 
 * { box-sizing: border-box; }
-html, body { margin: 0; height: 100%; }
+html, body { margin: 0; }
+body { min-height: 100vh; }
 body { background: var(--ground); color: var(--ink); font: 14px/1.55 var(--sans); display: flex; -webkit-font-smoothing: antialiased; }
 a { color: var(--slate); }
 a:hover { color: var(--slate-hover); }
