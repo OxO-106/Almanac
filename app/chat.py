@@ -26,10 +26,12 @@ def _utc(clock) -> str:
     return clock.now().isoformat(timespec="seconds")
 
 
-def _say(con, clock, role, text, question_id=None, quote=None) -> int:
+def _say(con, clock, role, text, question_id=None, quote=None, proposals=None) -> int:
+    """proposals: ids of suggestions this message presents (shown as a card)."""
     with WRITE:
-        return con.execute("insert into chat_messages (role, text, question_id, quote, created_at) values (?,?,?,?,?)",
-                           (role, text, question_id, quote, local(clock.now()).strftime("%Y-%m-%dT%H:%M"))).lastrowid
+        return con.execute("insert into chat_messages (role, text, question_id, quote, created_at, proposals) values (?,?,?,?,?,?)",
+                           (role, text, question_id, quote, local(clock.now()).strftime("%Y-%m-%dT%H:%M"),
+                            json.dumps(proposals) if proposals else None)).lastrowid
 
 
 def _eligible(con, clock) -> list[dict]:
@@ -65,10 +67,31 @@ def _ask_next(con, clock):
 def state(con, clock) -> dict:
     _ask_next(con, clock)
     cur = _current(con, clock)
-    messages = [dict(r) for r in con.execute("select id, role, text, question_id, quote, created_at from chat_messages order by id")]
+    messages = []
+    for r in con.execute("select id, role, text, question_id, quote, created_at, proposals from chat_messages order by id"):
+        m = dict(r)
+        ids = json.loads(m.pop("proposals") or "[]")
+        m["proposals"] = [{k: p[k] for k in ("id", "summary", "status", "ops", "quote")}
+                          for p in (inbox._proposal(con, i) for i in ids if _exists(con, i))]
+        messages.append(m)
     waiting = len(_eligible(con, clock)) - (1 if cur else 0)
-    return {"messages": messages, "current": cur and {"id": cur["id"], "question_id": cur["question_id"], "text": cur["text"]},
-            "waiting": waiting}
+    return {"messages": messages, "waiting": waiting,
+            "current": cur and {"id": cur["id"], "question_id": cur["question_id"], "text": cur["text"],
+                                "options": _options(con, cur["question_id"])}}
+
+
+def _exists(con, proposal_id) -> bool:
+    return con.execute("select 1 from proposals where id = ?", (proposal_id,)).fetchone() is not None
+
+
+def _options(con, question_id) -> list[str]:
+    """Answers to offer as buttons, when the question has a fixed set."""
+    row = con.execute("select meta from questions where id = ?", (question_id,)).fetchone()
+    meta = json.loads(row["meta"]) if row and row["meta"] else {}
+    if meta.get("type") == "canvas_section":
+        return [f"{c['number']} · {c['instructor']}" for c in (dict(r) for r in con.execute(
+            f"select * from courses where id in ({','.join('?' * len(meta['courses']))})", meta["courses"]))]
+    return []
 
 
 # ---- answering a question -----------------------------------------------------
@@ -275,8 +298,8 @@ def _match_project(con, named, course_id, text):
     return hits[0] if len(hits) == 1 else None
 
 
-def _actions(con, llm, clock, text, reply_id) -> int | None:
-    """Suggestions from the student's message. Returns how many were proposed,
+def _actions(con, llm, clock, text, reply_id) -> list[int] | None:
+    """Suggestions from the student's message. Returns the proposals made,
     or None if the model call failed (e.g. Ollama busy with another app)."""
     try:
         acts = json.loads(llm.chat([{"role": "system", "content": ACTIONS_PROMPT + "\n\n" + _context(con, clock)},
@@ -286,7 +309,7 @@ def _actions(con, llm, clock, text, reply_id) -> int | None:
     today = local(clock.now()).date()
     term = current_term(con, today)
     source = None
-    n = 0
+    made = []
     for a in acts:
         title = ingest.capitalize((a.get("title") or "").strip())
         if not title or not ingest.quoted(a.get("quote"), text):
@@ -326,11 +349,13 @@ def _actions(con, llm, clock, text, reply_id) -> int | None:
             if (project := _match_project(con, a.get("project"), data.get("course_id"), text)) is not None:
                 data["project_id"] = project
             # already in the plan? then this adds details to it instead of a duplicate
-            n += bool(merge.propose_or_fill(con, clock, source, table, data, a["quote"]))
+            if p := merge.propose_or_fill(con, clock, source, table, data, a["quote"]):
+                made.append(p["id"])
             continue
         p = inbox.propose(con, clock, source, summary, [op], a["quote"])
-        n += "id" in p
-    return n
+        if "id" in p:
+            made.append(p["id"])
+    return made
 
 
 def _reply(con, llm, clock, text, focus=None):
@@ -347,7 +372,10 @@ def _reply(con, llm, clock, text, focus=None):
         parts.append(piece)
         yield "token", piece
     reply_id = _say(con, clock, "assistant", "".join(parts).strip())
-    yield "done", _actions(con, llm, clock, text, reply_id)
+    made = _actions(con, llm, clock, text, reply_id)
+    if made:  # the suggestions, right in the conversation
+        _say(con, clock, "assistant", "Here's what I'd add. Check the dates are right:", proposals=made)
+    yield "done", None if made is None else len(made)
 
 
 # ---- HTTP --------------------------------------------------------------------

@@ -160,3 +160,22 @@ def test_an_ordinal_date_in_an_answer_counts(client, llm):
     c = say(client, "Set it to the last class December 3rd for now")
     assert proposals(client)[0]["ops"][0]["data"]["due"] == "2026-12-03"
     assert "Final Project: Thu Dec 3" in [m["text"] for m in c["messages"]][-1]
+
+
+def test_suggestions_appear_in_the_conversation_as_a_card(client, llm):
+    llm.replies = ["On it.", actions(act(when={"type": "weekday", "weekday": "FR"}))]
+    c = say(client, "I need to email Prof. Smith about research by Friday")
+    card = c["messages"][-1]
+    assert card["text"] == "Here's what I'd add. Check the dates are right:"
+    (p,) = card["proposals"]
+    assert (p["summary"], p["status"], p["ops"][0]["data"]["due"]) == ("Email Prof. Smith about research", "pending", "2026-10-02")
+    client.post(f"/api/proposals/{p['id']}/accept")
+    assert chat(client)["messages"][-1]["proposals"][0]["status"] == "accepted"
+
+
+def test_a_question_with_fixed_answers_offers_them(client):
+    from test_canvas import Feed, connect
+    client.post("/api/courses", json={"number": "CS 239", "instructor": "Robin Ding"})
+    client.post("/api/courses", json={"number": "CS 239", "instructor": "Miryung Kim"})
+    connect(client, Feed())
+    assert chat(client)["current"]["options"] == ["CS 239 · Robin Ding", "CS 239 · Miryung Kim"]

@@ -173,7 +173,7 @@ def calendar(start: str, end: str, request: Request):
 
 # Distinct, readable on light and dark backgrounds; assigned in order so two
 # Courses (even with the same number) never share one until the list runs out.
-COLORS = ["#3b82f6", "#e8590c", "#2f9e44", "#ae3ec9", "#d6336c", "#0c8599", "#e67700", "#5c7cfa"]
+COLORS = ["#7C98B3", "#536B78", "#ACCBE1", "#637081", "#9DB4C8", "#3E525D", "#CEE5F2", "#8A9AA6"]  # the student's palette
 
 
 def _next_color(con):

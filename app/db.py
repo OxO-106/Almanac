@@ -47,6 +47,7 @@ create table if not exists canvas_items (uid text primary key, proposal_id integ
   gone integer not null default 0);
 create table if not exists push_subscriptions (endpoint text primary key, p256dh text not null, auth text not null,
   contact text not null);
+create table if not exists notes (date text primary key, headline text not null, body text not null, written_by text not null);
 create table if not exists jobs (name text primary key, last_run text not null);
 create table if not exists notifications (id integer primary key, kind text not null, title text not null, body text,
   url text, created_at text not null);
@@ -74,7 +75,8 @@ COLUMNS = [
     ("sources", "lineage", "integer"),
     ("sources", "replaced_by", "integer"),
     ("sources", "about", "text"),
-    ("questions", "meta", "text"),  # JSON for questions whose answer code acts on, e.g. a Canvas section  # the course(s) a document is for, e.g. "COM SCI 269: Advanced Topics in AI"
+    ("questions", "meta", "text"),
+    ("chat_messages", "proposals", "text"),  # JSON ids of suggestions a message presents  # JSON for questions whose answer code acts on, e.g. a Canvas section  # the course(s) a document is for, e.g. "COM SCI 269: Advanced Topics in AI"
     ("events", "skip", "text"),  # comma-separated dates a recurring event doesn't happen
     ("questions", "snoozed_until", "text"),
     ("projects", "slips", "integer not null default 0"),  # times a Replan was needed  # UTC; "skip for now" in chat
