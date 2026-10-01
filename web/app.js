@@ -464,6 +464,45 @@ views.archive = async (id) => {
     </article></div>`;
 };
 
+// ---- settings ----------------------------------------------------------------
+
+async function saveCanvas(e) {
+  e.preventDefault();
+  try {
+    await send("PUT", "/api/canvas", { url: e.target.elements.url.value.trim() });
+    const r = await api("/api/canvas/fetch", { method: "POST" });
+    toast(r.new ? `Connected. ${r.new} new from Bruin Learn in your <a href="#inbox">Inbox</a>.` : "Connected. Nothing new right now.");
+  } catch (err) { toast(esc(detail(err))); }
+  render();
+}
+
+async function fetchCanvas(button) {
+  button.disabled = true;
+  try {
+    const r = await api("/api/canvas/fetch", { method: "POST" });
+    toast(`${r.new} new, ${r.changed} changed, ${r.removed} removed.`);
+  } catch (err) { toast(esc(detail(err))); }
+  render();
+}
+
+views.settings = async () => {
+  const [c, h] = await Promise.all([api("/api/canvas"), api("/api/health")]);
+  const status = !c.connected ? "" : c.status === "error"
+    ? `<p class="bad">The link stopped working (${esc(c.error || "")}). Paste a new one below.</p>`
+    : `<p class="from">Connected (${esc(c.link)}). Checked every 3 hours${c.checked ? `, last at ${esc(fmtWhen(c.checked))}` : ""}.
+       <button class="small" onclick="fetchCanvas(this)">Check now</button>
+       <button class="small" onclick='api("/api/canvas", {method: "DELETE"}).then(render)'>Disconnect</button></p>`;
+  return `<h1>Settings</h1><p class="sub">Connections and how the assistant runs.</p>
+    <section class="card"><h3>Bruin Learn calendar</h3>
+      <p>New and changed assignments arrive in your Inbox. In Bruin Learn: Calendar → Calendar Feed, copy the link.
+         It works like a password, so it stays on this PC.</p>
+      ${status}
+      <form class="inline" onsubmit="saveCanvas(event)"><input name="url" type="url" placeholder="https://bruinlearn.ucla.edu/feeds/calendars/….ics" required>
+        <button class="primary">${c.connected ? "Replace link" : "Connect"}</button></form></section>
+    <section class="card"><h3>Assistant</h3>
+      <p class="from">Chat: ${esc(h.ai.model)} ${h.ai.ready ? "(ready)" : `(${esc(h.ai.message)})`}. Reading documents: the 35B model when it's downloaded. Everything runs on this PC.</p></section>`;
+};
+
 // ---- memory ------------------------------------------------------------------
 
 async function saveCapacity(e) {

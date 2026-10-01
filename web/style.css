@@ -175,3 +175,4 @@ main:has(.archive) > * { max-width: 1060px; }
 .archive h4 { margin: 12px 0 4px; }
 blockquote.assess { font-size: 18px; color: var(--fg); margin-bottom: 24px; }
 @media (max-width: 700px) { .archive { grid-template-columns: 1fr; } }
+form.inline { display: flex; gap: 8px; } form.inline input { flex: 1; min-width: 0; font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--rule); border-radius: 6px; padding: 6px 10px; }

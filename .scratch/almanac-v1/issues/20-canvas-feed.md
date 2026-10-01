@@ -4,12 +4,12 @@
 
 **Blocked by:** 07 (Course identity and re-upload), 13 (Scheduler)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Feed link setting and Fetch now
-- [ ] ICS parsing (all-day and UTC due times to LA)
-- [ ] Section code to Course mapping, asked once when ambiguous (COM SCI = CS)
-- [ ] Diff by UID: create, update, removal proposals
-- [ ] Link to matching syllabus items instead of duplicating
-- [ ] Broken feed reported
-- [ ] API tests with a fake feed
+- [x] Feed link setting and Fetch now
+- [x] ICS parsing (all-day and UTC due times to LA)
+- [x] Section code to Course mapping, asked once when ambiguous (COM SCI = CS)
+- [x] Diff by UID: create, update, removal proposals
+- [x] Link to matching syllabus items instead of duplicating
+- [x] Broken feed reported
+- [x] API tests with a fake feed

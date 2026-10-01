@@ -13,7 +13,7 @@ from datetime import date, timedelta
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from . import goals, inbox, ingest
+from . import canvas, goals, inbox, ingest
 from .clock import local
 from .db import WRITE
 from .plan import current_term
@@ -87,6 +87,20 @@ def _fmt(value: str) -> str:
 
 
 def _answer(con, llm, clock, question, text):
+    row = con.execute("select meta from questions where id = ?", (question["id"],)).fetchone()
+    meta = json.loads(row["meta"]) if row and row["meta"] else {}
+    if meta.get("type") == "canvas_section":
+        linked = canvas.answer_section(con, question, meta, text)
+        if not linked:  # keep the question open and say what's needed
+            _say(con, clock, "assistant", "I couldn't tell which one you meant. Could you name the instructor?",
+                 question["id"])
+            return
+        with WRITE:
+            con.execute("update questions set answer = ?, status = 'answered', answered_at = ? where id = ?",
+                        (text, local(clock.now()).strftime("%Y-%m-%dT%H:%M"), question["id"]))
+        n = con.execute("select count(*) from proposals where question_id = ? and status = 'pending'", (question["id"],)).fetchone()[0]
+        _say(con, clock, "assistant", f"Thanks. {linked}" + (f" {n} item{'s are' if n > 1 else ' is'} ready in your Inbox." if n else ""))
+        return
     with WRITE:
         con.execute("update questions set answer = ?, status = 'answered', answered_at = ? where id = ?",
                     (text, local(clock.now()).strftime("%Y-%m-%dT%H:%M"), question["id"]))

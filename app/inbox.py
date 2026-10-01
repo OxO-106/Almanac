@@ -55,14 +55,15 @@ def propose(con, clock, source_id, summary, ops, quote=None, question_id=None) -
         return _proposal(con, cur.lastrowid)
 
 
-def ask(con, clock, source_id, text, quote=None) -> dict:
-    """Queue a Question unless the same one is already open."""
+def ask(con, clock, source_id, text, quote=None, meta=None) -> dict:
+    """Queue a Question unless the same one is already open. meta: JSON-able
+    details for questions whose answer code acts on (e.g. a Canvas section)."""
     with WRITE:
         same = con.execute("select * from questions where text = ? and status = 'open'", (text,)).fetchone()
         if same:
             return dict(same)
-        cur = con.execute("insert into questions (source_id, text, quote, created_at) values (?,?,?,?)",
-                          (source_id, text, quote, _now(clock)))
+        cur = con.execute("insert into questions (source_id, text, quote, created_at, meta) values (?,?,?,?,?)",
+                          (source_id, text, quote, _now(clock), json.dumps(meta) if meta else None))
         return dict(con.execute("select * from questions where id = ?", (cur.lastrowid,)).fetchone())
 
 

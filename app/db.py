@@ -42,6 +42,9 @@ create table if not exists sessions (id integer primary key, task_id integer not
   started_at text not null, ended_at text, minutes integer, asked_at text, confirmed_at text);
 create table if not exists overviews (id integer primary key, kind text not null, period_start text not null,
   period_end text not null, data text not null, created_at text not null, unique (kind, period_start));
+create table if not exists canvas_sections (code text primary key, course_id integer references courses on delete cascade);
+create table if not exists canvas_items (uid text primary key, proposal_id integer, entity_kind text, entity_id integer,
+  gone integer not null default 0);
 create table if not exists jobs (name text primary key, last_run text not null);
 create table if not exists notifications (id integer primary key, kind text not null, title text not null, body text,
   url text, created_at text not null);
@@ -68,7 +71,8 @@ COLUMNS = [
     # `replaced_by` marks an old version.
     ("sources", "lineage", "integer"),
     ("sources", "replaced_by", "integer"),
-    ("sources", "about", "text"),  # the course(s) a document is for, e.g. "COM SCI 269: Advanced Topics in AI"
+    ("sources", "about", "text"),
+    ("questions", "meta", "text"),  # JSON for questions whose answer code acts on, e.g. a Canvas section  # the course(s) a document is for, e.g. "COM SCI 269: Advanced Topics in AI"
     ("events", "skip", "text"),  # comma-separated dates a recurring event doesn't happen
     ("questions", "snoozed_until", "text"),
     ("projects", "slips", "integer not null default 0"),  # times a Replan was needed  # UTC; "skip for now" in chat
