@@ -149,7 +149,7 @@ def test_a_course_without_a_named_instructor_is_asked_about(client, llm):
     upload(client, "kim.txt", SYLLABUS.encode())
     box = inbox(client)
     course, deadline = box["proposals"]
-    assert course["blocked_by"] == "Who teaches CS 239 in “kim.txt”? The document doesn't name the instructor."
+    assert course["blocked_by"] == "Who teaches CS 239? The document doesn't name the instructor."
     assert deadline["ops"][0]["data"]["course_id"] == f"$p{course['id']}.0"
 
 

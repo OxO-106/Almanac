@@ -124,3 +124,39 @@ def test_a_failed_suggestions_pass_is_reported_not_hidden(client, llm):
     r = client.post("/api/chat", json={"text": "I need to email Prof. Smith about research by Friday"}).json()
     assert r["proposed"] is None
     assert proposals(client) == []
+
+
+def test_questions_name_the_course_not_the_file(client, llm):
+    from test_upload import SYLLABUS, course_reply, item, items_reply, upload
+    llm.replies = [course_reply([{"number": "COM SCI 269", "instructor": "", "title": "Advanced Topics in AI: Agentic Learning",
+                                  "quote": "Instructor: Robin Ding", "meetings": []}]), items_reply()]
+    upload(client, "26F-COM SCI-269-SEM-3 Seminar_ Current Topics.txt", SYLLABUS.encode())
+    text = chat(client)["current"]["text"]
+    assert text == "Who teaches COM SCI 269: Advanced Topics in AI: Agentic Learning? The document doesn't name the instructor."
+    client.post("/api/chat/skip")
+    client.post("/api/questions", json={"source_id": 1, "text": "Which option will you take?"})
+    assert chat(client)["current"]["text"] == ("Quick question about COM SCI 269: Advanced Topics in AI: Agentic Learning: "
+                                               "Which option will you take?")
+
+
+def test_answering_who_teaches_fills_in_the_instructor(client, llm):
+    from test_upload import SYLLABUS, course_reply, items_reply, upload
+    llm.replies = [course_reply([{"number": "CS 239", "instructor": "", "quote": "Instructor: Robin Ding", "meetings": []}]), items_reply()]
+    upload(client, "kim.txt", SYLLABUS.encode())
+    chat(client)
+    c = say(client, "Miryung Kim")
+    (p,) = proposals(client)
+    assert p["ops"][0]["data"]["instructor"] == "Miryung Kim" and p["summary"] == "Add course CS 239 · Miryung Kim"
+    assert "CS 239 · Miryung Kim" in [m["text"] for m in c["messages"]][-1]
+
+
+def test_an_ordinal_date_in_an_answer_counts(client, llm):
+    src = client.post("/api/sources", json={"kind": "document", "title": "kim.pdf", "text": "x"}).json()
+    q = client.post("/api/questions", json={"source_id": src["id"], "text": "When is “Final Project” due?"}).json()
+    client.post("/api/proposals", json={"source_id": src["id"], "summary": "Final Project", "question_id": q["id"],
+                                        "ops": [{"op": "create", "kind": "deadlines", "data": {"title": "Final Project"}}]})
+    chat(client)
+    llm.replies = [json.dumps({"items": [{"n": 0, "when": {"type": "date", "month": 12, "day": 3}}]})]
+    c = say(client, "Set it to the last class December 3rd for now")
+    assert proposals(client)[0]["ops"][0]["data"]["due"] == "2026-12-03"
+    assert "Final Project: Thu Dec 3" in [m["text"] for m in c["messages"]][-1]

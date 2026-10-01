@@ -293,7 +293,8 @@ def date_in_quote(when: dict, quote: str) -> bool:
         return False
     month_named = any(x in w for x in (MONTHS[m - 1], MONTHS[m - 1][:3], MONTHS[m - 1][:4]))
     numeric = re.search(rf"\b0?{m}[/.-]0?{d}\b", q) is not None
-    return numeric or (month_named and str(d) in w)
+    ordinal = {f"{d}st", f"{d}nd", f"{d}rd", f"{d}th"} & set(w)  # "December 3rd"
+    return numeric or (month_named and (str(d) in w or bool(ordinal)))
 
 
 def time_in_quote(time: str, quote: str) -> bool:
@@ -449,7 +450,7 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
         return False
 
     # Pass A: which course(s). Reuse a known Course (same number and instructor).
-    courses, meetings = {}, []
+    courses, meetings, labels = {}, [], []
     title = source_title(con, source_id)
     for c in _ask_model(llm, COURSE_PROMPT, COURSE_SCHEMA, f"{context}\nFile name: {title}", text[:CHUNK])["courses"]:
         c["number"] = course_number(c.get("number") or "")
@@ -463,10 +464,14 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
         name = f"{c['number']} · {instructor or 'instructor not stated'}"
         if not keep(c, name):
             continue
+        # How questions name this document in chat: course code and name, not the file name.
+        label = f"{c['number']}: {c['title'].strip()}" if (c.get("title") or "").strip() else c["number"]
+        labels.append(label)
+        with WRITE:
+            con.execute("update sources set about = ? where id = ?", ("; ".join(labels), source_id))
         if not instructor:
             # Course identity needs the instructor; ask rather than guess.
-            q = inbox.ask(con, clock, source_id, f"Who teaches {c['number']} in “{source_title(con, source_id)}”? "
-                          "The document doesn't name the instructor.", c["quote"])
+            q = inbox.ask(con, clock, source_id, f"Who teaches {label}? The document doesn't name the instructor.", c["quote"])
             data = {"number": c["number"], "instructor": "Not stated", **({"title": c["title"]} if c.get("title") else {})}
             p = inbox.propose(con, clock, source_id, f"Add course {c['number']} (edit in the instructor)",
                               [{"op": "create", "kind": "courses", "data": data}], c["quote"], q["id"])

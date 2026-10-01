@@ -68,6 +68,7 @@ COLUMNS = [
     # `replaced_by` marks an old version.
     ("sources", "lineage", "integer"),
     ("sources", "replaced_by", "integer"),
+    ("sources", "about", "text"),  # the course(s) a document is for, e.g. "COM SCI 269: Advanced Topics in AI"
     ("events", "skip", "text"),  # comma-separated dates a recurring event doesn't happen
     ("questions", "snoozed_until", "text"),
     ("projects", "slips", "integer not null default 0"),  # times a Replan was needed  # UTC; "skip for now" in chat

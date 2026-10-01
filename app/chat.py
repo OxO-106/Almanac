@@ -35,7 +35,7 @@ def _say(con, clock, role, text, question_id=None, quote=None) -> int:
 def _eligible(con, clock) -> list[dict]:
     """Open questions not snoozed, most blocking first."""
     return [dict(r) for r in con.execute(
-        "select q.*, s.title as source_title, (select count(*) from proposals p where p.question_id = q.id "
+        "select q.*, s.title as source_title, s.about as source_about, s.kind as source_kind, (select count(*) from proposals p where p.question_id = q.id "
         "and p.status = 'pending') as blocking from questions q left join sources s on s.id = q.source_id "
         "where q.status = 'open' and (q.snoozed_until is null or q.snoozed_until <= ?) order by blocking desc, q.id",
         (_utc(clock),))]
@@ -56,10 +56,9 @@ def _ask_next(con, clock):
     queue = _eligible(con, clock)
     if queue:
         q = queue[0]
-        name = (q.get("source_title") or "").rsplit(".", 1)[0].replace("_", " ").strip()
-        name = " ".join(name.split())
-        name = name if len(name) <= 40 else name[:38].rstrip() + "…"
-        about = f"Quick question about “{name}”: " if name and q.get("source_kind", "document") != "chat" else ""
+        # name the course, not the file; a file name only if the course is unknown
+        name = q.get("source_about") or " ".join((q.get("source_title") or "").rsplit(".", 1)[0].replace("_", " ").split())
+        about = f"Quick question about {name}: " if name and q.get("source_kind") != "chat" and name not in q["text"] else ""
         _say(con, clock, "assistant", about + q["text"], q["id"], q["quote"])
 
 
@@ -93,9 +92,20 @@ def _answer(con, llm, clock, question, text):
                     (text, local(clock.now()).strftime("%Y-%m-%dT%H:%M"), question["id"]))
     waiting = [inbox._proposal(con, r["id"]) for r in con.execute(
         "select id from proposals where question_id = ? and status = 'pending' order by id", (question["id"],))]
+    filled = []
+    # "Who teaches …?": the answer is the instructor of the waiting course
+    for p in waiting:
+        o = p["ops"][0]
+        name = " ".join(text.strip().rstrip(".").split())
+        if o["op"] == "create" and o["kind"] == "courses" and o["data"].get("instructor") == "Not stated" \
+                and 0 < len(name.split()) <= 5 and len(name) <= 60:
+            o["data"]["instructor"] = name
+            with WRITE:
+                con.execute("update proposals set ops = ?, summary = ? where id = ?",
+                            (json.dumps(p["ops"]), f"Add course {o['data']['number']} · {name}", p["id"]))
+            filled.append(f"{o['data']['number']} · {name}")
     undated = [(p, o) for p in waiting for o in p["ops"][:1]
                if o["op"] == "create" and o["kind"] in DATE_FIELD and not o["data"].get(DATE_FIELD[o["kind"]])]
-    filled = []
     if undated:
         today = local(clock.now()).date()
         listing = "\n".join(f"{i}. {o['data']['title']}" for i, (_, o) in enumerate(undated))
