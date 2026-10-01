@@ -11,6 +11,7 @@ import json
 from datetime import date, timedelta
 
 from . import inbox, plan, planner
+from .clock import local
 from .db import WRITE
 from .scheduler import JOBS, Job, _now, daily, notify
 
@@ -92,7 +93,8 @@ def _replan(state, scheduled, late, missed):
         inbox.propose(con, clock, None, summary + ("; some days over capacity" if warnings else ""), ops,
                       "; ".join(warnings) or None)
         with WRITE:
-            slips = con.execute("update projects set slips = coalesce(slips, 0) + 1 where id = ? returning slips", (pid,)).fetchone()[0]
+            slips = plan.change(con, "projects", pid, {"slips": (plan._row(con, "projects", pid)["slips"] or 0) + 1},
+                                local(clock.now()).strftime("%Y-%m-%dT%H:%M"))["slips"]
         if slips == SLIPS_FOR_A_CHAT:
             _say(con, clock, f"“{p['title']}” has slipped twice now. What's getting in the way? We could make the "
                              "steps smaller, move the deadline if that's possible, or drop something else this week.")

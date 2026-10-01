@@ -541,10 +541,12 @@ def _supersede(con, source_id) -> dict:
         con.execute(f"delete from questions where status = 'open' and source_id in ({marks})", old)
         con.execute(f"update sources set replaced_by = ? where id in ({marks}) and replaced_by is null", (source_id, *old))
     prior = {}
-    for p in con.execute(f"select ops, applied from proposals where status = 'accepted' and source_id in ({marks})", old):
+    for p in con.execute(f"select id, ops, applied from proposals where status = 'accepted' and source_id in ({marks})", old):
         for op, id in zip(json.loads(p["ops"]), json.loads(p["applied"])):
             if op["op"] != "create" or op["kind"] in ("courses", "terms"):
                 continue
+            if (plan.origin(con, op["kind"], id) or {}).get("id") != p["id"]:
+                continue  # not that version's item any more
             row = con.execute(f"select * from {op['kind']} where id = ?", (id,)).fetchone()
             if row:
                 prior[(op["kind"], row["title"].lower())] = dict(row)

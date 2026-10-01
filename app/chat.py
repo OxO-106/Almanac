@@ -247,13 +247,8 @@ def _answer(con, llm, clock, question, text, message_id=None):
         "select id from proposals where question_id = ? and status = 'pending' order by id", (question["id"],))]
     for pid in [p["id"] for p in waiting] + [x for x in meta.get("fills", []) if _exists(con, x)]:
         r = con.execute("select ops, summary, status, applied from proposals where id = ?", (pid,)).fetchone()
-        _record(con, message_id, "proposals_before", [pid, r["ops"], r["summary"]])
-        if r["status"] == "accepted" and r["applied"]:
-            o = json.loads(r["ops"])[0]
-            if o["op"] == "create" and o["kind"] in DATE_FIELD:
-                row = con.execute(f"select * from {o['kind']} where id = ?", (json.loads(r["applied"])[0],)).fetchone()
-                if row:
-                    _record(con, message_id, "rows_before", [o["kind"], row["id"], {k: row[k] for k in (DATE_FIELD[o["kind"]], "window", "provisional")}])
+        if r["status"] == "pending":  # an accepted one is changed through the gate instead
+            _record(con, message_id, "proposals_before", [pid, r["ops"], r["summary"]])
     filled = []
     # "Who teaches …?": the answer is the instructor of the waiting course
     for p in waiting:
@@ -316,14 +311,21 @@ def _answer(con, llm, clock, question, text, message_id=None):
                 w = ingest.When((monday + timedelta(days=date.fromisoformat(w.value[:10]).weekday())).isoformat())
             if w.value:
                 field = DATE_FIELD[o["kind"]]
-                o["data"][field] = w.value
-                o["data"].pop("window", None)  # the day is known now: no longer just "sometime in Week 9"
-                o["data"].pop("provisional", None)
-                with WRITE:
-                    con.execute("update proposals set ops = ? where id = ?", (json.dumps(p["ops"]), p["id"]))
-                    if p["status"] == "accepted" and p.get("applied"):  # already in the plan: date it there
-                        con.execute(f"update {o['kind']} set {field} = ?, window = null, provisional = 0 where id = ?",
-                                    (w.value, p["applied"][0]))
+                if p["status"] == "accepted" and p.get("applied"):
+                    # already in the plan: date it there, through the gate (so Rewind can undo it)
+                    src = con.execute("select source_id from questions where id = ?", (question["id"],)).fetchone()
+                    done = inbox.propose_and_accept(
+                        con, clock, src["source_id"] if src else None, f"Date “{o['data']['title']}”: {_fmt(w.value)}",
+                        [{"op": "update", "kind": o["kind"], "id": p["applied"][0],
+                          "data": {field: w.value, "window": None, "provisional": False}}], text)
+                    if done:
+                        _record(con, message_id, "made", done["id"])
+                else:
+                    o["data"][field] = w.value
+                    o["data"].pop("window", None)  # the day is known now: no longer just "sometime in Week 9"
+                    o["data"].pop("provisional", None)
+                    with WRITE:
+                        con.execute("update proposals set ops = ? where id = ?", (json.dumps(p["ops"]), p["id"]))
                 filled.append(f"{o['data']['title']}: {_fmt(w.value)}")
     # Only say something when the answer changed something; a plain answer
     # is acknowledged by the next question's opening ("Got it. Next, …").
@@ -715,9 +717,6 @@ def rewind(con, message_id) -> str | None:
                 inbox.withdraw(con, pid)
             for qid in e.get("asked", []):
                 con.execute("delete from questions where id = ?", (qid,))
-            for table, rid, before in reversed(e.get("rows_before", [])):
-                sets = ", ".join(f"{k} = ?" for k in before)
-                con.execute(f"update {table} set {sets} where id = ?", (*before.values(), rid))
             for pid, ops, summary in reversed(e.get("proposals_before", [])):
                 con.execute("update proposals set ops = ?, summary = ? where id = ?", (ops, summary, pid))
             for qid, before in reversed(e.get("questions_before", [])):

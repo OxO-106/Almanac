@@ -1,6 +1,7 @@
 """SQLite store. Tables are created on open; later tickets add theirs here."""
 
 import json
+import re
 import sqlite3
 import threading
 from pathlib import Path
@@ -10,37 +11,37 @@ from pathlib import Path
 SCHEMA = """
 create table if not exists settings (key text primary key, value text not null);
 create table if not exists courses (
-  id integer primary key, number text not null, instructor text not null, title text, color text);
+  id integer primary key autoincrement, number text not null, instructor text not null, title text, color text);
 create table if not exists goals (
-  id integer primary key, title text not null, why text, horizon text, status text not null default 'active');
+  id integer primary key autoincrement, title text not null, why text, horizon text, status text not null default 'active');
 create table if not exists projects (
-  id integer primary key, title text not null, goal_id integer references goals on delete set null,
+  id integer primary key autoincrement, title text not null, goal_id integer references goals on delete set null,
   course_id integer references courses on delete set null, deadline text, team integer not null default 0,
   status text not null default 'active', notes text);
 create table if not exists tasks (
-  id integer primary key, title text not null, project_id integer references projects on delete set null,
+  id integer primary key autoincrement, title text not null, project_id integer references projects on delete set null,
   course_id integer references courses on delete set null, due text, do_date text, work_kind text, size real,
   estimate_min integer, status text not null default 'open', done_at text, notes text,
   provisional integer not null default 0);
 create table if not exists events (
-  id integer primary key, title text not null, course_id integer references courses on delete set null,
+  id integer primary key autoincrement, title text not null, course_id integer references courses on delete set null,
   start text not null, end text, repeat text, until text, location text, provisional integer not null default 0);
 create table if not exists deadlines (
-  id integer primary key, title text not null, course_id integer references courses on delete set null,
+  id integer primary key autoincrement, title text not null, course_id integer references courses on delete set null,
   project_id integer references projects on delete set null, due text, provisional integer not null default 0);
 create table if not exists terms (
-  id integer primary key, name text not null, starts text not null, instruction_begins text not null,
+  id integer primary key autoincrement, name text not null, starts text not null, instruction_begins text not null,
   week1 text not null, instruction_ends text not null, finals_start text, ends text not null, holidays text not null default '');
 create table if not exists sources (
-  id integer primary key, kind text not null, title text not null, text text not null default '', created_at text not null);
+  id integer primary key autoincrement, kind text not null, title text not null, text text not null default '', created_at text not null);
 create table if not exists questions (
-  id integer primary key, source_id integer references sources on delete set null, text text not null, quote text,
+  id integer primary key autoincrement, source_id integer references sources on delete set null, text text not null, quote text,
   answer text, status text not null default 'open', created_at text not null, answered_at text);
 create table if not exists memories (
-  id integer primary key, text text not null, topic text);
-create table if not exists sessions (id integer primary key, task_id integer not null references tasks on delete cascade,
+  id integer primary key autoincrement, text text not null, topic text);
+create table if not exists sessions (id integer primary key autoincrement, task_id integer not null references tasks on delete cascade,
   started_at text not null, ended_at text, minutes integer, asked_at text, confirmed_at text);
-create table if not exists overviews (id integer primary key, kind text not null, period_start text not null,
+create table if not exists overviews (id integer primary key autoincrement, kind text not null, period_start text not null,
   period_end text not null, data text not null, created_at text not null, unique (kind, period_start));
 create table if not exists canvas_sections (code text primary key, course_id integer references courses on delete cascade);
 create table if not exists canvas_items (uid text primary key, proposal_id integer, entity_kind text, entity_id integer,
@@ -49,16 +50,21 @@ create table if not exists push_subscriptions (endpoint text primary key, p256dh
   contact text not null);
 create table if not exists notes (date text primary key, headline text not null, body text not null, written_by text not null);
 create table if not exists jobs (name text primary key, last_run text not null);
-create table if not exists notifications (id integer primary key, kind text not null, title text not null, body text,
+create table if not exists notifications (id integer primary key autoincrement, kind text not null, title text not null, body text,
   url text, created_at text not null);
 create table if not exists briefings (date text primary key, data text not null);
-create table if not exists catchup (id integer primary key, text text not null, consumed integer not null default 0);
-create table if not exists chat_summaries (id integer primary key, upto integer not null, text text not null, created_at text not null);
+create table if not exists catchup (id integer primary key autoincrement, text text not null, consumed integer not null default 0);
+create table if not exists chat_summaries (id integer primary key autoincrement, upto integer not null, text text not null, created_at text not null);
 create table if not exists chat_messages (
-  id integer primary key, role text not null, text text not null, question_id integer references questions on delete set null,
+  id integer primary key autoincrement, role text not null, text text not null, question_id integer references questions on delete set null,
   quote text, created_at text not null);
+create table if not exists history (
+  id integer primary key autoincrement, kind text not null, item_id integer not null, op text not null,
+  proposal_id integer, before text, after text, at text not null);
+create index if not exists history_item on history (kind, item_id);
+create index if not exists history_proposal on history (proposal_id);
 create table if not exists proposals (
-  id integer primary key, source_id integer references sources on delete set null,
+  id integer primary key autoincrement, source_id integer references sources on delete set null,
   question_id integer references questions on delete set null, summary text not null, quote text,
   ops text not null, fingerprint text not null, status text not null default 'pending',
   applied text, created_at text not null, decided_at text);
@@ -118,10 +124,68 @@ def connect(path: Path) -> sqlite3.Connection:
     for table, column, decl in COLUMNS:
         if column not in {r["name"] for r in con.execute(f"pragma table_info({table})")}:
             con.execute(f"alter table {table} add column {column} {decl}")
+    _stable_ids(con)
+    _backfill_history(con)
     if not con.execute("select 1 from terms").fetchone():
         con.executemany("insert into terms (name, starts, instruction_begins, week1, instruction_ends, finals_start, ends,"
                         " holidays) values (?,?,?,?,?,?,?,?)", TERMS)
     return con
+
+
+def _stable_ids(con):
+    """Rebuild tables made before ids were stable (plain `integer primary key`
+    hands a deleted id out again), keeping every id. The counter starts past
+    any id a proposal ever created, so an id that was used is never reused."""
+    old = con.execute("select name, sql from sqlite_master where type = 'table' and sql like '%id integer primary key%' "
+                      "and sql not like '%autoincrement%'").fetchall()
+    if not old:
+        return
+    con.execute("pragma foreign_keys = off")
+    con.execute("pragma legacy_alter_table = on")
+    con.execute("begin")
+    try:
+        for name, sql in old:
+            new = re.sub(r"id integer primary key(?! autoincrement)", "id integer primary key autoincrement", sql, count=1)
+            new = re.sub(r"^CREATE TABLE\s+\"?\w+\"?", f"CREATE TABLE _{name}_new", new, count=1, flags=re.I)
+            con.execute(new)
+            con.execute(f"insert into _{name}_new select * from {name}")
+            con.execute(f"drop table {name}")
+            con.execute(f"alter table _{name}_new rename to {name}")
+        used = {}
+        for ops, applied in con.execute("select ops, applied from proposals where applied is not null"):
+            for o, ref in zip(json.loads(ops), json.loads(applied)):
+                if isinstance(ref, int):
+                    used[o["kind"]] = max(used.get(o["kind"], 0), ref)
+        for kind, top in used.items():
+            con.execute("update sqlite_sequence set seq = max(seq, ?) where name = ?", (top, kind))
+            con.execute("insert into sqlite_sequence (name, seq) select ?, ? where not exists "
+                        "(select 1 from sqlite_sequence where name = ?)", (kind, top, kind))
+        con.execute("commit")
+    except Exception:
+        con.execute("rollback")
+        raise
+    finally:
+        con.execute("pragma legacy_alter_table = off")
+        con.execute("pragma foreign_keys = on")
+    con.executescript(SCHEMA)  # indexes on the rebuilt tables
+
+
+def _backfill_history(con):
+    """Items accepted before history was kept get their origin: the proposal
+    that created them (when the row is still there)."""
+    if con.execute("select 1 from history limit 1").fetchone():
+        return
+    rows = con.execute("select id, ops, applied, undo, decided_at from proposals where status = 'accepted' and applied is not null").fetchall()
+    with WRITE:
+        for pid, ops, applied, undo, at in rows:
+            undo = json.loads(undo) if undo else []
+            for i, (o, ref) in enumerate(zip(json.loads(ops), json.loads(applied))):
+                if o["op"] == "create" and con.execute(f"select 1 from {o['kind']} where id = ?", (ref,)).fetchone():
+                    con.execute("insert into history (kind, item_id, op, proposal_id, at) values (?,?,?,?,?)",
+                                (o["kind"], ref, "create", pid, at or ""))
+                elif o["op"] in ("update", "delete") and i < len(undo) and undo[i]:
+                    con.execute("insert into history (kind, item_id, op, proposal_id, before, at) values (?,?,?,?,?,?)",
+                                (o["kind"], ref, o["op"], pid, json.dumps(undo[i]), at or ""))
 
 
 def settings(con: sqlite3.Connection) -> dict:

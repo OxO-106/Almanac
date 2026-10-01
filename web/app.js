@@ -128,6 +128,9 @@ async function openEditor(kind, item = null, preset = {}) {
   const dlg = $("#editor");
   dlg.innerHTML = `<form method="dialog">
     <h2>${item ? "Edit" : "New"} ${k.one.toLowerCase()}</h2>
+    ${item && "origin" in item ? `<p class="why">${item.origin
+      ? `From ${esc(item.origin.source_kind === "chat" ? "what you said in chat" : item.origin.source || "a suggestion")}${item.origin.quote ? `: “${esc(item.origin.quote)}”` : ""}`
+      : "Added by you."}</p>` : ""}
     ${k.fields.map(f => input(f, v[f[0]])).join("")}
     <p class="error" hidden></p>
     <div class="actions">

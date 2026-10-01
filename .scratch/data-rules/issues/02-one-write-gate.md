@@ -4,8 +4,12 @@
 
 **Blocked by:** 01
 
-**Status:** needs-triage
+**Status:** done
 
-- [ ] An answer that dates an accepted item is recorded as a proposal accepted on the spot, visible in the item's history
-- [ ] Rewind undoes through the same records (no special cases)
-- [ ] A test fails if any module writes to tasks/events/deadlines/projects/courses outside the gate
+- [x] An answer that dates an accepted item is recorded as a proposal accepted on the spot, visible in the item's history
+- [x] Rewind undoes through the same records (no special cases)
+- [x] A test fails if any module writes to tasks/events/deadlines/projects/courses outside the gate
+
+## Comments
+
+The gate is `plan.insert/change/remove` (with `by=proposal_id`), plus `plan.undo(proposal_id)`. `inbox.propose_and_accept` is used where the student's own answer settles a change to an accepted item. `tests/test_gate.py` fails if any module other than plan.py/db.py/dev.py writes to a plan table.

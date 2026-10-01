@@ -59,7 +59,7 @@ KINDS = {
     "courses": ({"number": str, "instructor": str, "title": str, "color": str}, {"number", "instructor"}),
     "goals": ({"title": str, "why": str, "horizon": str, "status": str}, {"title"}),
     "projects": ({"title": str, "goal_id": int, "course_id": int, "deadline": _date_or_time, "team": bool,
-                  "status": str, "notes": str}, {"title"}),
+                  "status": str, "notes": str, "slips": int}, {"title"}),
     "tasks": ({"title": str, "project_id": int, "course_id": int, "due": _date_or_time, "do_date": _date,
                "work_kind": str, "size": float, "estimate_min": int, "status": _one_of("open", "done"), "notes": str,
                "provisional": bool, "window": _window}, {"title"}),
@@ -214,33 +214,75 @@ def list_(kind: str, request: Request):
     return [dict(r) for r in rows]
 
 
-# insert/change/remove are shared by the HTTP routes and accepted Proposals.
+# ---- the gate ------------------------------------------------------------------
+# insert/change/remove are the only writes to the plan (a test enforces it).
+# Each records history: which item, what it was before, and the proposal that
+# made the change (None: the student, by hand). That history is each item's
+# origin, and what undo() replays backwards.
 
-def insert(con, kind: str, body: dict) -> dict:
+def _log(con, kind, id, op, by, before, after, now):
+    con.execute("insert into history (kind, item_id, op, proposal_id, before, after, at) values (?,?,?,?,?,?,?)",
+                (kind, id, op, by, json.dumps(before) if before is not None else None,
+                 json.dumps(after) if after is not None else None, now or datetime.now().strftime("%Y-%m-%dT%H:%M")))
+
+
+def insert(con, kind: str, body: dict, by: int | None = None, now: str | None = None) -> dict:
     data = _clean(_kind(kind), body, creating=True)
     with WRITE:
         if kind == "courses" and not data.get("color"):
             data["color"] = _next_color(con)
         cur = con.execute(f"insert into {kind} ({', '.join(data)}) values ({', '.join('?' * len(data))})",
                           tuple(data.values()))
+        _log(con, kind, cur.lastrowid, "create", by, None, data, now)
         return _row(con, kind, cur.lastrowid)
 
 
-def change(con, kind: str, id: int, body: dict, now: str) -> dict:
+def change(con, kind: str, id: int, body: dict, now: str, by: int | None = None) -> dict:
     data = _clean(_kind(kind), body, creating=False)
     with WRITE:
-        _row(con, kind, id)
+        old = _row(con, kind, id)
         if kind == "tasks" and "status" in data:
             data["done_at"] = now if data["status"] == "done" else None
         if data:
             con.execute(f"update {kind} set {', '.join(f'{k} = ?' for k in data)} where id = ?", (*data.values(), id))
+            _log(con, kind, id, "update", by, {k: old.get(k) for k in data}, data, now)
         return _row(con, kind, id)
 
 
-def remove(con, kind: str, id: int):
+def remove(con, kind: str, id: int, by: int | None = None, now: str | None = None):
     with WRITE:
-        _row(con, _kind(kind), id)
+        old = _row(con, _kind(kind), id)
         con.execute(f"delete from {kind} where id = ?", (id,))
+        _log(con, kind, id, "delete", by, old, None, now)
+
+
+def undo(con, proposal_id: int):
+    """Reverse everything a proposal changed, newest first: what it created is
+    removed, what it changed gets its old values back, what it removed returns
+    (with its id). Its history goes with it."""
+    with WRITE:
+        for h in con.execute("select * from history where proposal_id = ? order by id desc", (proposal_id,)).fetchall():
+            kind, iid, before = h["kind"], h["item_id"], json.loads(h["before"]) if h["before"] else None
+            if h["op"] == "create":
+                con.execute(f"delete from {kind} where id = ?", (iid,))
+            elif h["op"] == "update" and before:
+                con.execute(f"update {kind} set {', '.join(f'{k} = ?' for k in before)} where id = ?", (*before.values(), iid))
+            elif h["op"] == "delete" and before:
+                con.execute(f"insert or replace into {kind} ({', '.join(before)}) values ({', '.join('?' * len(before))})",
+                            tuple(before.values()))
+        con.execute("delete from history where proposal_id = ?", (proposal_id,))
+
+
+def origin(con, kind: str, id: int) -> dict | None:
+    """Where an item came from: the proposal (and its source and quote) that
+    created it, or None if the student added it by hand."""
+    h = con.execute("select proposal_id, at from history where kind = ? and item_id = ? and op = 'create' order by id limit 1",
+                    (kind, id)).fetchone()
+    if not h or h["proposal_id"] is None:
+        return None
+    p = con.execute("select p.id, p.summary, p.quote, s.id as source_id, s.title as source, s.kind as source_kind "
+                    "from proposals p left join sources s on s.id = p.source_id where p.id = ?", (h["proposal_id"],)).fetchone()
+    return {**dict(p), "at": h["at"]} if p else {"id": h["proposal_id"], "at": h["at"]}
 
 
 @router.post("/{kind}", status_code=201)
@@ -251,6 +293,7 @@ async def create(kind: str, request: Request):
 @router.get("/{kind}/{id}")
 def get(kind: str, id: int, request: Request):
     row = _row(request.app.state.db, _kind(kind), id)
+    row["origin"] = origin(request.app.state.db, kind, id)
     if kind == "tasks":
         from .timers import spent  # timers builds on plan
         row["spent_min"] = spent(request.app.state.db, id)
