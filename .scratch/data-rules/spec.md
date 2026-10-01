@@ -1,6 +1,6 @@
 # Data rules: how the plan is built and kept
 
-Status: proposed (review of v1, 2026-10-01). Nothing here is built yet.
+Status: built (2026-10-01). Tickets 01-07 are done; see each for what was measured.
 
 ## Why
 

@@ -9,6 +9,10 @@ A local personal assistant that turns syllabi, documents and chat into goals, pr
 - A course is identified by course number **and** instructor. Two courses can share a number.
 - If a document fails to parse, report the real error and try the next parser; never guess the cause.
 - Keep code minimal (ponytail style, `D:\Read\ponytail`). Don't re-download models; reuse the Ollama models Papercut already has.
+- Every change to the plan goes through `plan.insert/change/remove` (they record history: origin, undo). Assistant changes are Proposals; a change the student's own answer settles uses `inbox.propose_and_accept`. `tests/test_gate.py` enforces it.
+- Questions are created with a purpose and target (`inbox.ask`), worded in `asks.py`, answered in `questions.py`.
+- Duplicates are judged by one rule, `merge.same`, for every reader.
+- Syllabus and chat follow the rules in `.scratch/data-rules/spec.md`. Measure syllabus changes with `scripts/eval.py` against `seed/expected.json`.
 
 ## Agent skills
 

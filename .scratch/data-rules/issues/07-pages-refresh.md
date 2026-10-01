@@ -4,6 +4,10 @@
 
 **Blocked by:** 02
 
-**Status:** needs-triage
+**Status:** done
 
-- [ ] Accepting a suggestion on the phone shows on the open desktop calendar within a few seconds
+- [x] Accepting a suggestion on the phone shows on the open desktop calendar within a few seconds
+
+## Comments
+
+`GET /api/version` combines the newest history, proposal, question, chat, notification and source ids with the pending/open counts. Open pages check it every 5 s while visible (and when they become visible again) and redraw when it moves, never while typing, in a form, or with the editor open, keeping the scroll position. Verified live: a task added through the API appeared on the open Today page within seconds, and disappeared when deleted.

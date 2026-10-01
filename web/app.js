@@ -1045,7 +1045,28 @@ async function render() {
   } catch (e) {
     $("#view").innerHTML = `<div class="page"><div class="notice">I couldn't load this page: ${esc(e.message)}</div></div>`;
   }
+  seenVersion = await planVersion();
 }
+
+// ---- staying current -------------------------------------------------------------
+// The server's version changes whenever the plan (or suggestions, questions,
+// chat) does: a change made on the phone shows on the open desktop page within
+// a few seconds. Never while typing or editing, and the scroll position stays.
+
+let seenVersion = null;
+const planVersion = () => api("/api/version").then(r => r.v).catch(() => seenVersion);
+const busy = () => !!($("#say")?.value || $("#editor")?.open || ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName));
+
+async function stayCurrent() {
+  if (document.visibilityState !== "visible" || seenVersion === null) return;
+  const v = await planVersion();
+  if (v === seenVersion || busy()) return;
+  const y = scrollY;
+  await render();
+  if (!location.hash.startsWith("#chat")) scrollTo(0, y);
+}
+setInterval(stayCurrent, 5000);
+document.addEventListener("visibilitychange", stayCurrent);
 
 // ---- timer -------------------------------------------------------------------
 

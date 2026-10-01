@@ -29,6 +29,19 @@ def create_app(db_path: Path = DB_PATH, llm=None, clock=None) -> FastAPI:
     app.state.clock = clock or SystemClock()
     app.state.fetch = canvas.fetch_url  # tests swap in a fake feed
 
+    @app.get("/api/version")
+    def version(request: Request):
+        """Changes whenever the plan, suggestions, questions, chat, documents or
+        notifications do, so open pages know to redraw (a cheap poll)."""
+        con = request.app.state.db
+        parts = con.execute(
+            "select (select coalesce(max(id), 0) from history), (select coalesce(max(id), 0) from proposals), "
+            "(select count(*) from proposals where status = 'pending'), (select coalesce(max(id), 0) from questions), "
+            "(select count(*) from questions where status = 'open'), (select coalesce(max(id), 0) from chat_messages), "
+            "(select count(*) from chat_messages), (select coalesce(max(id), 0) from notifications), "
+            "(select count(*) from sources where status = 'processing'), (select coalesce(max(id), 0) from sources)").fetchone()
+        return {"v": "-".join(str(x) for x in parts)}
+
     @app.get("/api/health")
     def health(request: Request):
         s = request.app.state

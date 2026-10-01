@@ -18,3 +18,14 @@ def test_today_page_is_served(client):
     r = client.get("/")
     assert r.status_code == 200
     assert "Almanac" in r.text
+
+
+def test_the_version_changes_when_the_plan_does(client):
+    v1 = client.get("/api/version").json()["v"]
+    assert client.get("/api/version").json()["v"] == v1
+    client.post("/api/tasks", json={"title": "Read ReAct"})
+    v2 = client.get("/api/version").json()["v"]
+    assert v2 != v1
+    p = client.post("/api/proposals", json={"summary": "x", "ops": [{"op": "create", "kind": "tasks", "data": {"title": "x"}}]}).json()
+    client.post(f"/api/proposals/{p['id']}/reject")
+    assert client.get("/api/version").json()["v"] not in (v1, v2)
