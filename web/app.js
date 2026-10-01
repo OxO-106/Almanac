@@ -204,7 +204,7 @@ async function skipQuestion() { await api("/api/chat/skip", { method: "POST" });
 
 async function offer() {
   const [c, box] = await Promise.all([api("/api/chat"), api("/api/inbox")]);
-  const ready = box.proposals.filter(p => !p.blocked_by && !hiddenOffers.has(p.id));
+  const ready = box.proposals.filter(p => !p.blocked_by && !p.optional && !hiddenOffers.has(p.id));
   if (c.current) {
     const more = ready.length ? `<p class="from waiting-line">${ready.length} suggestion${ready.length > 1 ? "s" : ""} from your documents ${ready.length > 1 ? "are" : "is"} waiting too. <a href="#inbox">Go through them</a></p>` : "";
     const q = c.current;
@@ -305,7 +305,7 @@ const hhmm = s => fmtTime(s).replace(" ", " ");
 function suggestionCard(m) {
   const pending = m.proposals.filter(p => p.status === "pending");
   const rows = m.proposals.map(p => `<label class="item">
-    ${p.status === "pending" ? `<input type="checkbox" checked data-p="${p.id}">` : ""}
+    ${p.status === "pending" ? `<input type="checkbox" ${p.optional ? "" : "checked"} data-p="${p.id}">` : ""}
     <span class="title">${esc(p.summary)}</span>
     <span class="meta">${p.status === "pending" ? esc(describeOps(p)) : p.status === "accepted" ? "added" : "skipped"}</span></label>`).join("");
   return `<div class="sugg">${rows}
@@ -540,7 +540,7 @@ views.inbox = async () => {
   const groups = {};
   for (const p of ready) (groups[p.source?.id ?? 0] ??= { source: p.source, items: [] }).items.push(p);
   const card = p => `<div class="card ${p.blocked_by ? "waiting" : ""}">
-    <p class="summary">${esc(p.summary)}</p>
+    <p class="summary">${esc(p.summary)}${p.optional ? ` <span class="tag">optional</span>` : ""}</p>
     <p class="detail">${esc(describeOps(p))}</p>
     ${p.quote ? `<p class="why">“${esc(p.quote)}”</p>` : ""}
     ${p.blocked_by ? `<p class="detail">Waiting on your answer in <a href="#chat">Chat</a>: ${esc(p.blocked_by)}</p>` : `<div class="row-actions">

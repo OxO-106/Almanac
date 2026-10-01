@@ -134,7 +134,7 @@ def state(con, clock) -> dict:
     for r in con.execute("select id, role, text, question_id, quote, created_at, proposals from chat_messages order by id"):
         m = dict(r)
         ids = json.loads(m.pop("proposals") or "[]")
-        m["proposals"] = [{k: p[k] for k in ("id", "summary", "status", "ops", "quote")}
+        m["proposals"] = [{k: p[k] for k in ("id", "summary", "status", "ops", "quote", "optional")}
                           for p in (inbox._proposal(con, i) for i in ids if _exists(con, i))]
         messages.append(m)
     waiting = len(_eligible(con, clock)) - (1 if cur else 0)

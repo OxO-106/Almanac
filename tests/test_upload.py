@@ -6,7 +6,6 @@ import pymupdf
 
 SYLLABUS = """CS 239: Large Language Models and Code Intelligence
 Instructor: Robin Ding
-Lectures Mondays and Wednesdays, 4:00-5:50 p.m.
 Select a paper and register using the paper presentation sign-up sheet
 by October 5.
 Wed Nov 11 No class Midterm report due
@@ -468,3 +467,39 @@ def test_what_was_left_out_gets_a_second_look(client, llm):
     assert got["Read UCLA's Academic Integrity Statement"]["due"] == "2026-10-02"  # "first week": by the end of Week 1
     assert [d["title"] for d in src["dropped"]] == ["Final exam"]
     assert "Items:\n0. Project check-in" in llm.requests[2]["messages"][-1]["content"]
+
+
+def test_weekly_meetings_are_read_from_the_text_when_the_model_reports_none(client, llm):
+    doc = ("Miodrag Potkonjak\nCS259 Fall 2026\nSeminal Achievements in Computer Science\nCourse logistics\n"
+           "Lecture: MW 2:00pm - 3:50pm\nhttps://ucla.zoom.us/j/4097029656\nOffice hours: per request\n")
+    llm.replies = [course_reply([{"number": "CS 259", "instructor": "", "title": "Seminal Achievements in Computer Science",
+                                  "quote": "CS259 Fall 2026", "meetings": []}]), items_reply()]
+    upload(client, "cs259.txt", doc.encode())
+    (cls,) = [p for p in inbox(client)["proposals"] if p["ops"][0]["kind"] == "events"]
+    d = cls["ops"][0]["data"]
+    assert (d["repeat"], d["start"][11:], d["end"][11:], d["location"]) == ("MO,WE", "14:00", "15:50", "https://ucla.zoom.us/j/4097029656")
+
+
+def test_a_meetings_type_comes_from_its_heading(client, llm):
+    doc = ("CS 239\nInstructor: Robin Ding\nLectures\nMondays and Wednesdays, 4:00-5:50 p.m. @ GEOLOGY 6704\n"
+           "Office hours\nThursdays, 4:00-5:00 p.m. @ Engineering VI\n")
+    meetings = [{"type": "lecture", "days": "MO,WE", "start": "16:00", "end": "17:50", "location": "GEOLOGY 6704",
+                 "quote": "Mondays and Wednesdays, 4:00-5:50 p.m. @ GEOLOGY 6704"},
+                {"type": "lecture", "days": "TH", "start": "16:00", "end": "17:00", "location": "Engineering VI",
+                 "quote": "Thursdays, 4:00-5:00 p.m. @ Engineering VI"}]
+    llm.replies = [course_reply([{"number": "CS 239", "instructor": "Robin Ding", "quote": "Instructor: Robin Ding",
+                                  "meetings": meetings}]), items_reply()]
+    upload(client, "ding.txt", doc.encode())
+    got = {p["summary"]: p for p in inbox(client)["proposals"]}
+    assert "CS 239 · Ding class meetings" in got
+    assert got["CS 239 office hours (weekly)"]["optional"]  # under "Office hours", whatever the model called it
+
+
+def test_the_same_presentation_on_two_close_dates_is_a_slot_choice(client, llm):
+    doc = "Mon Nov 30 Final project report\nWed Dec 2 Final project report\n"
+    llm.replies = [course_reply(), items_reply(
+        item(kind="event", title="Final project report", quote="Mon Nov 30 Final project report", when={"type": "date", "month": 11, "day": 30}),
+        item(kind="event", title="Final project report", quote="Wed Dec 2 Final project report", when={"type": "date", "month": 12, "day": 2}))]
+    upload(client, "ding.txt", doc.encode())
+    slots = [p for p in inbox(client)["proposals"] if p["summary"] == "Final project report"]
+    assert len(slots) == 2 and all(p["blocked_by"] == "Which day is your “Final project report”: Mon Nov 30 or Wed Dec 2?" for p in slots)

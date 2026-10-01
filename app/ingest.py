@@ -105,18 +105,19 @@ RULES = """You read a university course document for a student and report what i
 - Set "provisional": true when the document calls the schedule provisional, tentative or subject to change."""
 
 COURSE_PROMPT = RULES + """
-Task: list the course(s) this document is for: course number as department and number only (e.g. "CS 239", "COM SCI 269"; not a term or section code), instructor's full name, title, and the regular class meetings (days as MO,TU,WE,TH,FR,SA,SU; start and end as HH:MM 24-hour; location). If the instructor or a meeting time is not written, leave it empty; do not guess. Quote the line that names the course."""
+Task: list the course(s) this document is for: course number as department and number only (e.g. "CS 239", "COM SCI 269"; not a term or section code), instructor's full name (only someone the document calls the instructor or professor), title, and the regular weekly meetings: lecture, discussion, lab, seminar, and office hours, each with "type" (lecture, discussion, lab, seminar, office_hours), days as MO,TU,WE,TH,FR,SA,SU, start and end as HH:MM 24-hour, and location (a room, or the online meeting link given for it). If the instructor or a meeting time is not written, leave it empty; do not guess. Quote the line that names the course."""
 
 ITEMS_PROMPT = RULES + """
 Task: list everything in this part of the document the student must attend, submit or do:
 - "deadline": something due or submitted by a moment (registration, report, sign-up).
 - "event": a scheduled session the student attends that is not a regular lecture (exam, tutorial, presentation day, check-in, guest lecture).
-- "task": a specific piece of work to do before a moment. List each assigned reading on its own, titled "Read <paper or chapter>", and quote the line that ties it to its lecture or date (e.g. "[Required — Lecture 5]"). Not general expectations that apply every week or to whoever presents ("read the papers before class", "participate in discussion", "bring an annotated copy").
+- "task": a specific piece of work to do before a moment. List each required reading on its own, titled "Read <paper or chapter>", and quote the line that ties it to its lecture or date (e.g. "[Required — Lecture 5]"). Not optional readings (papers teams may choose to present), and not general expectations that apply every week or to whoever presents ("read the papers before class", "participate in discussion", "bring an annotated copy").
 - "project": a multi-part deliverable spanning weeks (a course project, a presentation to prepare).
 - "question": a fact only the student can supply that decides WHEN something happens or WHETHER a task exists for them (which paper they present and so on which date, their team, their presentation slot, a choice between options such as an exam or a project). Not questions about the content of their work. Write the question to ask them, addressed to "you", as a full sentence ending in "?", in "question".
 Also set "question" on any other item whose date depends on the student's choice or assignment.
 The quote must contain the date you report. When the date is in a heading or table row above the item, quote from the date to the item and mark the skipped middle with "...", e.g. "Lecture 2: Thursday, October 1 ... P2. ReAct".
 - "no_class": a specific date the document says there is no class (holiday, break).
+- "choice": one thing that happens on one of several dates, depending on the slot the student signs up for or is assigned (e.g. presentations split over two class days). One item, with each date as an entry in "options" ({"when", "quote"}); not one item per date.
 Do not list regular lectures, grading percentages, or policies."""
 
 WHEN = {"type": "object", "properties": {
@@ -129,14 +130,17 @@ WHEN = {"type": "object", "properties": {
 COURSE_SCHEMA = {"type": "object", "properties": {"courses": {"type": "array", "items": {"type": "object", "properties": {
     "number": {"type": "string"}, "instructor": {"type": "string"}, "title": {"type": "string"}, "quote": {"type": "string"},
     "meetings": {"type": "array", "items": {"type": "object", "properties": {
+        "type": {"type": "string", "enum": ["lecture", "discussion", "lab", "seminar", "office_hours"]},
         "days": {"type": "string"}, "start": {"type": "string"}, "end": {"type": "string"}, "location": {"type": "string"},
         "quote": {"type": "string"}}, "required": ["days", "quote"]}}},
     "required": ["number", "instructor", "quote"]}}}, "required": ["courses"]}
 
 ITEMS_SCHEMA = {"type": "object", "properties": {"items": {"type": "array", "items": {"type": "object", "properties": {
-    "kind": {"type": "string", "enum": ["deadline", "event", "task", "project", "question", "no_class"]},
+    "kind": {"type": "string", "enum": ["deadline", "event", "task", "project", "question", "no_class", "choice"]},
     "title": {"type": "string"}, "course": {"type": "string"}, "quote": {"type": "string"},
-    "when": WHEN, "provisional": {"type": "boolean"}, "question": {"type": "string"}},
+    "when": WHEN, "provisional": {"type": "boolean"}, "question": {"type": "string"},
+    "options": {"type": "array", "items": {"type": "object", "properties": {"when": WHEN, "quote": {"type": "string"}},
+                                           "required": ["when", "quote"]}}},
     "required": ["kind", "title", "quote", "when"]}}}, "required": ["items"]}
 
 QUESTIONS_PROMPT = RULES + """
@@ -551,12 +555,131 @@ def _supersede(con, source_id) -> dict:
     return prior
 
 
+_MEETING_WORDS = re.compile(r"\b(lectures?|discussions?|labs?|seminars?|sections?|class(es)?|office\s+hours?)\b", re.I)
+
+
+def _meeting_type(context: str, given=None) -> str:
+    c = context.lower()
+    if "office hour" in c:
+        return "office_hours"
+    for t in ("discussion", "lab", "seminar"):
+        if t in c:
+            return t
+    return given if given in ("discussion", "lab", "seminar") else "lecture"
+
+
+def _meetings_in_text(text):
+    """Weekly meetings stated in the text ("Lecture: MW 2:00pm - 3:50pm"),
+    for when the model reports none. A link on the next lines is the place."""
+    lines = text.splitlines()
+    out = []
+    for i, line in enumerate(lines):
+        around = "\n".join(lines[max(0, i - 1):i + 1])
+        if not _MEETING_WORDS.search(around) or not (wk := weekly(line)):
+            continue
+        link = next((m.group().rstrip(".,)") for l in lines[i:i + 3] if (m := re.search(r"https?://\S+", l))), None)
+        out.append({"type": _meeting_type(around), "days": ",".join(wk[0]), "start": wk[1], "end": wk[2],
+                    "quote": line.strip(), "location": link})
+    return out
+
+
+def _good_meetings(c, text):
+    """The model's weekly meetings whose quote and start time check out; if
+    none do, the ones stated in the text."""
+    found = _meetings_in_text(text)
+    good = []
+    for m in c.get("meetings") or []:
+        if not quoted(m.get("quote"), text):
+            continue
+        days = [d for d in (m.get("days") or "").upper().replace(" ", "").split(",") if d in plan.DAYS]
+        if not days and (wk := weekly(m["quote"])):  # "MW" instead of "MO,WE": the quote's own days
+            m = {**m, "days": ",".join(wk[0])}
+        if not time_in_quote(m.get("start"), m["quote"]):  # no usable time: the text's, same days, else ask
+            m = next((f for f in found if f["days"] == (m.get("days") or "").upper().replace(" ", "")), m)
+        good.append(m)
+    return good or found
+
+
+def _place_checked(m, text):
+    """A meeting's location (room or online link) is kept only if the document
+    has it; with none given, a link right after its time is the place. Its type
+    (lecture, office hours…) is read from its line and the heading above it."""
+    loc = (m.get("location") or "").strip()
+    if loc and loc.lower() not in text.lower() and not quoted(loc, text):
+        loc = ""
+    at = locate(m.get("quote") or "", text)
+    if at:
+        before = text[:at[0]].splitlines()[-1:]  # the heading line above ("Office hours")
+        after = text[at[1]:].splitlines()[:3]
+        if not loc:
+            loc = next((x.group().rstrip(".,)") for l in after if (x := re.search(r"https?://\S+", l))), "")
+        mtype = _meeting_type("\n".join(before + [text[at[0]:at[1]]]), m.get("type"))
+    else:
+        mtype = m.get("type") or "lecture"
+    return {**m, "location": loc or None, "type": mtype}
+
+
+def _expand_choice(it, group):
+    """A slot choice ("presentations Nov 30 or Dec 2") → one item per date, grouped,
+    so each is planned like any session and one question picks between them."""
+    if it.get("kind") != "choice":
+        return [it]
+    kind = "deadline" if re.search(r"\b(due|submit)", it.get("title", ""), re.I) else "event"
+    return [{"kind": kind, "title": it.get("title", ""), "course": it.get("course"), "quote": o.get("quote"),
+             "when": o.get("when") or {"type": "unknown"}, "slot": group}
+            for o in it.get("options") or []]
+
+
+_SLOTTY = re.compile(r"\b(report|presentations?|present|demo|talk|defen[cs]e|check-?in|slot)\b", re.I)
+_SLOT_WORDS = {"first", "second", "half", "part", "continued", "day", "session", "1", "2"}
+
+
+def _find_slots(items, resolved, keep):
+    """The same presentation or report on two or three dates within two weeks
+    ("Final project report" Nov 30 and Dec 2) is one slot choice: the student
+    is on one of those days. Marks them as a group, like a "choice" item."""
+    groups = {}
+    for i in keep:
+        it = items[i]
+        if it["kind"] in ("event", "deadline") and resolved[i].value and _SLOTTY.search(it["title"]) and not it.get("slot"):
+            words = frozenset(_words(it["title"])) - STOP - _SLOT_WORDS
+            groups.setdefault((it["kind"], words), []).append(i)
+    for (_, words), idx in groups.items():
+        days = sorted({resolved[i].value[:10] for i in idx})
+        if 2 <= len(days) <= 3 and len(days) == len(idx) and \
+                (date.fromisoformat(days[-1]) - date.fromisoformat(days[0])).days <= 14:
+            for i in idx:
+                items[i]["slot"] = "same:" + " ".join(sorted(words))
+
+
+def _ask_slots(con, clock, source_id, slots):
+    """For each slot choice with two or more dates: hold the dates and ask which
+    one is the student's, with the dates as buttons. The others are dropped."""
+    for group in slots.values():
+        if len(group) < 2:
+            continue
+        group.sort(key=lambda g: g[1])
+        labels = [_day_label(when) for _, when, _ in group]
+        q = inbox.ask(con, clock, source_id, asks.which_slot(group[0][2], labels), None, "choice", None,
+                      [{"label": label, "adds": [p["id"]]} for (p, _, _), label in zip(group, labels)])
+        with WRITE:
+            for p, _, _ in group:
+                con.execute("update proposals set question_id = ? where id = ? and status = 'pending'", (q["id"], p["id"]))
+
+
+def _day_label(when: str) -> str:
+    d = date.fromisoformat(when[:10])
+    return f"{d:%a %b} {d.day}"
+
+
 def _tidy(it):
     """Normalise one reported item, or None for one that isn't ours to plan."""
     # Regular lectures ("Lecture 10: Thursday, November 5 — …") come with the
     # class-meeting Event; models list them anyway.
     if it["kind"] == "event" and re.match(r"\s*lecture\s*\d+\b", it["title"], re.I):
         return None
+    if it["kind"] == "task" and re.search(r"\boptional\b", it.get("quote") or "", re.I):
+        return None  # optional readings are for whoever picks them, not tasks
     it["title"] = capitalize(it["title"].strip())
     if re.match(r"no class\b", it["title"], re.I):
         it["kind"] = "no_class"  # a day off, not something to do
@@ -593,7 +716,8 @@ def _settle(items, text, today, term, lectures):
             resolved[i] = _repair(it, text, today, term, known) or resolved[i]
 
     keep, undated, seen = [], [], []
-    for i, it in enumerate(items):
+    for i in sorted(range(len(items)), key=lambda i: "slot" not in items[i]):  # slot dates first
+        it = items[i]
         if _duplicate(it, resolved[i], seen):
             continue
         if it["kind"] == "task" and not resolved[i].value and not it.get("question"):
@@ -603,7 +727,7 @@ def _settle(items, text, today, term, lectures):
         if it["kind"] == "task" and last and last < (today - timedelta(days=1)).isoformat():
             continue  # e.g. the reading for a lecture that has already happened
         keep.append(i)
-    return resolved, keep, undated
+    return resolved, sorted(keep), sorted(undated)
 
 
 def _second_look(llm, context, text, items) -> dict:
@@ -617,6 +741,10 @@ def _second_look(llm, context, text, items) -> dict:
 
 
 def _propose_all(con, llm, clock, source_id, text, prior=None):
+    """Read a syllabus in fixed steps (see .scratch/data-rules/spec.md):
+    1 the course, 2 weekly meetings, 3 the schedule table (lecture dates),
+    4 readings, 5 deliverables, 6 sessions (and slot choices), 7 questions,
+    8 proof: every item's quote is checked; misses get one second look."""
     prior = prior or {}
     matched = set()
     today = local(clock.now()).date()
@@ -666,9 +794,8 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
             inbox.add_target(con, q["id"], p["id"])
             if p.get("status", "pending") == "pending":
                 courses[c["number"]] = f"$p{p['id']}.0"
-            for m in c.get("meetings") or []:  # the class times stand without the instructor
-                if quoted(m.get("quote"), text):
-                    meetings.append((courses.get(c["number"]), c["number"], m))
+            for m in _good_meetings(c, text):  # the class times stand without the instructor
+                meetings.append((courses.get(c["number"]), c["number"], _place_checked(m, text)))
             continue
         known = con.execute("select id from courses where lower(replace(number, ' ', '')) = lower(replace(?, ' ', '')) "
                             "and lower(instructor) = lower(?)", (c["number"], c["instructor"])).fetchone()
@@ -690,22 +817,25 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
                                                  {"label": "The same course", "adds": []}])
             if p.get("status") == "pending":
                 courses[c["number"]] = f"$p{p['id']}.0"
-        for m in c.get("meetings") or []:
-            if quoted(m.get("quote"), text):
-                meetings.append((courses.get(c["number"]), short, m))
+        for m in _good_meetings(c, text):
+            meetings.append((courses.get(c["number"]), short, _place_checked(m, text)))
     only = next(iter(courses.values())) if len(courses) == 1 else None
 
-    # Pass B: items, a chunk at a time. Ones whose quote doesn't check out get a second look.
+    # Steps 4-6: readings, deliverables, sessions, a chunk at a time. A slot
+    # choice becomes one item per date, grouped. Quotes that don't check out
+    # get a second look (step 8).
     items, missed = [], []
     for part in chunks(text):
-        for it in _items(llm, context, part):
-            if (q := checked_quote(it.get("quote"), text)):
-                items.append(_tidy({**it, "quote": q}))
-            else:
-                missed.append(_tidy(it))
+        for n, it in enumerate(_items(llm, context, part)):
+            for x in _expand_choice(it, f"{len(items) + len(missed)}.{n}"):
+                if (q := checked_quote(x.get("quote"), text)):
+                    items.append(_tidy({**x, "quote": q}))
+                else:
+                    missed.append(_tidy(x))
     items = [it for it in items if it]
     missed = [it for it in missed if it]
 
+    # Step 3: the schedule table gives each lecture's date (readings are due the day before).
     term = current_term(con, today)
     lectures = lecture_dates(text, today, term)
     resolved, keep_items, undated = _settle(items, text, today, term, lectures)
@@ -732,11 +862,13 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
         # No date and no lecture even on a second look: a general instruction, not a task to plan.
         dropped.append({"title": items[i]["title"], "quote": items[i]["quote"], "reason": "no date or lecture stated"})
 
+    _find_slots(items, resolved, keep_items)
+
     # Sessions stated as a weekly time ("Lecture: MW 2:00pm - 3:50pm") become weekly events below.
     weekly_ids = {i for i in keep_items if items[i]["kind"] == "event" and not resolved[i].value and weekly(items[i]["quote"])}
     weekly_items = []
 
-    # Questions: what only the student can tell us, from a pass of its own (so
+    # Step 7. Questions: what only the student can tell us, from a pass of its own (so
     # asking doesn't depend on the item pass remembering to), from the items,
     # and the ones code must ask (no date; only a week). All are drafts, merged
     # with each other and with what's already open for this course, then asked.
@@ -785,7 +917,7 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
     for d in range(len(drafts)):
         ask_draft(d)
 
-    no_class = []
+    no_class, slots = [], {}
     for i in keep_items:
         it = items[i]
         if i in weekly_ids and (wk := weekly(it["quote"])):
@@ -806,9 +938,16 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
         for q in (held, ask_draft(week_draft.get(i))):  # their answers act on this item ("which day in Week 9…?")
             if made and q:
                 inbox.add_target(con, q["id"], made["id"])
+        if made and it.get("slot") and resolved[i].value:
+            slots.setdefault(it["slot"], []).append((made, resolved[i].value, it["title"]))
+    _ask_slots(con, clock, source_id, slots)
 
     for course, short, m in meetings:
-        _propose_meetings(con, clock, source_id, course, short, m, term, no_class, prior, matched)
+        office = m.get("type") == "office_hours"
+        p = _propose_meetings(con, clock, source_id, course, short, m, term, no_class, prior, matched,
+                              f"{short.split(' · ')[0]} office hours" if office else None)
+        if p and office:
+            inbox.mark_optional(con, p["id"])  # offered unticked: the student decides
     for course, short, m, title in weekly_items:
         _propose_meetings(con, clock, source_id, course, short, m, term, no_class, prior, matched, title)
 

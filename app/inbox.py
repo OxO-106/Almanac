@@ -79,6 +79,12 @@ def add_target(con, question_id, proposal_id):
         con.execute("update questions set target = ? where id = ?", (json.dumps(target), question_id))
 
 
+def mark_optional(con, proposal_id):
+    """Offered, not assumed: shown unticked and left out of Accept all."""
+    with WRITE:
+        con.execute("update proposals set optional = 1 where id = ?", (proposal_id,))
+
+
 def set_options(con, question_id, options):
     with WRITE:
         con.execute("update questions set options = ? where id = ?", (json.dumps(options), question_id))
@@ -192,7 +198,7 @@ async def add_source(request: Request):
 def accept_all(id: int, request: Request):
     s = request.app.state
     accepted, skipped = 0, []
-    for r in s.db.execute("select id, summary from proposals where source_id = ? and status = 'pending' order by id", (id,)).fetchall():
+    for r in s.db.execute("select id, summary from proposals where source_id = ? and status = 'pending' and not optional order by id", (id,)).fetchall():
         try:
             accept(s.db, s.clock, r["id"])
             accepted += 1

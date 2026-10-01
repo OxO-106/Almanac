@@ -98,6 +98,7 @@ COLUMNS = [
     ("chat_messages", "effects", "text"),
     # What a question is for (date, instructor, meeting, choice, section, other),
     # what its answer acts on, and the answers to offer as buttons. See questions.py.
+    ("proposals", "optional", "integer not null default 0"),  # offered unticked (office hours)
     ("questions", "purpose", "text"),
     ("questions", "target", "text"),
     ("questions", "options", "text"),

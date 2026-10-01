@@ -221,3 +221,47 @@ def test_answering_when_with_a_weekly_time_and_a_link_makes_a_weekly_event(clien
     assert o["kind"] == "events"
     assert (o["data"]["repeat"], o["data"]["start"][11:], o["data"]["end"][11:], o["data"]["location"]) == ("MO,WE", "14:00", "15:50", "https://ucla.zoom.us/j/123")
     assert "Updated Lecture: every Mo/We, 2:00 PM–3:50 PM." in client.get("/api/chat").json()["messages"][-1]["text"]
+
+
+def test_presentation_slots_become_one_question_with_the_dates_as_buttons(client, llm):
+    doc = "Mon Nov 30 Final project report\nWed Dec 2 Final project report\n"
+    choice = {"kind": "choice", "title": "Final project report", "course": "CS 239", "quote": "Mon Nov 30 Final project report",
+              "when": {"type": "unknown"}, "options": [
+                  {"when": {"type": "date", "month": 11, "day": 30}, "quote": "Mon Nov 30 Final project report"},
+                  {"when": {"type": "date", "month": 12, "day": 2}, "quote": "Wed Dec 2 Final project report"}]}
+    llm.replies = [course(), items_reply(choice)]
+    upload(client, "ding.txt", doc.encode())
+    box = inbox(client)
+    slots = [p for p in box["proposals"] if p["summary"] == "Final project report"]
+    assert sorted(data(p)["start"] for p in slots) == ["2026-11-30", "2026-12-02"]
+    assert all(p["blocked_by"] == "Which day is your “Final project report”: Mon Nov 30 or Wed Dec 2?" for p in slots)
+    assert client.get("/api/chat").json()["current"]["options"] == ["Mon Nov 30", "Wed Dec 2"]
+    client.post("/api/chat", json={"text": "Wed Dec 2"})
+    (left,) = [p for p in inbox(client)["proposals"] if p["summary"] == "Final project report"]
+    assert data(left)["start"] == "2026-12-02" and left["blocked_by"] is None
+
+
+def test_office_hours_are_offered_unticked_and_a_location_must_be_in_the_document(client, llm):
+    doc = "Advanced Topics in AI\nInstructor: Stefano Soatto\nLectures MW 6-7:30pm, Room 1200\nOffice hours: Tue 3-4pm\n"
+    llm.replies = [course(meetings=[
+        {"type": "lecture", "days": "MO,WE", "start": "18:00", "end": "19:30", "location": "Room 1200", "quote": "Lectures MW 6-7:30pm, Room 1200"},
+        {"type": "office_hours", "days": "TU", "start": "15:00", "end": "16:00", "location": "Boelter 3532", "quote": "Office hours: Tue 3-4pm"}]),
+        items_reply()]
+    upload(client, "cs269.txt", doc.encode())
+    got = props(client)
+    lecture, office = got["COM SCI 269 · Soatto class meetings"], got["COM SCI 269 office hours (weekly)"]
+    assert data(lecture)["location"] == "Room 1200"
+    assert "location" not in data(office)  # "Boelter 3532" isn't in the document
+    assert office["optional"] and not lecture["optional"]
+    src = client.get("/api/sources").json()[0]
+    client.post(f"/api/sources/{src['id']}/accept-all")
+    assert [p["summary"] for p in inbox(client)["proposals"]] == ["COM SCI 269 office hours (weekly)"]  # left for the student
+
+
+def test_optional_readings_are_not_tasks(client, llm):
+    doc = "Lecture 5: Tuesday, October 13 — Interfaces\nP5. SWE-agent [Required — Lecture 5]\nCodeAct [Optional — team presentations]\n"
+    llm.replies = [course(), items_reply(
+        item(kind="task", title="Read P5. SWE-agent", quote="P5. SWE-agent [Required — Lecture 5]", when={"type": "unknown"}),
+        item(kind="task", title="Read CodeAct", quote="CodeAct [Optional — team presentations]", when={"type": "unknown"}))]
+    upload(client, "kim.txt", doc.encode())
+    assert [p["summary"] for p in inbox(client)["proposals"] if p["summary"].startswith("Read")] == ["Read P5. SWE-agent"]

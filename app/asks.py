@@ -27,3 +27,7 @@ def which_section(code, title, names):
 
 def paper_pages(title):
     return f"How many pages is the paper for “{title}”?"
+
+
+def which_slot(title, labels):
+    return f"Which day is your “{title}”: {' or '.join(labels)}?"

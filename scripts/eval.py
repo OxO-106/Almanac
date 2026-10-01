@@ -8,6 +8,7 @@ Dated proposals that no label supports are listed as possible wrong dates:
 the target is zero. Unlabelled proposals are listed as noise."""
 
 import argparse
+import io
 import json
 import sys
 import tempfile
@@ -100,13 +101,15 @@ def run_one(path: Path, labels: dict, llm) -> dict:
                                  for x in courses)} for c in labels["courses"]]
 
     events = [p["data"] for p in props if p["op"] == "create" and p["kind"] == "events" and p["data"].get("repeat")]
-    out["meetings"] = [{"want": f"{m['repeat']} {m['start']}-{m['end']}",
-                        "ok": any(e["repeat"] == m["repeat"] and e["start"][11:16] == m["start"] for e in events)}
+    out["meetings"] = [{"want": f"{m['repeat']} {m['start']}-{m['end']}" + (f" at {m['location']}" if m.get("location") else ""),
+                        "ok": any(e["repeat"] == m["repeat"] and e["start"][11:16] == m["start"]
+                                  and (not m.get("location") or e.get("location") == m["location"]) for e in events)}
                        for m in labels["meetings"]]
     return out
 
 
 def main():
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")  # ✓ / ✗ when written to a file on Windows
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=None)
     ap.add_argument("--runs", type=int, default=1)
