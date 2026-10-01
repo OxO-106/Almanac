@@ -72,16 +72,27 @@ def test_replying_answers_the_question_and_moves_on(client):
     assert client.post(f"/api/proposals/{blocked['id']}/accept").status_code == 200
 
 
-def test_skipping_a_question_brings_it_back_tomorrow(client, clock):
+def test_ask_again_later_brings_a_question_back_in_a_week(client, clock):
     src = source(client)
     ask(client, src, "Which paper are you presenting?")
     chat(client)
     c = client.post("/api/chat/skip").json()
     assert c["current"] is None
-    clock.advance(hours=2)
+    clock.advance(days=6)
     assert chat(client)["current"] is None
     clock.advance(days=1)
     assert "Which paper are you presenting?" in chat(client)["current"]["text"]
+
+
+def test_ask_again_later_brings_a_date_question_back_in_3_days(client, clock):
+    src = source(client)
+    ask(client, src, "Which day in Week 9 do you present?")
+    chat(client)
+    client.post("/api/chat/skip")
+    clock.advance(days=2)
+    assert chat(client)["current"] is None
+    clock.advance(days=1)
+    assert "Which day in Week 9 do you present?" in chat(client)["current"]["text"]
 
 
 def test_not_relevant_drops_the_question_and_what_waited_on_it(client):

@@ -187,16 +187,25 @@ def _later(text, urgent) -> int | None:
     return 3 if urgent else 7
 
 
-def _answer(con, llm, clock, question, text):
+def _urgent(con, question) -> bool:
+    """Something waits on the answer: a suggestion it holds up, or a date for the plan."""
     blocking = con.execute("select count(*) from proposals where question_id = ? and status = 'pending'", (question["id"],)).fetchone()[0]
-    urgent = blocking or re.search(r"\b(when|dates?|day|time|slot)\b", question["text"], re.I)  # a date for the plan
-    if (days := _later(text, urgent)) is not None:
+    return bool(blocking or re.search(r"\b(when|dates?|day|time|slot)\b", question["text"], re.I))
+
+
+def _snooze(con, clock, question_id, days):
+    """Ask again in `days` (3 if something waits on it, else a week, unless the student said)."""
+    again = clock.now() + timedelta(days=days)
+    with WRITE:
+        con.execute("update questions set snoozed_until = ? where id = ?", (again.isoformat(timespec="seconds"), question_id))
+    on = local(again).date()
+    _say(con, clock, "assistant", "No problem. I'll ask again " + ("tomorrow." if days == 1 else f"on {on:%a, %b} {on.day}."))
+
+
+def _answer(con, llm, clock, question, text):
+    if (days := _later(text, _urgent(con, question))) is not None:
         # Not decided yet: keep the question and ask again later, not "noted".
-        again = clock.now() + timedelta(days=days)
-        with WRITE:
-            con.execute("update questions set snoozed_until = ? where id = ?", (again.isoformat(timespec="seconds"), question["id"]))
-        on = local(again).date()
-        _say(con, clock, "assistant", "No problem. I'll ask again " + ("tomorrow." if days == 1 else f"on {on:%a, %b} {on.day}."))
+        _snooze(con, clock, question["id"], days)
         return
     row = con.execute("select meta from questions where id = ?", (question["id"],)).fetchone()
     meta = json.loads(row["meta"]) if row and row["meta"] else {}
@@ -573,10 +582,8 @@ def skip(request: Request):
     s = request.app.state
     cur = _current(s.db, s.clock)
     if cur:
-        with WRITE:
-            s.db.execute("update questions set snoozed_until = ? where id = ?",
-                         ((s.clock.now() + timedelta(days=1)).isoformat(timespec="seconds"), cur["question_id"]))
-        _say(s.db, s.clock, "assistant", "No problem, I'll ask again tomorrow.")
+        q = {"id": cur["question_id"], "text": s.db.execute("select text from questions where id = ?", (cur["question_id"],)).fetchone()["text"]}
+        _snooze(s.db, s.clock, q["id"], 3 if _urgent(s.db, q) else 7)
     return state(s.db, s.clock)
 
 

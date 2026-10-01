@@ -209,7 +209,7 @@ async function offer() {
       : "";
     return `<section class="offer" aria-label="A question">
       <p>${esc(q.text)}</p>
-      ${opts ? `<div class="row-actions">${opts}<button class="btn quiet" onclick="skipQuestion()">Ask me tomorrow</button></div>`
+      ${opts ? `<div class="row-actions">${opts}<button class="btn quiet" onclick="skipQuestion()">Ask again later</button></div>`
              : `<form onsubmit="event.preventDefault(); answerQuestion(this.elements.a.value)"><label class="sr" for="qa">Your answer</label>
                   <input id="qa" name="a" placeholder="Your answer" autocomplete="off"><button class="btn primary">Answer</button>
                   <button type="button" class="btn quiet" onclick="skipQuestion()">Later</button></form>`}
@@ -331,7 +331,7 @@ views.chat = async () => {
       ? `<div class="ask-card"><p class="q">${esc(m.text)}</p>
           ${m.quote ? `<div class="from">From the source: “${esc(m.quote)}”</div>` : ""}
           ${c.current.options?.length ? `<div class="row-actions">${c.current.options.map(o => `<button class="btn" onclick="answerQuestion(${js(o)})">${esc(o)}</button>`).join("")}</div>` : ""}
-          <div class="row-actions"><button class="btn quiet small" onclick="chatAction('skip')">Ask me tomorrow</button>
+          <div class="row-actions"><button class="btn quiet small" onclick="chatAction('skip')">Ask again later</button>
             <button class="btn quiet small" onclick="chatAction('dismiss')">Not relevant to me</button>
             ${c.waiting ? `<span class="meta">${c.waiting} more after this</span>` : ""}</div></div>`
       : `<div class="say">${md(m.text)}</div>`;
