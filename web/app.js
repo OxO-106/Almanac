@@ -200,7 +200,9 @@ async function skipQuestion() { await api("/api/chat/skip", { method: "POST" });
 
 async function offer() {
   const [c, box] = await Promise.all([api("/api/chat"), api("/api/inbox")]);
+  const ready = box.proposals.filter(p => !p.blocked_by && !hiddenOffers.has(p.id));
   if (c.current) {
+    const more = ready.length ? `<p class="from waiting-line">${ready.length} suggestion${ready.length > 1 ? "s" : ""} from your documents ${ready.length > 1 ? "are" : "is"} waiting too. <a href="#inbox">Go through them</a></p>` : "";
     const q = c.current;
     const opts = q.options?.length
       ? q.options.map(o => `<button class="btn" onclick="answerQuestion(${js(o)})">${esc(o)}</button>`).join("")
@@ -212,9 +214,8 @@ async function offer() {
                   <input id="qa" name="a" placeholder="Your answer" autocomplete="off"><button class="btn primary">Answer</button>
                   <button type="button" class="btn quiet" onclick="skipQuestion()">Later</button></form>`}
       ${c.waiting ? `<span class="from">${c.waiting} more after this one, in <a href="#chat">Chat</a>.</span>` : ""}
-    </section>`;
+    </section>${more}`;
   }
-  const ready = box.proposals.filter(p => !p.blocked_by && !hiddenOffers.has(p.id));
   if (!ready.length) return "";
   const p = ready[0];
   inboxCache = box.proposals;
@@ -232,7 +233,8 @@ async function offer() {
 const views = {};
 
 views.today = async () => {
-  const [h, t, n] = await Promise.all([api("/api/health"), api("/api/today"), api("/api/note"), loadLookups()]);
+  const [h, t, n, sources] = await Promise.all([api("/api/health"), api("/api/today"), api("/api/note"), api("/api/sources"), loadLookups()]);
+  const reading = sources.filter(s => s.status === "processing");
   todayIso = t.date;
   const soonEnd = iso(addDays(asDate(t.date), 14));
   const [cal, ask] = await Promise.all([api(`/api/calendar?start=${iso(addDays(asDate(t.date), 1))}&end=${soonEnd}`), offer()]);
@@ -250,6 +252,7 @@ views.today = async () => {
       <p class="voice" id="note-b">${esc(n.body)}</p>
     </header>
     ${h.ai.ready ? "" : `<div class="notice">I can't think right now: ${esc(h.ai.message)} Your plan still works.</div>`}
+    ${reading.length ? `<p class="notice reading"><span class="spin"></span> Reading ${reading.map(s => esc(s.title)).join(", ")}. It takes a few minutes; what I find will show up here and in <a href="#inbox">Suggestions</a>.</p>` : ""}
     ${ask}
     <section aria-labelledby="h-today">
       <h2 id="h-today">Today${todays.length ? ` <span class="meta">${t.done.length} of ${todays.length} done</span>` : ""}</h2>
@@ -454,12 +457,37 @@ async function uploadFiles(files, replaces = null) {
     toast(r.ok ? `Reading ${esc(f.name)}. What I find will show up in <a href="#inbox">Suggestions</a>.` : esc(`${f.name}: ${await r.text()}`));
   }
   if (location.hash.startsWith("#inbox")) render();
+  watchReading();
 }
+
+// While documents are being read, check every few seconds on any page, and say
+// when each one is done and how many suggestions it left.
+let readingIds = null, readingTimer;
+async function watchReading() {
+  clearTimeout(readingTimer);
+  let sources;
+  try { sources = await api("/api/sources"); } catch { readingTimer = setTimeout(watchReading, 10000); return; }
+  const now = new Set(sources.filter(s => s.status === "processing").map(s => s.id));
+  const finished = readingIds ? sources.filter(s => readingIds.has(s.id) && !now.has(s.id)) : [];
+  if (finished.length) {
+    const box = await api("/api/inbox").catch(() => ({ proposals: [] }));
+    const lines = finished.map(s => {
+      if (s.status === "failed") return `I couldn't read ${esc(s.title)}.`;
+      const n = box.proposals.filter(p => p.source?.id === s.id).length;
+      return `Finished reading ${esc(s.title)}: ${n ? `${n} suggestion${n > 1 ? "s" : ""}` : "nothing new to add"}.`;
+    });
+    toast(`${lines.join("<br>")} <a href="#inbox">See Suggestions</a>`);
+    if (!$("#say")?.value && /^(#today|#inbox|)$/.test(location.hash)) render(); else refreshBadges();
+  } else if (readingIds && [...now].some(id => !readingIds.has(id)) && !$("#say")?.value && /^(#today|)$/.test(location.hash)) render();
+  readingIds = now;
+  if (now.size) readingTimer = setTimeout(watchReading, 4000);
+}
+watchReading();
 
 async function retryUpload(id, button) {
   button.disabled = true;
   try { await api(`/api/sources/${id}/retry`, { method: "POST" }); } catch (e) { toast(esc(detail(e))); }
-  render();
+  render(); watchReading();
 }
 
 const uploadRow = s => {

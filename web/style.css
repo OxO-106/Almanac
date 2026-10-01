@@ -113,6 +113,8 @@ section > h2 .meta { font-weight: 400; }
 .offer { background: var(--wash); border-radius: 14px; padding: 20px 22px; display: flex; flex-direction: column; gap: 14px; }
 .offer p { margin: 0; font: 18px/1.5 var(--serif); }
 .offer .from { font: 13px var(--sans); color: var(--muted); }
+.waiting-line { margin: -6px 0 0; font: 14px var(--sans); color: var(--ink-2); }
+.waiting-line a { color: var(--slate); font-weight: 500; }
 .offer form { display: flex; gap: 8px; }
 .offer input { flex: 1; min-width: 0; font: inherit; border: 1px solid var(--btn-line); border-radius: 8px; padding: 8px 12px; background: var(--ground); }
 
