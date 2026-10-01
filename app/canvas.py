@@ -15,7 +15,7 @@ from datetime import date, datetime, timezone
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 
-from . import inbox, ingest
+from . import inbox, ingest, merge
 from .clock import LA, local
 from .db import WRITE, settings
 from .scheduler import JOBS, Job, notify
@@ -156,21 +156,6 @@ def _entity(con, item):
     return kind, (dict(row) if row else None)
 
 
-def _already_planned(con, kind, data):
-    """A plan row (or pending proposal) that is this item, e.g. from the syllabus."""
-    field = "due" if kind == "deadlines" else "start"
-    words = set(ingest._words(data["title"])) - ingest.STOP
-    day = data[field][:10]
-    for table, f in (("deadlines", "due"), ("events", "start"), ("tasks", "due")):
-        for r in con.execute(f"select * from {table} where substr({f}, 1, 10) = ?", (day,)):
-            if data.get("course_id") and r["course_id"] and r["course_id"] != data["course_id"]:
-                continue
-            have = set(ingest._words(r["title"])) - ingest.STOP
-            if words and have and len(words & have) / min(len(words), len(have)) >= 0.5:
-                return table, r["id"]
-    return None
-
-
 def sync(con, clock, fetch) -> dict:
     cfg = settings(con).get("canvas") or {}
     if not cfg.get("url"):
@@ -200,18 +185,33 @@ def sync(con, clock, fetch) -> dict:
         item = con.execute("select * from canvas_items where uid = ?", (e["UID"],)).fetchone()
         quote = e["SUMMARY"]
         if not item:
-            same = _already_planned(con, kind, data)
+            # already in the plan (e.g. from the syllabus)? link it, and offer only what's new
+            table, existing = merge.find(con, kind, data)
+            pending = None if existing else merge.find_pending(con, kind, data)
             pid = None
-            if not same:
-                p = inbox.propose(con, clock, src, data["title"], [{"op": "create", "kind": kind, "data": data}], quote,
-                                  question["id"] if question else None)
-                pid = p.get("id") or p["existing"]["id"]
-                counts["new"] += "id" in p
+            if existing:
+                merge.propose_or_fill(con, clock, src, kind, data, quote)
+            elif pending:
+                merge.merge_into_pending(con, pending, data)
+                pid = pending["id"]
+            else:
+                p = merge.propose_or_fill(con, clock, src, kind, data, quote, question["id"] if question else None)
+                pid = p and p["id"]
+                counts["new"] += bool(p)
             with WRITE:
                 con.execute("insert into canvas_items (uid, proposal_id, entity_kind, entity_id, gone) values (?,?,?,?,0)",
-                            (e["UID"], pid, same and same[0], same and same[1]))
+                            (e["UID"], pid, table, existing and existing["id"]))
             continue
         ekind, row = _entity(con, dict(item))
+        if row and ekind in ("deadlines", "events", "tasks") and not inbox_pending_for(con, ekind, row["id"]):
+            # learned since it was accepted (its course, its project): offer to fill them in
+            known = dict(data)
+            if pid := merge.project_for(con, data.get("course_id") or row.get("course_id"), row["title"]):
+                known["project_id"] = pid
+            fill = {k: v for k, v in merge.details(ekind, row, known).items() if k in ("course_id", "project_id")}
+            if fill:
+                inbox.propose(con, clock, src, merge.summary(row, fill),
+                              [{"op": "update", "kind": ekind, "id": row["id"], "data": fill}], quote)
         if row:
             field = "due" if ekind == "deadlines" else "start"
             if ekind in ("deadlines", "events") and row.get(field) != data.get(field) \

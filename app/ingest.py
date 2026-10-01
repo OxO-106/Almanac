@@ -14,7 +14,7 @@ from datetime import date, timedelta
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, UploadFile
 
-from . import inbox, plan
+from . import inbox, merge, plan
 from .clock import local
 from .plan import current_term
 from .db import WRITE
@@ -631,9 +631,8 @@ def _emit(con, clock, source_id, kind, data, quote, question_id, prior, matched,
     document already put the same item in the plan, only what changed."""
     key = (kind, data["title"].lower())
     old = prior.get(key)
-    if not old:
-        return inbox.propose(con, clock, source_id, summary or data["title"],
-                             [{"op": "create", "kind": kind, "data": data}], quote, question_id)
+    if not old:  # new to this document: but maybe not to the plan (Bruin Learn, another file, chat)
+        return merge.propose_or_fill(con, clock, source_id, kind, data, quote, question_id, summary)
     matched.add(key)
     changed = {f: data[f] for f in COMPARED if f in data and data[f] != old.get(f)
                and not (f == "provisional" and bool(data[f]) == bool(old.get(f)))}

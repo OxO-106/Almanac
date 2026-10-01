@@ -13,7 +13,7 @@ from datetime import date, timedelta
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from . import canvas, goals, inbox, ingest
+from . import canvas, goals, inbox, ingest, merge
 from .clock import local
 from .db import WRITE
 from .plan import current_term
@@ -157,12 +157,14 @@ ACTIONS_PROMPT = """You turn what a student just told their personal assistant i
 - "progress": they finished (or undid) one of their open tasks listed below; "title" is that task's title, "done": true.
 - "question": something the assistant must ask to plan it properly (e.g. a due date they didn't give); "title" is the question.
 "quote": the student's exact words (copied from their message) that state it. Dates, as said: a calendar date → {"type":"date","month":M,"day":D}; "Friday" → {"type":"weekday","weekday":"FR"}; "next Friday" → add "next_week": true; "tomorrow", "in 3 days", "in two weeks" → {"type":"in_days","days":N}; anything else (e.g. "before Thanksgiving") → {"type":"unknown"}.
+Also, when the student said which course or project it belongs to: "course" as they named it (e.g. "Ding's CS 239"), "project" likewise.
 If the message is just conversation, return no actions."""
 
 ACTIONS_SCHEMA = {"type": "object", "properties": {"actions": {"type": "array", "items": {"type": "object", "properties": {
     "type": {"type": "string", "enum": ["task", "event", "deadline", "goal", "project", "memory", "progress", "question"]},
     "title": {"type": "string"}, "quote": {"type": "string"}, "when": ingest.WHEN, "done": {"type": "boolean"},
-    "why": {"type": "string"}, "horizon": {"type": "string"}, "topic": {"type": "string"}},
+    "why": {"type": "string"}, "horizon": {"type": "string"}, "topic": {"type": "string"},
+    "course": {"type": "string"}, "project": {"type": "string"}},
     "required": ["type", "title", "quote"]}}}, "required": ["actions"]}
 
 
@@ -250,6 +252,29 @@ def _match_task(con, title):
     return best if score >= 0.5 else None
 
 
+def _match_course(con, named, text):
+    """The course the student named ("Ding's CS 239"), checked against their own
+    words: the instructor's surname first (two CS 239s), else the number."""
+    if not named:
+        return None
+    said = (named + " " + text).lower()
+    courses = [dict(r) for r in con.execute("select * from courses")]
+    by_name = [c for c in courses if c["instructor"].split()[-1].lower() in said and c["instructor"] != "Not stated"]
+    if len(by_name) == 1:
+        return by_name[0]["id"]
+    compact = said.replace(" ", "")
+    by_number = [c for c in courses if c["number"].lower().replace(" ", "") in compact]
+    return by_number[0]["id"] if len(by_number) == 1 else None
+
+
+def _match_project(con, named, course_id, text):
+    if not named:
+        return None
+    hits = [r["id"] for r in con.execute("select id, title, course_id from projects where status = 'active'")
+            if merge._same(r["title"], named) and (course_id is None or r["course_id"] in (None, course_id))]
+    return hits[0] if len(hits) == 1 else None
+
+
 def _actions(con, llm, clock, text, reply_id) -> int | None:
     """Suggestions from the student's message. Returns how many were proposed,
     or None if the model call failed (e.g. Ollama busy with another app)."""
@@ -296,7 +321,13 @@ def _actions(con, llm, clock, text, reply_id) -> int | None:
                 data[DATE_FIELD[table]] = w.value
             if table == "events" and "start" not in data:
                 table = "tasks"  # an event without a time is something to do on no set date
-            op, summary = {"op": "create", "kind": table, "data": data}, title
+            if (course := _match_course(con, a.get("course"), text)) is not None:
+                data["course_id"] = course
+            if (project := _match_project(con, a.get("project"), data.get("course_id"), text)) is not None:
+                data["project_id"] = project
+            # already in the plan? then this adds details to it instead of a duplicate
+            n += bool(merge.propose_or_fill(con, clock, source, table, data, a["quote"]))
+            continue
         p = inbox.propose(con, clock, source, summary, [op], a["quote"])
         n += "id" in p
     return n
