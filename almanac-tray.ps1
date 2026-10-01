@@ -70,10 +70,12 @@ function Update-Status {
         $open.Enabled = $up; $start.Visible = -not $up; $stop.Visible = $up
     }
     if (-not $up) { return }
-    $seen = if (Test-Path $seenFile) { [int](Get-Content $seenFile) } else { -1 }
-    $new = @(Get-Json "/api/notifications?after=$([Math]::Max($seen, 0))")
+    $seen = -1
+    if (Test-Path $seenFile) { [void][int]::TryParse("$(Get-Content $seenFile | Select-Object -Last 1)".Trim(), [ref]$seen) }
+    # Invoke-RestMethod hands back a JSON list as one object: unroll it
+    $new = @(Get-Json "/api/notifications?after=$([Math]::Max($seen, 0))" | ForEach-Object { $_ })
     if ($seen -lt 0) {  # first run: start from now, don't replay history
-        $last = @(Get-Json "/api/notifications?after=0") | Select-Object -Last 1
+        $last = @(Get-Json "/api/notifications?after=0" | ForEach-Object { $_ }) | Select-Object -Last 1
         Set-Content $seenFile ($(if ($last) { $last.id } else { 0 })); return
     }
     foreach ($n in $new) {
