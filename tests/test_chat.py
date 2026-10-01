@@ -67,7 +67,7 @@ def test_replying_answers_the_question_and_moves_on(client):
     c = say(client, "P10, on Nov 5")
     assert client.get(f"/api/questions/{q['id']}").json()["answer"] == "P10, on Nov 5"
     texts = assistant_texts(c)
-    assert "1 item that was waiting on this is ready in your Inbox." in texts[-2]
+    assert "1 item that was waiting on this is ready in Suggestions." in texts[-2]
     assert "Which team are you on?" in texts[-1]
     assert client.post(f"/api/proposals/{blocked['id']}/accept").status_code == 200
 

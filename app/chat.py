@@ -7,7 +7,10 @@ states a date. Anything else goes to the model: its reply streams back, then
 a second pass turns what the student said into Proposals, with the student's
 own words as the quote, checked the same way as a syllabus."""
 
+import asyncio
 import json
+import queue
+import threading
 from datetime import date, timedelta
 
 from fastapi import APIRouter, HTTPException, Request
@@ -17,6 +20,7 @@ from . import canvas, goals, inbox, ingest, merge
 from .clock import local
 from .db import WRITE
 from .plan import current_term
+from .scheduler import notify
 
 router = APIRouter(prefix="/api/chat")
 HISTORY = 20  # messages of context sent to the model
@@ -122,7 +126,7 @@ def _answer(con, llm, clock, question, text):
             con.execute("update questions set answer = ?, status = 'answered', answered_at = ? where id = ?",
                         (text, local(clock.now()).strftime("%Y-%m-%dT%H:%M"), question["id"]))
         n = con.execute("select count(*) from proposals where question_id = ? and status = 'pending'", (question["id"],)).fetchone()[0]
-        _say(con, clock, "assistant", f"Thanks. {linked}" + (f" {n} item{'s are' if n > 1 else ' is'} ready in your Inbox." if n else ""))
+        _say(con, clock, "assistant", f"Thanks. {linked}" + (f" {n} item{'s are' if n > 1 else ' is'} ready in Suggestions." if n else ""))
         return
     with WRITE:
         con.execute("update questions set answer = ?, status = 'answered', answered_at = ? where id = ?",
@@ -167,7 +171,7 @@ def _answer(con, llm, clock, question, text):
                 filled.append(f"{o['data']['title']}: {_fmt(w.value)}")
     n = len(waiting)
     ack = "Thanks, noted." if not n else "Thanks. " + (f"{'; '.join(filled)}. " if filled else "") + \
-        f"{n} item{'s that were' if n > 1 else ' that was'} waiting on this {'are' if n > 1 else 'is'} ready in your Inbox."
+        f"{n} item{'s that were' if n > 1 else ' that was'} waiting on this {'are' if n > 1 else 'is'} ready in Suggestions."
     _say(con, clock, "assistant", ack)
 
 
@@ -424,12 +428,58 @@ async def post_stream(request: Request):
     body = await request.json()
     text = _text(body)
 
-    def events():
-        for kind, value in _reply(s.db, s.llm, s.clock, text, body.get("focus")):
-            yield "data: " + json.dumps({"type": kind, "text": value} if kind == "token" else
-                                        {"type": kind, "proposed": value}) + "\n\n"
+    # The reply runs on its own thread, so it finishes even if the page is
+    # closed mid-reply; then a notification says it's there.
+    out, listening, settled = queue.Queue(), threading.Event(), threading.Event()
+    listening.set()
+
+    def run():
+        parts = []
+        try:
+            for kind, value in _reply(s.db, s.llm, s.clock, text, body.get("focus")):
+                if kind == "token":
+                    parts.append(value)
+                out.put((kind, value))
+        except Exception as e:
+            out.put(("error", f"{type(e).__name__}: {e}"))
+        finally:
+            out.put(None)
+        settled.wait(10)  # until the page has had the last piece, or is known gone
+        if parts and not listening.is_set():
+            said = " ".join("".join(parts).split())
+            notify(s.db, s.clock, "chat", "Almanac replied", said[:140] + ("…" if len(said) > 140 else ""), "#chat")
+
+    async def events():
+        threading.Thread(target=run, daemon=True).start()
+        # The server drops writes to a closed page silently, so ask each time.
+        try:
+            while (item := await asyncio.to_thread(out.get)) is not None:
+                if await request.is_disconnected():
+                    listening.clear()
+                    break
+                kind, value = item
+                yield "data: " + json.dumps({"type": kind, "text": value} if kind in ("token", "error") else
+                                            {"type": kind, "proposed": value}) + "\n\n"
+            else:
+                if await request.is_disconnected():
+                    listening.clear()
+        except BaseException:
+            listening.clear()
+            raise
+        finally:
+            settled.set()
 
     return StreamingResponse(events(), media_type="text/event-stream")
+
+
+@router.post("/clear")
+def clear(request: Request):
+    """Start the conversation afresh. Open questions stay open: the next one is asked again."""
+    s = request.app.state
+    with WRITE:
+        s.db.execute("delete from chat_messages")
+        s.db.execute("delete from chat_summaries")
+    return state(s.db, s.clock)
 
 
 @router.post("/skip")

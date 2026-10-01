@@ -343,6 +343,7 @@ views.chat = async () => {
     if (pendingChat) { const t = pendingChat; pendingChat = null; sendChat(t); } else $("#say")?.focus();
   });
   return `<div class="page">
+    ${c.messages.length ? `<div class="chat-tools"><button class="btn quiet small" onclick="clearChat()">Clear chat</button></div>` : ""}
     ${focus ? `<span class="focus-chip">About ${esc(focus.title)} <button class="icon-btn" style="width:26px;height:26px" onclick="unfocus()" aria-label="Stop focusing">${ICON.x}</button></span>` : ""}
     <div class="thread" id="thread">${turns || `<article class="turn"><div class="say">Tell me what's going on: classes, plans, things you keep meaning to do. I'll keep track and check in.</div></article>`}</div>
   </div>
@@ -357,6 +358,12 @@ function chatSend(e) {
   if (!text) return;
   box.value = "";
   sendChat(text);
+}
+
+async function clearChat() {
+  if (!confirm("Clear the whole conversation? Your plan, suggestions and open questions stay as they are.")) return;
+  await api("/api/chat/clear", { method: "POST" });
+  render();
 }
 
 async function sendChat(text) {
@@ -381,10 +388,13 @@ async function sendChat(text) {
         const e = JSON.parse(ev.replace(/^data: /, ""));
         if (e.type === "token") { reply += e.text; say.innerHTML = md(reply); scrollTo(0, document.body.scrollHeight); }
         else if (e.type === "done") proposed = e.proposed;
+        else if (e.type === "error") toast(`I couldn't reply: ${esc(e.text)}`);
       }
     }
   } catch (err) { toast(esc(detail(err))); }
-  if (proposed === null) toast("I couldn't pick out what to add from that: the model didn't answer in time (another app may be using it). Try again in a bit.");
+  if (reply && !location.hash.startsWith("#chat"))  // you moved on while it was replying
+    toast(`<b>Almanac replied</b><br>${esc(reply.length > 140 ? reply.slice(0, 140) + "…" : reply)} <a href="#chat">Open Chat</a>`);
+  else if (proposed === null) toast("I couldn't pick out what to add from that: the model didn't answer in time (another app may be using it). Try again in a bit.");
   render();
 }
 
@@ -460,26 +470,20 @@ async function uploadFiles(files, replaces = null) {
   watchReading();
 }
 
-// While documents are being read, check every few seconds on any page, and say
-// when each one is done and how many suggestions it left.
+// While documents are being read, check every few seconds on any page; when
+// one is done, show its notification ("Suggestions ready…") right away.
 let readingIds = null, readingTimer;
 async function watchReading() {
   clearTimeout(readingTimer);
   let sources;
   try { sources = await api("/api/sources"); } catch { readingTimer = setTimeout(watchReading, 10000); return; }
   const now = new Set(sources.filter(s => s.status === "processing").map(s => s.id));
-  const finished = readingIds ? sources.filter(s => readingIds.has(s.id) && !now.has(s.id)) : [];
-  if (finished.length) {
-    const box = await api("/api/inbox").catch(() => ({ proposals: [] }));
-    const lines = finished.map(s => {
-      if (s.status === "failed") return `I couldn't read ${esc(s.title)}.`;
-      const n = box.proposals.filter(p => p.source?.id === s.id).length;
-      return `Finished reading ${esc(s.title)}: ${n ? `${n} suggestion${n > 1 ? "s" : ""}` : "nothing new to add"}.`;
-    });
-    toast(`${lines.join("<br>")} <a href="#inbox">See Suggestions</a>`);
-    if (!$("#say")?.value && /^(#today|#inbox|)$/.test(location.hash)) render(); else refreshBadges();
-  } else if (readingIds && [...now].some(id => !readingIds.has(id)) && !$("#say")?.value && /^(#today|)$/.test(location.hash)) render();
+  const finished = readingIds && [...readingIds].some(id => !now.has(id));
+  const started = readingIds && [...now].some(id => !readingIds.has(id));
   readingIds = now;
+  if (finished) await pollNotifications();
+  if ((finished || started) && !$("#say")?.value && /^(#today|#inbox|)$/.test(location.hash)) render();
+  else if (finished) refreshBadges();
   if (now.size) readingTimer = setTimeout(watchReading, 4000);
 }
 watchReading();
@@ -1044,7 +1048,7 @@ async function pollNotifications() {
         if (!local && !pushOn() && "Notification" in window && Notification.permission === "granted") {
           const note = new Notification(n.title, { body: n.body || "", tag: `almanac-${n.id}` });
           note.onclick = () => { window.focus(); location.hash = n.url || "#today"; };
-        } else toast(`<b>${esc(n.title)}</b><br>${esc(n.body || "")}`);
+        } else toast(`<b>${esc(n.title)}</b><br>${esc(n.body || "")}${n.url ? ` <a href="${esc(n.url)}">Open</a>` : ""}`);
       }
     }
     const last = list.length ? list[list.length - 1].id : seen ?? (await api("/api/notifications?after=0")).slice(-1)[0]?.id ?? 0;

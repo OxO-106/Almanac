@@ -18,6 +18,7 @@ from . import inbox, merge, plan
 from .clock import local
 from .plan import current_term
 from .db import WRITE
+from .scheduler import notify
 
 router = APIRouter(prefix="/api")
 
@@ -408,12 +409,28 @@ def ingest(con, llm, clock, source_id: int, filename: str, data: bytes):
         _propose_all(con, llm, clock, source_id, text, prior)
         with WRITE:
             con.execute("update sources set status = 'done' where id = ?", (source_id,))
+        _tell_done(con, clock, source_id, filename)
     except Exception as e:
         msg = str(e) if isinstance(e, ValueError) else f"The model call failed: {type(e).__name__}: {e}"
         with WRITE:  # withdraw the half-finished result so a retry starts clean
             con.execute("delete from proposals where source_id = ? and status = 'pending'", (source_id,))
             con.execute("delete from questions where source_id = ? and status = 'open'", (source_id,))
             con.execute("update sources set status = 'failed', error = ? where id = ?", (msg, source_id))
+        notify(con, clock, "upload", f"Couldn't read {filename}", msg, "#inbox")
+
+
+def _tell_done(con, clock, source_id, filename):
+    """A notification that the suggestions are ready (reading takes minutes)."""
+    n = lambda sql: con.execute(sql, (source_id,)).fetchone()[0]
+    found = n("select count(*) from proposals where source_id = ? and status = 'pending'")
+    asks = n("select count(*) from questions where source_id = ? and status = 'open'")
+    about = con.execute("select about from sources where id = ?", (source_id,)).fetchone()[0] or filename
+    if not found and not asks:
+        return notify(con, clock, "upload", f"Finished reading {about}", "Nothing new to add.", "#inbox")
+    parts = [f"{found} suggestion{'s' if found != 1 else ''}"] if found else []
+    parts += [f"{asks} question{'s' if asks != 1 else ''} for you in Chat"] if asks else []
+    notify(con, clock, "upload", "Suggestions ready" if found else f"Questions about {about}",
+           f"{about}: " + " and ".join(parts) + ".", "#inbox" if found else "#chat")
 
 
 def _supersede(con, source_id) -> dict:

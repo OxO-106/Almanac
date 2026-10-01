@@ -265,7 +265,7 @@ def _job(state, scheduled, late, missed):
     counts = sync(state.db, state.clock, state.fetch)
     if counts["new"] and not late:
         notify(state.db, state.clock, "canvas", f"{counts['new']} new from Bruin Learn",
-               "Review them in your Inbox.", "#inbox")
+               "Review them in Suggestions.", "#inbox")
 
 
 JOBS.append(Job("canvas", lambda d: [datetime(d.year, d.month, d.day, h) for h in CHECK_HOURS], _job))
