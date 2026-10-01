@@ -86,6 +86,10 @@ COLUMNS = [
     ("tasks", "window", "text"),
     ("deadlines", "window", "text"),
     ("events", "window", "text"),
+    # Rewind: what accepting a proposal replaced (JSON, one entry per op), and
+    # what a chat message changed, so both can be undone.
+    ("proposals", "undo", "text"),
+    ("chat_messages", "effects", "text"),
 ]
 
 # UCLA Registrar, Annual Academic Calendar 2026-27. Week 1 is the first Monday

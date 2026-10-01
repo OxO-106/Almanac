@@ -21,6 +21,7 @@ function toast(html) {
 }
 
 const ICON = {
+  undo: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>',
   play: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4l13 8-13 8z"/></svg>',
   plus: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
   clip: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.4 11.1l-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/></svg>',
@@ -325,7 +326,8 @@ views.chat = async () => {
     const day = m.created_at.slice(0, 10);
     const sep = day !== lastDay ? `<div class="day-sep">${esc(fmtLong(day))}</div>` : "";
     lastDay = day;
-    if (m.role === "user") return `${sep}<div class="mine">${esc(m.text)}</div>`;
+    if (m.role === "user") return `${sep}<div class="mine-wrap"><div class="mine">${esc(m.text)}</div>
+      <button class="rewind" onclick="rewindTo(${m.id})" title="Undo this message and everything after it">${ICON.undo} Rewind</button></div>`;
     const isCurrent = c.current?.id === m.id;
     const body = isCurrent
       ? `<div class="ask-card"><p class="q">${esc(m.text)}</p>
@@ -358,6 +360,17 @@ function chatSend(e) {
   if (!text) return;
   box.value = "";
   sendChat(text);
+}
+
+async function rewindTo(id) {
+  if (!confirm("Rewind to this message? It and everything after it are removed, with what they changed in your plan "
+               + "(suggestions, items added from them, answers and dates). Your message goes back in the reply box to edit.")) return;
+  try {
+    const r = await api(`/api/chat/rewind/${id}`, { method: "POST" });
+    await render();
+    const say = $("#say");
+    if (say) { say.value = r.text; say.focus(); say.dispatchEvent(new Event("input")); }
+  } catch (e) { toast(esc(detail(e))); }
 }
 
 async function clearChat() {

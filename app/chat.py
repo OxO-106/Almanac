@@ -40,6 +40,17 @@ def _say(con, clock, role, text, question_id=None, quote=None, proposals=None) -
                             json.dumps(proposals) if proposals else None)).lastrowid
 
 
+def _record(con, message_id, key, value):
+    """Note something a user message changed, so rewinding it can undo it."""
+    if message_id is None:
+        return
+    with WRITE:
+        row = con.execute("select effects from chat_messages where id = ?", (message_id,)).fetchone()
+        effects = json.loads(row["effects"]) if row and row["effects"] else {}
+        effects.setdefault(key, []).append(value)
+        con.execute("update chat_messages set effects = ? where id = ?", (json.dumps(effects), message_id))
+
+
 def _eligible(con, clock) -> list[dict]:
     """Open questions not snoozed, most blocking first."""
     return [dict(r) for r in con.execute(
@@ -203,7 +214,9 @@ def _snooze(con, clock, question_id, days):
     _say(con, clock, "assistant", "No problem. I'll ask again " + ("tomorrow." if days == 1 else f"on {on:%a, %b} {on.day}."))
 
 
-def _answer(con, llm, clock, question, text):
+def _answer(con, llm, clock, question, text, message_id=None):
+    q0 = con.execute("select status, answer, answered_at, snoozed_until from questions where id = ?", (question["id"],)).fetchone()
+    _record(con, message_id, "questions_before", [question["id"], dict(q0) if q0 else None])
     if (days := _later(text, _urgent(con, question))) is not None:
         # Not decided yet: keep the question and ask again later, not "noted".
         _snooze(con, clock, question["id"], days)
@@ -227,6 +240,15 @@ def _answer(con, llm, clock, question, text):
                     (text, local(clock.now()).strftime("%Y-%m-%dT%H:%M"), question["id"]))
     waiting = [inbox._proposal(con, r["id"]) for r in con.execute(
         "select id from proposals where question_id = ? and status = 'pending' order by id", (question["id"],))]
+    for pid in [p["id"] for p in waiting] + [x for x in meta.get("fills", []) if _exists(con, x)]:
+        r = con.execute("select ops, summary, status, applied from proposals where id = ?", (pid,)).fetchone()
+        _record(con, message_id, "proposals_before", [pid, r["ops"], r["summary"]])
+        if r["status"] == "accepted" and r["applied"]:
+            o = json.loads(r["ops"])[0]
+            if o["op"] == "create" and o["kind"] in DATE_FIELD:
+                row = con.execute(f"select * from {o['kind']} where id = ?", (json.loads(r["applied"])[0],)).fetchone()
+                if row:
+                    _record(con, message_id, "rows_before", [o["kind"], row["id"], {k: row[k] for k in (DATE_FIELD[o["kind"]], "window", "provisional")}])
     filled = []
     # "Who teaches …?": the answer is the instructor of the waiting course
     for p in waiting:
@@ -463,7 +485,7 @@ def _match_project(con, named, course_id, text):
     return hits[0] if len(hits) == 1 else None
 
 
-def _actions(con, llm, clock, text, reply_id) -> list[int] | None:
+def _actions(con, llm, clock, text, reply_id, message_id=None) -> list[int] | None:
     """Suggestions from the student's message. Returns the proposals made,
     or None if the model call failed (e.g. Ollama busy with another app)."""
     try:
@@ -487,6 +509,7 @@ def _actions(con, llm, clock, text, reply_id) -> list[int] | None:
         kind = a.get("type")
         if kind == "question":
             q = inbox.ask(con, clock, source, title, a["quote"])
+            _record(con, message_id, "asked", q["id"])
             with WRITE:  # the reply just asked it: the student's next message answers it
                 con.execute("update chat_messages set question_id = ? where id = ?", (q["id"], reply_id))
             continue
@@ -544,15 +567,17 @@ def _actions(con, llm, clock, text, reply_id) -> list[int] | None:
         p = inbox.propose(con, clock, source, summary, [op], a["quote"])
         if "id" in p:
             made.append(p["id"])
+    for pid in made:
+        _record(con, message_id, "made", pid)
     return made
 
 
 def _reply(con, llm, clock, text, focus=None):
     """Handle one message; yields ("token", text) pieces then ("done", proposed)."""
     cur = _current(con, clock)
-    _say(con, clock, "user", text)
+    mid = _say(con, clock, "user", text)
     if cur:
-        _answer(con, llm, clock, {"id": cur["question_id"], "text": cur["text"]}, text)
+        _answer(con, llm, clock, {"id": cur["question_id"], "text": cur["text"]}, text, mid)
         yield "done", 0
         return
     messages = _messages(con, llm, clock, text, focus)
@@ -561,7 +586,7 @@ def _reply(con, llm, clock, text, focus=None):
         parts.append(piece)
         yield "token", piece
     reply_id = _say(con, clock, "assistant", "".join(parts).strip())
-    made = _actions(con, llm, clock, text, reply_id)
+    made = _actions(con, llm, clock, text, reply_id, mid)
     if made:  # the suggestions, right in the conversation
         _say(con, clock, "assistant", "Here's what I'd add. Check the dates are right:", proposals=made)
     yield "done", None if made is None else len(made)
@@ -653,6 +678,44 @@ async def post_stream(request: Request):
             settled.set()
 
     return StreamingResponse(events(), media_type="text/event-stream")
+
+
+def rewind(con, message_id) -> str | None:
+    """Undo a user message and everything after it, newest first: remove the
+    suggestions they made (reversing any already accepted), reopen questions
+    they answered or postponed, restore dates they filled in, then delete the
+    messages. Returns the message's text (to edit and resend), or None."""
+    first = con.execute("select * from chat_messages where id = ? and role = 'user'", (message_id,)).fetchone()
+    if not first:
+        return None
+    with WRITE:
+        for m in con.execute("select * from chat_messages where id >= ? order by id desc", (message_id,)).fetchall():
+            e = json.loads(m["effects"]) if m["effects"] else {}
+            for pid in reversed(e.get("made", [])):
+                inbox.withdraw(con, pid)
+            for qid in e.get("asked", []):
+                con.execute("delete from questions where id = ?", (qid,))
+            for table, rid, before in reversed(e.get("rows_before", [])):
+                sets = ", ".join(f"{k} = ?" for k in before)
+                con.execute(f"update {table} set {sets} where id = ?", (*before.values(), rid))
+            for pid, ops, summary in reversed(e.get("proposals_before", [])):
+                con.execute("update proposals set ops = ?, summary = ? where id = ?", (ops, summary, pid))
+            for qid, before in reversed(e.get("questions_before", [])):
+                if before:
+                    con.execute("update questions set status = ?, answer = ?, answered_at = ?, snoozed_until = ? where id = ?",
+                                (before["status"], before["answer"], before["answered_at"], before["snoozed_until"], qid))
+        con.execute("delete from chat_messages where id >= ?", (message_id,))
+        con.execute("delete from chat_summaries where upto >= ?", (message_id,))
+    return first["text"]
+
+
+@router.post("/rewind/{message_id}")
+def rewind_route(message_id: int, request: Request):
+    s = request.app.state
+    text = rewind(s.db, message_id)
+    if text is None:
+        raise HTTPException(404, "Only your own messages can be rewound.")
+    return {**state(s.db, s.clock), "text": text}
 
 
 @router.post("/clear")

@@ -170,6 +170,14 @@ section > h2 .meta { font-weight: 400; }
 .turn .say p { margin: 0 0 .5em; } .turn .say p:last-child { margin: 0; }
 .turn .say ul { margin: .2em 0 .5em; padding-left: 1.2em; }
 .turn .say code { font: 13px var(--sans); background: var(--side); padding: 0 4px; border-radius: 4px; }
+.mine-wrap { align-self: flex-end; max-width: 75%; display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+.mine-wrap .mine { max-width: 100%; }
+.rewind { border: 0; background: none; color: var(--muted); font-size: 12px; padding: 2px 4px; display: flex; align-items: center; gap: 4px;
+          opacity: 0; transition: opacity .15s; }
+.rewind svg { width: 13px; height: 13px; }
+.mine-wrap:hover .rewind, .rewind:focus-visible { opacity: 1; }
+.rewind:hover { color: var(--ink-2); }
+@media (hover: none) { .rewind { opacity: 1; } }
 .mine { align-self: flex-end; max-width: 75%; background: #F1F3F4; border-radius: 14px; padding: 10px 14px; white-space: pre-wrap; }
 .ask-card { border: 1px solid #E3E7EA; border-radius: 14px; padding: 18px 20px; display: flex; flex-direction: column; gap: 12px; }
 .ask-card .q { margin: 0; font: 18px/1.45 var(--serif); }
@@ -321,7 +329,8 @@ dialog .why { font: italic 15px/1.45 var(--serif); color: var(--muted); margin: 
   .when-row .when { width: 80px; }
   .when-row .meta { display: none; }
   .turn .say { font-size: 18px; }
-  .mine { max-width: 85%; }
+  .mine, .mine-wrap { max-width: 85%; }
+  .mine-wrap .mine { max-width: 100%; }
   .composer { left: 12px; right: 12px; transform: none; width: auto; bottom: calc(70px + env(safe-area-inset-bottom)); border-radius: 22px; padding: 5px 5px 5px 16px; }
   .composer .icon-btn.send { border-radius: 50%; }
   #tabs { display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; justify-content: space-around; background: #F9FAFB;

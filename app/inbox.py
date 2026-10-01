@@ -67,6 +67,27 @@ def ask(con, clock, source_id, text, quote=None, meta=None) -> dict:
         return dict(con.execute("select * from questions where id = ?", (cur.lastrowid,)).fetchone())
 
 
+def withdraw(con, id):
+    """Undo a proposal entirely (rewinding the chat message that made it):
+    an accepted one's changes are reversed, then the proposal is removed."""
+    row = con.execute("select * from proposals where id = ?", (id,)).fetchone()
+    if not row:
+        return
+    if row["status"] == "accepted" and row["applied"]:
+        ops, applied = json.loads(row["ops"]), json.loads(row["applied"])
+        undo = json.loads(row["undo"]) if row["undo"] else [None] * len(ops)
+        for o, ref, before in reversed(list(zip(ops, applied, undo))):
+            if o["op"] == "create":
+                con.execute(f"delete from {o['kind']} where id = ?", (ref,))
+            elif o["op"] == "update" and before:
+                sets = ", ".join(f"{k} = ?" for k in before)
+                con.execute(f"update {o['kind']} set {sets} where id = ?", (*before.values(), ref))
+            elif o["op"] == "delete" and before:
+                cols = ", ".join(before)
+                con.execute(f"insert or replace into {o['kind']} ({cols}) values ({', '.join('?' * len(before))})", tuple(before.values()))
+    con.execute("delete from proposals where id = ?", (id,))
+
+
 def fills(con, question_id, proposal_id):
     """Record that answering this question gives the date of what the proposal
     adds (it doesn't hold the proposal up: the item stands without it)."""
@@ -109,18 +130,24 @@ def accept(con, clock, id, ops=None) -> dict:
 
 def _apply(con, id, ops, now, created):
     con.execute("begin")
+    undo = []  # per op: the fields an update replaced, or the row a delete removed
     try:
         for o in ops:
             data = {k: _resolve(con, v, created) for k, v in (o.get("data") or {}).items()}
             if o["op"] == "create":
                 created.append(plan.insert(con, o["kind"], data)["id"])
+                undo.append(None)
             elif o["op"] == "update":
+                old = con.execute(f"select * from {o['kind']} where id = ?", (o["id"],)).fetchone()
                 created.append(plan.change(con, o["kind"], o["id"], data, now)["id"])
+                undo.append({k: old[k] for k in old.keys() if k in data} if old else None)
             else:
+                old = con.execute(f"select * from {o['kind']} where id = ?", (o["id"],)).fetchone()
                 plan.remove(con, o["kind"], o["id"])
                 created.append(o["id"])
-        con.execute("update proposals set status = 'accepted', ops = ?, applied = ?, decided_at = ? where id = ?",
-                    (json.dumps(ops), json.dumps(created), now, id))
+                undo.append(dict(old) if old else None)
+        con.execute("update proposals set status = 'accepted', ops = ?, applied = ?, decided_at = ?, undo = ? where id = ?",
+                    (json.dumps(ops), json.dumps(created), now, json.dumps(undo), id))
         con.execute("commit")
     except HTTPException as e:
         con.execute("rollback")
