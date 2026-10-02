@@ -43,6 +43,32 @@ A class the user takes, identified by course number plus instructor. Two Courses
 **Source**:
 Anything the assistant extracts from: an uploaded document, a chat message, a calendar feed, an email.
 
+**Recording**:
+One capture of a lecture's sound, from start to stop: the microphone in the room, or the device's audio for a lecture watched online (live or a replay). A kind of Source. Its audio is temporary: deleted once its Transcript is final.
+_Avoid_: Audio file, voice memo, meeting
+
+**Captions**:
+The text shown while a Recording runs, a few seconds behind the speaker. Provisional: replaced by the Transcript.
+_Avoid_: Subtitles, live transcript
+
+**Transcript**:
+The final clean text of a Recording: what the lecturer said, without fillers, stutters and repeats, sentences completed. The lasting record of the lecture; may be dropped once its Lecture notes are good enough.
+_Avoid_: Raw transcript (there is none kept), minutes
+
+**Lecture kind**:
+What a lecture is, which decides what its Lecture notes capture. Read from the syllabus: the schedule row for that date, else the course's usual kind.
+- **Paper session**: papers presented and discussed: each paper's points, the questions and answers, connections between papers.
+- **Concept lecture**: the instructor teaches ideas: concepts, definitions, walk-throughs.
+- **Presentation day**: projects or talks presented: feedback on the user's own, a line on each other one.
+
+**Jotting**:
+A line the user types (or a bare mark) during a Recording, stamped with the moment in the lecture it was written. Jottings are the outline the Lecture notes are built on.
+_Avoid_: Note, annotation, comment
+
+**Lecture notes**:
+Notes written from a Transcript, built on the user's Jottings: their lines kept as written, filled in with what the lecturer said, plus topics they didn't jot. The user's to edit; the assistant changes them only when asked.
+_Avoid_: Summary, study guide
+
 **Proposal**:
 A change the assistant wants to make (new Task, moved do date, new Memory, replan), with the Source quote that justifies it. Nothing changes until the user accepts.
 _Avoid_: Suggestion, draft
