@@ -904,6 +904,8 @@ views.lecture = async (id) => {
       ${r.kind_name ? `<p class="voice small">${esc(r.kind_name)}${r.papers.length ? `: ${r.papers.map(esc).join("; ")}` : ""}</p>` : ""}
       ${r.status === "done" && r.transcript ? `<p class="voice small">${Math.max(1, Math.round(r.seconds / 60))} minute${Math.round(r.seconds / 60) > 1 ? "s" : ""}. Underlined words are ones I'm not sure were heard right.</p>
         <div class="row-actions"><button class="btn quiet small" onclick="deleteTranscript(${r.id})">Delete transcript</button></div>` : ""}</header>
+    ${r.jottings.length ? `<section><h2>Your jottings</h2>${r.jottings.map(j => `<div class="jotting"><span class="ts">${mmss(j.at)}</span>
+      <span class="what">${j.text ? esc(j.text) : `<i class="mark">Marked</i>`}</span></div>`).join("")}</section>` : ""}
     <section>${body}</section>
   </div>`;
 };

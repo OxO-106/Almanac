@@ -104,3 +104,15 @@ def test_start_suggests_the_class_on_now_or_a_replay_to_watch(client, llm):
                                      "location": "https://ucla.zoom.us/j/1"})
     s = client.get("/api/recordings/suggest").json()
     assert (s["course_id"], s["source"], s["why"]) == (course, "device", "CS 259 class is on now (online)")
+
+
+def test_jottings_keep_their_moment_and_a_retry_isnt_added_twice(client):
+    rid = start(client)
+    j1 = client.post(f"/api/recordings/{rid}/jottings", json={"at": 63.4, "text": "important: KV cache", "key": "a"}).json()
+    client.post(f"/api/recordings/{rid}/jottings", json={"at": 63.4, "text": "important: KV cache", "key": "a"})  # retried
+    client.post(f"/api/recordings/{rid}/jottings", json={"at": 12, "text": "", "key": "b"})  # a Mark
+    rec = client.get(f"/api/recordings/{rid}").json()  # what a reload sees
+    assert [(j["at"], j["text"]) for j in rec["jottings"]] == [(12.0, ""), (63.4, "important: KV cache")]
+    client.delete(f"/api/recordings/{rid}/jottings/{j1['id']}")
+    assert [j["text"] for j in client.get(f"/api/recordings/{rid}").json()["jottings"]] == [""]
+    assert client.post(f"/api/recordings/{rid}/jottings", json={"text": "no moment"}).status_code == 422

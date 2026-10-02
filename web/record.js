@@ -6,7 +6,8 @@
 
 const KINDS_LECTURE = { paper_session: "Paper session", concept_lecture: "Concept lecture", presentation_day: "Presentation day" };
 const rec = { id: null, course: null, kind: null, stream: null, ctx: null, queue: [], seq: 0, pumping: false, paused: false,
-              lines: [], partial: "", seconds: 0, unsent: 0, captionsError: null, wake: null, note: "" };
+              lines: [], partial: "", seconds: 0, unsent: 0, captionsError: null, wake: null, note: "",
+              jottings: [], jotAt: null, jotQueue: [] };
 const recording = () => rec.id !== null;
 
 // The AudioWorklet: float samples in, 16-bit pieces of one second out.
@@ -113,7 +114,8 @@ async function startRecording(form) {
   try {
     const r = await api("/api/recordings/start", { method: "POST", body: JSON.stringify(
       { course_id: f.get("course") ? Number(f.get("course")) : null, kind: f.get("kind") || null, date: todayIso || undefined }) });
-    Object.assign(rec, { id: r.id, course: r.course_id, kind: r.kind, queue: [], seq: 0, lines: [], partial: "", seconds: 0, paused: false, note: "", source });
+    Object.assign(rec, { id: r.id, course: r.course_id, kind: r.kind, queue: [], seq: 0, lines: [], partial: "", seconds: 0, paused: false, note: "", source,
+                         jottings: [], jotAt: null, jotQueue: [] });
   } catch (e) {
     releaseCapture();
     btn.disabled = false;
@@ -129,7 +131,8 @@ async function resumeRecording(id, source) {
   try { await captureAudio(source); } catch (e) { toast(esc(e.message)); return; }
   if (rec.id !== id) {
     const r = await api(`/api/recordings/${id}`), s = await api(`/api/recordings/${id}/live`);
-    Object.assign(rec, { id, course: r.course_id, kind: r.kind, queue: [], seq: s.next ?? 0, lines: s.lines, partial: s.partial, seconds: s.seconds });
+    Object.assign(rec, { id, course: r.course_id, kind: r.kind, queue: [], seq: s.next ?? 0, lines: s.lines, partial: s.partial, seconds: s.seconds,
+                         jottings: r.jottings, jotAt: null, jotQueue: [] });
   }
   Object.assign(rec, { paused: false, note: "", source });
   keepAwake();
@@ -147,7 +150,7 @@ async function stopRecording() {
   const id = rec.id;
   rec.paused = true;
   releaseCapture();
-  for (let i = 0; i < 30 && rec.queue.length; i++) { pump(); await new Promise(res => setTimeout(res, 500)); }  // send what's left
+  for (let i = 0; i < 30 && (rec.queue.length || rec.jotQueue.length); i++) { pump(); saveJottings(); await new Promise(res => setTimeout(res, 500)); }  // send what's left
   if (rec.queue.length && !confirm(`${rec.queue.length} seconds of audio haven't reached the PC yet. Stop anyway?`)) { rec.paused = false; return; }
   try { await api(`/api/recordings/${id}/stop`, { method: "POST" }); } catch (e) { toast(esc(detail(e))); }
   rec.wake?.release().catch(() => {});
@@ -171,10 +174,62 @@ function drawLive() {
   if (atBottom) box.scrollTop = box.scrollHeight;
 }
 
+// ---- Jottings: stamped with the moment in the lecture (seconds of audio, so pauses don't count) ----
+
+const lectureNow = () => rec.seq;  // one numbered piece per second of recorded audio
+
+function addJotting(mark = false) {
+  const box = $("#jot"), text = mark ? "" : box.value.trim();
+  const at = mark || !text ? lectureNow() : (rec.jotAt ?? lectureNow());  // when they started typing it
+  const j = { key: `${rec.id}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, at, text, saving: true };
+  rec.jottings.push(j);
+  rec.jottings.sort((a, b) => a.at - b.at);
+  rec.jotQueue.push(j);
+  if (!mark) box.value = "";
+  rec.jotAt = null;
+  drawJottings();
+  saveJottings();
+  box.focus();
+}
+
+async function saveJottings() {
+  if (rec.savingJots) return;
+  rec.savingJots = true;
+  while (rec.jotQueue.length && rec.id !== null) {
+    const j = rec.jotQueue[0];
+    try {
+      const saved = await api(`/api/recordings/${rec.id}/jottings`, { method: "POST", body: JSON.stringify({ at: j.at, text: j.text, key: j.key }) });
+      Object.assign(j, { id: saved.id, saving: false });
+      rec.jotQueue.shift();
+    } catch { await new Promise(res => setTimeout(res, 2000)); }  // offline: keep it, try again
+  }
+  rec.savingJots = false;
+  drawJottings();
+}
+
+async function deleteJotting(key) {
+  const j = rec.jottings.find(x => x.key === key || String(x.id) === String(key));
+  if (!j) return;
+  rec.jottings = rec.jottings.filter(x => x !== j);
+  rec.jotQueue = rec.jotQueue.filter(x => x !== j);
+  if (j.id) api(`/api/recordings/${rec.id}/jottings/${j.id}`, { method: "DELETE" }).catch(() => {});
+  drawJottings();
+}
+
+function drawJottings() {
+  const box = $("#jottings");
+  if (!box) return;
+  box.innerHTML = rec.jottings.map(j => `<div class="jotting ${j.saving ? "saving" : ""}"><span class="ts">${mmss(j.at)}</span>
+    <span class="what">${j.text ? esc(j.text) : `<i class="mark">Marked</i>`}</span>
+    <button class="icon-btn" onclick="deleteJotting('${j.key || j.id}')" aria-label="Remove" title="Remove">${ICON.x}</button></div>`).join("")
+    || `<p class="empty">Your notes go here, each stamped with the moment in the lecture. I'll build the lecture notes on them afterwards.</p>`;
+  box.scrollTop = box.scrollHeight;
+}
+
 views.record = async (arg) => {
   await loadLookups();
   if (recording()) {
-    setTimeout(drawLive);
+    setTimeout(() => { drawLive(); drawJottings(); $("#jot")?.focus(); });
     const c = lookups.courses.find(c => c.id === rec.course);
     return `<div class="page wide">
       <header class="head"><div class="dateline">${c ? esc(courseName(c.id)) : "Lecture"}${rec.kind ? ` · ${esc(KINDS_LECTURE[rec.kind])}` : ""}</div>
@@ -183,7 +238,11 @@ views.record = async (arg) => {
           <button class="btn primary small" onclick="stopRecording()">Stop</button></div></header>
       <div class="rec-layout">
         <section><h2>Captions <span class="meta">rough, for following along; the transcript replaces them</span></h2><div class="captions" id="captions"></div></section>
-        <section id="jottings-pane"></section>
+        <section><h2>Jottings <span class="meta">Enter on an empty line marks this moment</span></h2>
+          <div class="jottings" id="jottings"></div>
+          <form class="jot-form" onsubmit="event.preventDefault(); addJotting()">
+            <input id="jot" autocomplete="off" placeholder="Type a note, Enter to add" oninput="if (this.value && rec.jotAt === null) rec.jotAt = lectureNow(); if (!this.value) rec.jotAt = null">
+            <button type="button" class="btn small" onclick="addJotting(true)" title="This moment matters">Mark</button></form></section>
       </div></div>`;
   }
   const [sug, all] = await Promise.all([api("/api/recordings/suggest"), api("/api/recordings")]);

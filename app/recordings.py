@@ -545,3 +545,40 @@ def stop(id: int, background: BackgroundTasks, request: Request):
     _set(s.db, id, status="transcribing")
     background.add_task(finalize, s.db, s.llm, s.clock, s.transcriber, id, wav)
     return {"id": id, "status": "transcribing"}
+
+
+# ---- Jottings: lines typed during a Recording, stamped with the moment in the lecture --------
+
+def _jottings(con, rid) -> list:
+    r = con.execute("select jottings from recordings where id = ?", (rid,)).fetchone()
+    if not r:
+        raise HTTPException(404)
+    return json.loads(r["jottings"] or "[]")
+
+
+@router.post("/recordings/{id}/jottings", status_code=201)
+async def add_jotting(id: int, request: Request):
+    """{"at": seconds into the lecture's audio (pauses excluded), "text": "" for a Mark, "key": the
+    browser's id for it, so a retried save isn't added twice}."""
+    s = request.app.state
+    body = await request.json()
+    at, text, key = body.get("at"), (body.get("text") or "").strip(), body.get("key")
+    if not isinstance(at, (int, float)) or at < 0:
+        raise HTTPException(422, "A jotting needs its moment in the lecture.")
+    with WRITE:
+        items = _jottings(s.db, id)
+        hit = next((j for j in items if key and j.get("key") == key), None)
+        if not hit:
+            hit = {"id": max((j["id"] for j in items), default=0) + 1, "at": round(float(at), 1), "text": text[:2000], "key": key}
+            items.append(hit)
+            items.sort(key=lambda j: (j["at"], j["id"]))
+            s.db.execute("update recordings set jottings = ? where id = ?", (json.dumps(items), id))
+    return hit
+
+
+@router.delete("/recordings/{id}/jottings/{jid}", status_code=204)
+def delete_jotting(id: int, jid: int, request: Request):
+    s = request.app.state
+    with WRITE:
+        items = [j for j in _jottings(s.db, id) if j["id"] != jid]
+        s.db.execute("update recordings set jottings = ? where id = ?", (json.dumps(items), id))

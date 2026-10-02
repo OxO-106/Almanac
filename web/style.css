@@ -388,3 +388,13 @@ dialog .why { font: italic 15px/1.45 var(--serif); color: var(--muted); margin: 
   .rec-layout { grid-template-columns: 1fr; }
   .captions { height: 50vh; }
 }
+
+.jottings { max-height: calc(100vh - 340px); min-height: 120px; overflow-y: auto; }
+.jotting { display: flex; gap: 12px; align-items: baseline; padding: 6px 0; border-bottom: 1px solid var(--line-soft); }
+.jotting .ts { flex: none; width: 40px; font: 12px var(--sans); color: var(--muted); font-variant-numeric: tabular-nums; }
+.jotting .what { flex: 1; font: 15px var(--sans); color: var(--ink); }
+.jotting .mark { color: var(--muted); font-style: normal; }
+.jotting.saving .what { color: var(--muted); }
+.jotting .icon-btn { width: 24px; height: 24px; opacity: .5; }
+.jot-form { display: flex; gap: 8px; margin-top: 10px; }
+.jot-form input { flex: 1; min-width: 0; font: 15px var(--sans); color: var(--ink); background: var(--ground); border: 1px solid var(--btn-line); border-radius: 8px; padding: 8px 10px; }
