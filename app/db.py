@@ -102,6 +102,7 @@ COLUMNS = [
     ("questions", "purpose", "text"),
     ("questions", "target", "text"),
     ("questions", "options", "text"),
+    ("sources", "url", "text"),  # a course website read from its address (pages.py)
 ]
 
 # UCLA Registrar, Annual Academic Calendar 2026-27. Week 1 is the first Monday

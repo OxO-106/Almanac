@@ -354,3 +354,7 @@ dialog .why { font: italic 15px/1.45 var(--serif); color: var(--muted); margin: 
 }
 
 .tag { font: 500 11px var(--sans); color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 1px 7px; vertical-align: 2px; }
+
+.site-form { display: flex; gap: 8px; margin: 10px 0 4px; }
+.site-form input { flex: 1; min-width: 0; font: 14px var(--sans); color: var(--ink); background: var(--ground); border: 1px solid var(--btn-line); border-radius: 8px; padding: 7px 9px; }
+.upload a.name { color: inherit; text-decoration: underline; text-decoration-color: var(--line, currentColor); text-underline-offset: 2px; }

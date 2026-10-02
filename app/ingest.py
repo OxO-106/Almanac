@@ -14,7 +14,7 @@ from datetime import date, timedelta
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, UploadFile
 
-from . import asks, inbox, merge, plan
+from . import asks, inbox, merge, pages, plan
 from .clock import local
 from .plan import current_term
 from .db import WRITE
@@ -501,9 +501,16 @@ def resolve(it: dict, today: date, term: dict | None, known: dict) -> When:
 
 # ---- ingest -------------------------------------------------------------------
 
-def ingest(con, llm, clock, source_id: int, filename: str, data: bytes):
+def ingest(con, llm, clock, source_id: int, filename: str, data: bytes = b"", url: str | None = None):
+    """Read an uploaded file, or with `url` a course website (the page and the
+    sections it links to), and suggest what's in it."""
     try:
-        text = extract(filename, data)
+        if url:
+            filename, text = pages.read_site(url, lambda pdf: extract("page.pdf", pdf))
+            with WRITE:
+                con.execute("update sources set title = ? where id = ?", (filename, source_id))
+        else:
+            text = extract(filename, data)
         with WRITE:
             con.execute("update sources set text = ? where id = ?", (text, source_id))
         prior = _supersede(con, source_id)
@@ -1346,7 +1353,7 @@ async def upload(file: UploadFile, background: BackgroundTasks, request: Request
     data = await file.read()
     now = local(s.clock.now()).strftime("%Y-%m-%dT%H:%M")
     if replaces is None:
-        prev = next((r for r in s.db.execute("select id, title from sources where kind = 'document' and replaced_by is null "
+        prev = next((r for r in s.db.execute("select id, title from sources where kind = 'document' and url is null and replaced_by is null "
                                              "and status = 'done' order by id desc") if _doc_name(r["title"]) == _doc_name(file.filename)), None)
     else:
         prev = s.db.execute("select id from sources where id = ?", (replaces,)).fetchone()
@@ -1363,6 +1370,27 @@ async def upload(file: UploadFile, background: BackgroundTasks, request: Request
     return {"id": cur.lastrowid, "status": "processing"}
 
 
+@router.post("/uploads/url", status_code=202)
+async def upload_url(background: BackgroundTasks, request: Request, replaces: int | None = None):
+    """Read a course website from its address; the same address again (or
+    `replaces`) is a new version of it."""
+    s = request.app.state
+    url = ((await request.json()).get("url") or "").strip()
+    if not re.match(r"https?://[^\s/]+\.[^\s]+$", url):
+        raise HTTPException(422, "That isn't a web address (it should start with http:// or https://).")
+    now = local(s.clock.now()).strftime("%Y-%m-%dT%H:%M")
+    prev = s.db.execute("select id from sources where id = ?", (replaces,)).fetchone() if replaces is not None else \
+        s.db.execute("select id from sources where url = ? and replaced_by is null and status = 'done' order by id desc", (url,)).fetchone()
+    if replaces is not None and not prev:
+        raise HTTPException(404, "The source to replace doesn't exist.")
+    lineage = prev and s.db.execute("select coalesce(lineage, id) from sources where id = ?", (prev["id"],)).fetchone()[0]
+    with WRITE:
+        cur = s.db.execute("insert into sources (kind, title, text, status, created_at, lineage, url) "
+                           "values ('document', ?, '', 'processing', ?, ?, ?)", (url, now, lineage, url))
+    background.add_task(ingest, s.db, s.reader, s.clock, cur.lastrowid, url, url=url)
+    return {"id": cur.lastrowid, "status": "processing"}
+
+
 def _kept(state, source_id, filename):
     folder = state.db_path.parent / "uploads"
     folder.mkdir(exist_ok=True)
@@ -1376,6 +1404,11 @@ def retry(id: int, background: BackgroundTasks, request: Request):
     src = _source(s.db, id)
     if src["status"] != "failed":
         raise HTTPException(409, "Only a failed upload can be retried.")
+    if src["url"]:  # a website: fetch it again
+        with WRITE:
+            s.db.execute("update sources set status = 'processing', error = null where id = ?", (id,))
+        background.add_task(ingest, s.db, s.reader, s.clock, id, src["url"], url=src["url"])
+        return {"id": id, "status": "processing"}
     kept = _kept(s, id, src["title"])
     if not kept.exists():
         raise HTTPException(409, "The file wasn't kept (it was uploaded before retrying existed). Upload it again.")
@@ -1386,7 +1419,7 @@ def retry(id: int, background: BackgroundTasks, request: Request):
 
 
 def _source(con, id):
-    r = con.execute("select id, kind, title, status, error, dropped, created_at, lineage from sources where id = ?", (id,)).fetchone()
+    r = con.execute("select id, kind, title, status, error, dropped, created_at, lineage, url from sources where id = ?", (id,)).fetchone()
     if not r:
         raise HTTPException(404)
     return {**dict(r), "dropped": json.loads(r["dropped"] or "[]")}

@@ -493,6 +493,19 @@ async function uploadFiles(files, replaces = null) {
   watchReading();
 }
 
+// A course website: the page and the sections it links to (schedule, syllabus…).
+async function readSite(url, replaces = null) {
+  url = (url || "").trim();
+  if (!url) return;
+  if (!/^https?:\/\//i.test(url)) url = "https://" + url;
+  try {
+    await api(`/api/uploads/url${replaces ? `?replaces=${replaces}` : ""}`, { method: "POST", body: JSON.stringify({ url }) });
+    toast(`Reading ${esc(url)} and the pages it links to. What I find will show up in <a href="#inbox">Suggestions</a>.`);
+  } catch (e) { toast(esc(detail(e))); }
+  if (location.hash.startsWith("#inbox")) render();
+  watchReading();
+}
+
 // While documents are being read, check every few seconds on any page; when
 // one is done, show its notification ("Suggestions ready…") right away.
 let readingIds = null, readingTimer;
@@ -523,9 +536,13 @@ const uploadRow = s => {
   const why = { "quote not found in the document": "I couldn't find it in the document", "no date or lecture stated": "the document doesn't say when" };
   const dropped = s.dropped.length ? `<details class="upload-note"><summary>${s.dropped.length} thing${s.dropped.length > 1 ? "s" : ""} I left out, even on a second look</summary>
     <ul>${s.dropped.map(d => `<li>${esc(d.title)}: ${esc(why[d.reason] || d.reason || "")}${d.quote ? ` (“${esc(d.quote)}”)` : ""}</li>`).join("")}</ul></details>` : "";
-  return `<div class="upload">${ICON.doc}<span class="name">${esc(s.title)}</span><span class="meta">${status}</span>
+  const name = s.url ? `<a class="name" href="${esc(s.url)}" target="_blank" rel="noopener" title="${esc(s.url)}">${esc(s.title)}</a>`
+    : `<span class="name">${esc(s.title)}</span>`;
+  return `<div class="upload">${ICON.doc}${name}<span class="meta">${status}</span>
     ${s.status === "failed" ? `<button class="btn small" onclick="retryUpload(${s.id}, this)">Try again</button>` : ""}
-    ${s.status !== "processing" ? `<label class="btn small quiet" title="Upload an updated copy: only changes will be suggested">New version
+    ${s.status !== "processing" && s.url ? `<button class="btn small quiet" title="Read the site again: only changes will be suggested"
+      onclick="readSite(${js(s.url)}, ${s.id})">Read again</button>` : ""}
+    ${s.status !== "processing" && !s.url ? `<label class="btn small quiet" title="Upload an updated copy: only changes will be suggested">New version
       <input type="file" accept=".pdf,.docx,.txt,.md" hidden onchange="uploadFiles(this.files, ${s.id})"></label>` : ""}</div>
     ${s.error ? `<div class="upload-note">${esc(s.error)}</div>` : ""}${dropped}`;
 };
@@ -560,6 +577,9 @@ views.inbox = async () => {
         ondrop="event.preventDefault(); this.classList.remove('over'); uploadFiles(event.dataTransfer.files)">
         ${ICON.doc}<span><b>Add a syllabus or document</b><br>PDF, DOCX or text. Drop it here or click.</span>
         <input type="file" multiple accept=".pdf,.docx,.txt,.md" hidden onchange="uploadFiles(this.files)"></label>
+      <form class="site-form" onsubmit="event.preventDefault(); readSite(this.url.value); this.reset()">
+        <input name="url" type="text" inputmode="url" placeholder="Or paste a course website address" aria-label="Course website address" required>
+        <button class="btn small">Read it</button></form>
       ${sources.slice(0, 6).map(uploadRow).join("")}
     </section>
     ${listed}
