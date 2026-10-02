@@ -362,3 +362,29 @@ dialog .why { font: italic 15px/1.45 var(--serif); color: var(--muted); margin: 
 .transcript p { margin: 0 0 12px; line-height: 1.6; display: flex; gap: 12px; }
 .transcript .ts { flex: none; width: 44px; font: 12px var(--sans); color: var(--muted); padding-top: 4px; font-variant-numeric: tabular-nums; }
 .unclear { text-decoration: underline dotted var(--muted); text-underline-offset: 3px; cursor: help; }
+
+/* ---- Record ---- */
+.page.wide { max-width: 1100px; }
+.rec-start { display: flex; flex-direction: column; gap: 14px; max-width: 520px; }
+.rec-start label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+.rec-start select { font: 15px var(--sans); color: var(--ink); background: var(--ground); border: 1px solid var(--btn-line); border-radius: 8px; padding: 8px 10px; }
+.rec-start fieldset { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.rec-start legend { font-size: 13px; color: var(--muted); padding: 0 4px; }
+.rec-start label.choice { flex-direction: row; align-items: baseline; gap: 8px; font-size: 15px; color: var(--ink); }
+.rec-start label.choice .meta { display: block; font-size: 13px; margin-top: 1px; }
+.rec-start .btn.primary { align-self: flex-start; }
+.rec-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
+.rec-bar #rec-status { flex: 1; font: 14px var(--sans); color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.rec-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #C8463B; margin-right: 8px; animation: rec-pulse 1.6s infinite; }
+.rec-dot.paused { background: var(--muted); animation: none; }
+@keyframes rec-pulse { 50% { opacity: .35; } }
+.rec-layout { display: grid; grid-template-columns: 3fr 2fr; gap: 28px; align-items: start; }
+.rec-layout h2 .meta { font-weight: 400; font-size: 12px; margin-left: 6px; }
+.captions { height: calc(100vh - 260px); min-height: 240px; overflow-y: auto; padding-right: 6px; }
+.captions p { margin: 0 0 10px; line-height: 1.55; display: flex; gap: 12px; font-size: 17px; }
+.captions .ts { flex: none; width: 40px; font: 12px var(--sans); color: var(--muted); padding-top: 5px; font-variant-numeric: tabular-nums; }
+.captions .partial { color: var(--muted); }
+@media (max-width: 760px) {
+  .rec-layout { grid-template-columns: 1fr; }
+  .captions { height: 50vh; }
+}

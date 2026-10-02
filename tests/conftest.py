@@ -77,8 +77,10 @@ class FakeTranscriber:
             raise RuntimeError(self.error)
         return [dict(s) for s in self.segments], self.seconds
 
+    caption = staticmethod(lambda pcm16: "")  # what a caption window reads as; tests set it
+
     def window(self, pcm16):
-        return ""
+        return self.caption(pcm16)
 
 
 @pytest.fixture

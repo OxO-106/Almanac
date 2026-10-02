@@ -8,6 +8,11 @@ correcting names and terms against the course's vocabulary. The uncleaned
 text is kept only until the clean-up is done."""
 import json
 import re
+import threading
+import time
+import wave
+from array import array
+from datetime import timedelta
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -219,9 +224,11 @@ def _label(con, rec) -> str:
 def recover(con, folder: Path):
     """After a restart: audio left by an interrupted pass is deleted, and its
     Recording says so (ADR 0001: no audio outlives its pass)."""
+    running = {f"{r['id']}.pcm" for r in con.execute("select id from recordings where status = 'recording'")}
     if folder.exists():
         for f in folder.iterdir():
-            f.unlink(missing_ok=True)
+            if f.name not in running:  # a live Recording goes on: the browser keeps sending
+                f.unlink(missing_ok=True)
     with WRITE:
         con.execute("update recordings set status = 'failed', error = 'Almanac stopped while transcribing it. "
                     "Upload the recording again.' where status in ('transcribing', 'cleaning') and pending is null")
@@ -243,6 +250,14 @@ def _view(con, r) -> dict:
 
 
 # ---- HTTP ---------------------------------------------------------------------
+
+@router.get("/recordings/suggest")
+def get_suggestion(request: Request):
+    s = request.app.state
+    out = suggest(s.db, s.clock)
+    lk = lecture_kind(s.db, out["course_id"], out["date"]) if out["course_id"] is not None else None
+    return {**out, "kind": lk and lk["kind"], "papers": lk["papers"] if lk else []}
+
 
 @router.post("/recordings", status_code=202)
 async def upload(file: UploadFile, background: BackgroundTasks, request: Request, course_id: int | None = None,
@@ -323,3 +338,210 @@ def delete_transcript(id: int, request: Request):
     _set(con, id, transcript=None)
     with WRITE:
         con.execute("update sources set text = '' where id = (select source_id from recordings where id = ?)", (id,))
+
+
+
+# ---- live: recording in the browser, Captions while it runs ----------------------
+# The browser sends 16 kHz mono int16 audio in numbered pieces (about a second
+# each); the PC appends them to a temporary file (deleted by the final pass)
+# and a caption thread per Recording transcribes the newest audio about once a
+# second. Every ~COMMIT seconds the oldest part is cut at a quiet moment and
+# fixed as a caption line; the rest is shown as provisional. Captions are only
+# for following along: Stop runs the final pass over the whole audio.
+
+SR, WIDTH = 16000, 2
+COMMIT = 10.0       # seconds of not-yet-fixed audio before a caption line is cut off
+CUT_FROM = 6.0      # ...at the quietest moment after this many seconds
+FRAME = 480         # samples per energy frame (30 ms)
+
+
+class Live:
+    def __init__(self, path: Path):
+        self.path, self.lock, self.wake, self.stop = path, threading.Lock(), threading.Event(), threading.Event()
+        self.next = None    # the piece number expected next (None: take the first one sent, e.g. after a restart)
+        self.lines = []     # fixed caption lines {start, end, text}
+        self.partial = ""   # the provisional text after them
+        self.tail = 0       # bytes of audio already fixed as lines
+        self.done = 0       # bytes the last caption covered
+        self.error = None   # why captions aren't coming (the recording still goes on)
+
+    def state(self, since=0):
+        size = self.path.stat().st_size if self.path.exists() else 0
+        return {"next": self.next, "lines": self.lines[since:], "count": len(self.lines), "partial": self.partial,
+                "seconds": round(size / (SR * WIDTH), 1), "captions_error": self.error}
+
+
+def _audio_path(state, rid) -> Path:
+    folder = state.db_path.parent / "recording-audio"
+    folder.mkdir(exist_ok=True)
+    return folder / f"{rid}.pcm"
+
+
+def _live(state, rid) -> Live:
+    """The running Recording's state, recreated after a restart (captions start over)."""
+    if rid not in state.live:  # app.state.live: the running Recordings of this app
+        state.live[rid] = Live(_audio_path(state, rid))
+        threading.Thread(target=_captioner, args=(state.transcriber, state.live[rid]), daemon=True).start()
+    return state.live[rid]
+
+
+def _quiet_cut(pcm: bytes, lo: float, hi: float) -> int:
+    """Byte offset of the quietest 30 ms frame between lo and hi seconds."""
+    samples = array("h", pcm[: len(pcm) - len(pcm) % 2])
+    first, last = int(lo * SR) // FRAME, int(hi * SR) // FRAME
+    best, best_e = first, None
+    for f in range(first, max(first + 1, last)):
+        frame = samples[f * FRAME:(f + 1) * FRAME]
+        e = sum(x * x for x in frame) / max(1, len(frame))
+        if best_e is None or e < best_e:
+            best, best_e = f, e
+    return best * FRAME * WIDTH
+
+
+def _caption_once(transcriber, live: Live):
+    with open(live.path, "rb") as f:
+        f.seek(live.tail)
+        pcm = f.read()
+    secs = len(pcm) / (SR * WIDTH)
+    start = live.tail / (SR * WIDTH)
+    if secs > COMMIT:
+        cut = _quiet_cut(pcm, CUT_FROM, secs - 0.5)
+        text = transcriber.window(pcm[:cut])
+        with live.lock:
+            if text:
+                live.lines.append({"start": round(start, 2), "end": round(start + cut / (SR * WIDTH), 2), "text": text})
+            live.tail += cut
+        pcm = pcm[cut:]
+    text = transcriber.window(pcm) if len(pcm) > SR * WIDTH // 2 else ""
+    with live.lock:
+        live.partial, live.done, live.error = text, live.tail + len(pcm), None
+
+
+def _captioner(transcriber, live: Live):
+    """Captions for one Recording until it stops. A failure (the speech worker
+    starting or missing) is shown, and the audio keeps being saved."""
+    while not live.stop.is_set():
+        live.wake.wait(1.0)
+        live.wake.clear()
+        if live.stop.is_set() or not live.path.exists() or live.path.stat().st_size <= live.done:
+            continue
+        try:
+            _caption_once(transcriber, live)
+        except Exception as e:
+            live.error = str(e) or type(e).__name__
+            time.sleep(2)
+
+
+def suggest(con, clock) -> dict:
+    """What Start proposes: the class happening now (device audio if it meets
+    online, i.e. its place is a link), else a course whose "watch the recording"
+    task is open (device audio: a replay), else nothing (the microphone)."""
+    now = local(clock.now())
+    today = now.date().isoformat()
+    t = now.strftime("%Y-%m-%dT%H:%M")
+    events = [dict(r) for r in con.execute("select * from events where course_id is not null")]
+    for e in plan.occurrences(events, today, today):
+        if len(e["start"]) > 10 and e["end"]:
+            lo = (local(clock.now()).replace(hour=int(e["start"][11:13]), minute=int(e["start"][14:16])) - timedelta(minutes=15)).strftime("%Y-%m-%dT%H:%M")
+            if lo <= t <= e["end"][:10] + "T" + e["end"][11:16]:
+                online = bool(re.search(r"https?://|zoom", e.get("location") or "", re.I))
+                return {"course_id": e["course_id"], "source": "device" if online else "mic", "date": today,
+                        "why": f"{e['title']} is on now" + (" (online)" if online else "")}
+    task = con.execute("select title, course_id from tasks where status = 'open' and course_id is not null and "
+                       "(lower(title) like '%recording%' or lower(title) like '%replay%' or lower(title) like '%watch%') "
+                       "order by coalesce(do_date, due, '9999'), id limit 1").fetchone()
+    if task:
+        return {"course_id": task["course_id"], "source": "device", "date": today, "why": f"“{task['title']}” is open"}
+    return {"course_id": None, "source": "mic", "date": today, "why": None}
+
+
+@router.post("/recordings/start", status_code=201)
+async def start(request: Request):
+    """A live Recording: the browser then sends its audio to /chunk."""
+    s = request.app.state
+    body = await request.json()
+    course_id = body.get("course_id")
+    if course_id is not None and not s.db.execute("select 1 from courses where id = ?", (course_id,)).fetchone():
+        raise HTTPException(404, "That course isn't in your plan.")
+    now = local(s.clock.now())
+    day = body.get("date") or now.date().isoformat()
+    kind = body.get("kind") or ((lk := lecture_kind(s.db, course_id, day)) and lk["kind"])
+    if kind and kind not in KIND_NAMES:
+        raise HTTPException(422, "Unknown lecture kind.")
+    with WRITE:
+        src = s.db.execute("insert into sources (kind, title, text, status, created_at) values ('recording', ?, '', 'processing', ?)",
+                           ("Live recording", now.strftime("%Y-%m-%dT%H:%M"))).lastrowid
+        rid = s.db.execute("insert into recordings (source_id, course_id, date, kind, status, created_at) values (?, ?, ?, ?, 'recording', ?)",
+                           (src, course_id, day, kind, now.strftime("%Y-%m-%dT%H:%M"))).lastrowid
+    rec = s.db.execute("select * from recordings where id = ?", (rid,)).fetchone()
+    with WRITE:
+        s.db.execute("update sources set about = ? where id = ?", (_label(s.db, rec), src))
+    _audio_path(s, rid).touch()
+    live = _live(s, rid)
+    live.next = 0
+    return _view(s.db, rec)
+
+
+def _running(state, rid):
+    r = state.db.execute("select status from recordings where id = ?", (rid,)).fetchone()
+    if not r:
+        raise HTTPException(404)
+    if r["status"] != "recording":
+        raise HTTPException(409, "This recording has stopped.")
+
+
+@router.post("/recordings/{id}/chunk")
+async def chunk(id: int, seq: int, request: Request, since: int = 0):
+    """One numbered piece of audio. A piece already received is ignored; a gap
+    is refused with the number expected, so the browser sends what's missing."""
+    s = request.app.state
+    _running(s, id)
+    live = _live(s, id)
+    data = await request.body()
+    if len(data) % WIDTH:
+        raise HTTPException(422, "Audio must be 16-bit samples.")
+    with live.lock:
+        if live.next is None:
+            live.next = seq  # after a restart: carry on from what the browser has
+        if seq > live.next:
+            raise HTTPException(409, {"next": live.next, "message": "A piece is missing; send from next."})
+        if seq == live.next:
+            with open(live.path, "ab") as f:
+                f.write(data)
+            live.next += 1
+    live.wake.set()
+    return live.state(since)
+
+
+@router.get("/recordings/{id}/live")
+def live_state(id: int, request: Request, since: int = 0):
+    """Captions so far (for another device reading along)."""
+    s = request.app.state
+    r = s.db.execute("select status from recordings where id = ?", (id,)).fetchone()
+    if not r:
+        raise HTTPException(404)
+    if r["status"] != "recording":
+        return {"stopped": True, "status": r["status"]}
+    return _live(s, id).state(since)
+
+
+@router.post("/recordings/{id}/stop", status_code=202)
+def stop(id: int, background: BackgroundTasks, request: Request):
+    """Stop: the audio so far goes to the final pass (and is then deleted)."""
+    s = request.app.state
+    _running(s, id)
+    live = s.live.pop(id, None)
+    if live:
+        live.stop.set()
+    pcm = _audio_path(s, id)
+    wav = pcm.with_suffix(".wav")
+    with open(pcm, "rb") as src, wave.open(str(wav), "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(WIDTH)
+        out.setframerate(SR)
+        while block := src.read(1 << 20):
+            out.writeframes(block)
+    pcm.unlink(missing_ok=True)
+    _set(s.db, id, status="transcribing")
+    background.add_task(finalize, s.db, s.llm, s.clock, s.transcriber, id, wav)
+    return {"id": id, "status": "transcribing"}

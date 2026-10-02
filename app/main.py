@@ -30,6 +30,7 @@ def create_app(db_path: Path = DB_PATH, llm=None, clock=None, transcriber=None) 
     app.state.clock = clock or SystemClock()
     app.state.fetch = canvas.fetch_url  # tests swap in a fake feed
     app.state.transcriber = transcriber or Parakeet()  # speech to text for Recordings; tests use a fake
+    app.state.live = {}  # running Recordings (recordings.Live)
     recordings.recover(con, app.state.db_path.parent / "recording-audio")
 
     @app.get("/api/version")

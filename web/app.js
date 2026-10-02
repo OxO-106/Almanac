@@ -858,7 +858,8 @@ views.course = async (id) => {
     ${projects.length ? `<section><h2>Projects</h2>${projects.map(p => `<div class="when-row"><span class="when">${p.deadline ? esc(fmtDay(p.deadline)) : ""}</span>
       <a class="what" onclick='edit("projects", ${p.id})'>${esc(p.title)}</a></div>`).join("")}</section>` : ""}
     <section><div class="group-head"><h2>Lectures</h2>
-      <label class="btn small" title="A recording made with the laptop's recorder, a phone voice memo or a Zoom download">Upload a recording
+      <a class="btn small" href="#record/${id}">Record a lecture</a>
+      <label class="btn small quiet" title="A recording made with the laptop's recorder, a phone voice memo or a Zoom download">Upload a recording
         <input type="file" accept="audio/*,video/*" hidden onchange="uploadRecording(${id}, this.files)"></label></div>
       ${lectures.map(lectureRow).join("") || `<p class="empty">No lectures yet. Upload a recording, and I'll write it up as a clean transcript.</p>`}</section>
   </div>`;
@@ -1159,7 +1160,7 @@ async function drawView(n) {
 
 let seenVersion = null;
 const planVersion = () => api("/api/version").then(r => r.v).catch(() => seenVersion);
-const busy = () => !!(sending || $("#say")?.value ||$("#editor")?.open || ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName));
+const busy = () => !!(sending || location.hash.startsWith("#record") || $("#say")?.value ||$("#editor")?.open || ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName));
 
 async function stayCurrent() {
   if (document.visibilityState !== "visible" || seenVersion === null) return;
