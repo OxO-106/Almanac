@@ -12,7 +12,7 @@ import threading
 import time
 import wave
 from array import array
-from datetime import timedelta
+from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -21,7 +21,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, UploadFi
 from . import plan
 from .clock import local
 from .db import WRITE
-from .scheduler import notify
+from .scheduler import WATCHERS, notify
 
 router = APIRouter(prefix="/api")
 
@@ -364,6 +364,8 @@ class Live:
         self.tail = 0       # bytes of audio already fixed as lines
         self.done = 0       # bytes the last caption covered
         self.error = None   # why captions aren't coming (the recording still goes on)
+        self.loud_at = 0.0  # seconds into the audio of the last piece that wasn't silence
+        self.heard = None   # when (clock time) the last piece arrived
 
     def state(self, since=0):
         size = self.path.stat().st_size if self.path.exists() else 0
@@ -432,21 +434,34 @@ def _captioner(transcriber, live: Live):
             time.sleep(2)
 
 
+AROUND = timedelta(minutes=15)  # a class is "on" from 15 minutes before it starts until it ends
+
+
+def classes_now(con, clock, course_id=None) -> list[dict]:
+    """Class meetings on now (one course's, or any): occurrences of timed events."""
+    now = local(clock.now()).replace(tzinfo=None, second=0, microsecond=0)
+    today = now.date().isoformat()
+    events = [dict(r) for r in con.execute("select * from events where course_id is not null"
+                                           + (" and course_id = ?" if course_id is not None else ""),
+                                           (course_id,) if course_id is not None else ())]
+    on = []
+    for e in plan.occurrences(events, today, today):
+        if len(e["start"]) > 10 and e["end"] and len(e["end"]) > 10:
+            start, end = (datetime.fromisoformat(e["start"][:16]), datetime.fromisoformat(e["end"][:16]))
+            if start - AROUND <= now <= end:
+                on.append(e)
+    return on
+
+
 def suggest(con, clock) -> dict:
     """What Start proposes: the class happening now (device audio if it meets
     online, i.e. its place is a link), else a course whose "watch the recording"
     task is open (device audio: a replay), else nothing (the microphone)."""
-    now = local(clock.now())
-    today = now.date().isoformat()
-    t = now.strftime("%Y-%m-%dT%H:%M")
-    events = [dict(r) for r in con.execute("select * from events where course_id is not null")]
-    for e in plan.occurrences(events, today, today):
-        if len(e["start"]) > 10 and e["end"]:
-            lo = (local(clock.now()).replace(hour=int(e["start"][11:13]), minute=int(e["start"][14:16])) - timedelta(minutes=15)).strftime("%Y-%m-%dT%H:%M")
-            if lo <= t <= e["end"][:10] + "T" + e["end"][11:16]:
-                online = bool(re.search(r"https?://|zoom", e.get("location") or "", re.I))
-                return {"course_id": e["course_id"], "source": "device" if online else "mic", "date": today,
-                        "why": f"{e['title']} is on now" + (" (online)" if online else "")}
+    today = local(clock.now()).date().isoformat()
+    for e in classes_now(con, clock):
+        online = bool(re.search(r"https?://|zoom", e.get("location") or "", re.I))
+        return {"course_id": e["course_id"], "source": "device" if online else "mic", "date": today,
+                "why": f"{e['title']} is on now" + (" (online)" if online else "")}
     task = con.execute("select title, course_id from tasks where status = 'open' and course_id is not null and "
                        "(lower(title) like '%recording%' or lower(title) like '%replay%' or lower(title) like '%watch%') "
                        "order by coalesce(do_date, due, '9999'), id limit 1").fetchone()
@@ -468,11 +483,14 @@ async def start(request: Request):
     kind = body.get("kind") or ((lk := lecture_kind(s.db, course_id, day)) and lk["kind"])
     if kind and kind not in KIND_NAMES:
         raise HTTPException(422, "Unknown lecture kind.")
+    on = classes_now(s.db, s.clock, course_id) if course_id is not None else []
+    ends_at = on[0]["end"][:16] if on else None  # recording the class as it happens: stop 15 min after it ends
     with WRITE:
         src = s.db.execute("insert into sources (kind, title, text, status, created_at) values ('recording', ?, '', 'processing', ?)",
                            ("Live recording", now.strftime("%Y-%m-%dT%H:%M"))).lastrowid
-        rid = s.db.execute("insert into recordings (source_id, course_id, date, kind, status, created_at) values (?, ?, ?, ?, 'recording', ?)",
-                           (src, course_id, day, kind, now.strftime("%Y-%m-%dT%H:%M"))).lastrowid
+        rid = s.db.execute("insert into recordings (source_id, course_id, date, kind, status, created_at, ends_at) "
+                           "values (?, ?, ?, ?, 'recording', ?, ?)",
+                           (src, course_id, day, kind, now.strftime("%Y-%m-%dT%H:%M"), ends_at)).lastrowid
     rec = s.db.execute("select * from recordings where id = ?", (rid,)).fetchone()
     with WRITE:
         s.db.execute("update sources set about = ? where id = ?", (_label(s.db, rec), src))
@@ -505,11 +523,20 @@ async def chunk(id: int, seq: int, request: Request, since: int = 0):
             live.next = seq  # after a restart: carry on from what the browser has
         if seq > live.next:
             raise HTTPException(409, {"next": live.next, "message": "A piece is missing; send from next."})
+        quiet = False
         if seq == live.next:
             with open(live.path, "ab") as f:
                 f.write(data)
             live.next += 1
+            live.heard = s.clock.now()
+            seconds = live.path.stat().st_size / (SR * WIDTH)
+            if _loudness(data) > SILENT:
+                live.loud_at = seconds
+            quiet = seconds - live.loud_at >= QUIET_STOP
     live.wake.set()
+    if seq == live.next - 1 and quiet:
+        auto_stop(s, id, f"it was quiet for {QUIET_STOP // 60} minutes", trim_to=live.loud_at + 5)
+        raise HTTPException(409, "This recording has stopped: it was quiet for 10 minutes.")
     return live.state(since)
 
 
@@ -530,21 +557,95 @@ def stop(id: int, background: BackgroundTasks, request: Request):
     """Stop: the audio so far goes to the final pass (and is then deleted)."""
     s = request.app.state
     _running(s, id)
-    live = s.live.pop(id, None)
+    wav = _close(s, id)
+    background.add_task(finalize, s.db, s.llm, s.clock, s.transcriber, id, wav)
+    return {"id": id, "status": "transcribing"}
+
+
+def _close(state, rid, trim_to=None) -> Path:
+    """End a live Recording: its audio (up to `trim_to` seconds) becomes a WAV for the final pass."""
+    live = state.live.pop(rid, None)
     if live:
         live.stop.set()
-    pcm = _audio_path(s, id)
+    pcm = _audio_path(state, rid)
     wav = pcm.with_suffix(".wav")
+    left = None if trim_to is None else int(trim_to * SR) * WIDTH
     with open(pcm, "rb") as src, wave.open(str(wav), "wb") as out:
         out.setnchannels(1)
         out.setsampwidth(WIDTH)
         out.setframerate(SR)
-        while block := src.read(1 << 20):
+        while (left is None or left > 0) and (block := src.read(1 << 20 if left is None else min(1 << 20, left))):
             out.writeframes(block)
+            left = None if left is None else left - len(block)
     pcm.unlink(missing_ok=True)
-    _set(s.db, id, status="transcribing")
-    background.add_task(finalize, s.db, s.llm, s.clock, s.transcriber, id, wav)
-    return {"id": id, "status": "transcribing"}
+    _set(state.db, rid, status="transcribing")
+    return wav
+
+
+# ---- stopping by itself ----------------------------------------------------------------
+# A Recording stops after 10 minutes of silence in its audio (the silent end
+# is trimmed), when no audio has arrived for 30 minutes (the laptop closed:
+# longer than the silence rule, since a network outage also stops arrivals while
+# the browser keeps the audio to resend), and 15 minutes after its class ends
+# when it was started during the class. A notification says so.
+
+SILENT = 250          # RMS of 16-bit samples below which a second counts as silence
+QUIET_STOP = 600      # seconds of silence in the audio
+NO_AUDIO_STOP = timedelta(minutes=30)
+AFTER_CLASS = timedelta(minutes=15)
+
+
+def _loudness(pcm: bytes) -> float:
+    samples = array("h", pcm[: len(pcm) - len(pcm) % 2])
+    step = max(1, len(samples) // 4000)  # a sample of the second is enough
+    picked = samples[::step]
+    return (sum(x * x for x in picked) / max(1, len(picked))) ** 0.5
+
+
+def auto_stop(state, rid, why: str, trim_to=None):
+    rec = state.db.execute("select * from recordings where id = ?", (rid,)).fetchone()
+    if not rec or rec["status"] != "recording":
+        return
+    wav = _close(state, rid, trim_to)
+    notify(state.db, state.clock, "recording", f"Stopped recording {_label(state.db, rec)}",
+           f"I stopped it because {why}. The transcript is on its way.", f"#lecture/{rid}")
+    threading.Thread(target=finalize, args=(state.db, state.llm, state.clock, state.transcriber, rid, wav), daemon=True).start()
+
+
+def watch(state):
+    """Every scheduler tick: stop Recordings whose audio stopped coming or whose class is over."""
+    now = local(state.clock.now()).replace(tzinfo=None)
+    for r in state.db.execute("select id, ends_at from recordings where status = 'recording'").fetchall():
+        live = state.live.get(r["id"])
+        heard = local(live.heard).replace(tzinfo=None) if live and live.heard else None
+        if heard is None:  # after a restart: when the audio file last grew
+            path = _audio_path(state, r["id"])
+            heard = datetime.fromtimestamp(path.stat().st_mtime) if path.exists() else now
+        if now - heard >= NO_AUDIO_STOP:
+            auto_stop(state, r["id"], "no audio arrived for 30 minutes")
+        elif r["ends_at"] and now >= datetime.fromisoformat(r["ends_at"]) + AFTER_CLASS:
+            auto_stop(state, r["id"], "the class ended 15 minutes ago")
+
+
+# ---- keeping the PC awake while it's needed (Windows) ------------------------------------
+
+_awake = threading.local()
+
+
+def keep_awake(state):
+    """Ask Windows not to sleep while a Recording runs or a class is on (the
+    laptop reaches Almanac on this PC). Set from the scheduler's own thread,
+    which Windows ties the request to; released when no longer needed."""
+    import os
+    if os.name != "nt" or type(state.clock).__name__ != "SystemClock":
+        return
+    need = bool(state.db.execute("select 1 from recordings where status = 'recording' limit 1").fetchone()) \
+        or bool(classes_now(state.db, state.clock))
+    if need != getattr(_awake, "on", False):
+        import ctypes
+        ES_CONTINUOUS, ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
+        ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | (ES_SYSTEM_REQUIRED if need else 0))
+        _awake.on = need
 
 
 # ---- Jottings: lines typed during a Recording, stamped with the moment in the lecture --------
@@ -582,3 +683,6 @@ def delete_jotting(id: int, jid: int, request: Request):
     with WRITE:
         items = [j for j in _jottings(s.db, id) if j["id"] != jid]
         s.db.execute("update recordings set jottings = ? where id = ?", (json.dumps(items), id))
+
+
+WATCHERS.extend([watch, keep_awake])

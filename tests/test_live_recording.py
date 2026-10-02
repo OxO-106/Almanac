@@ -116,3 +116,49 @@ def test_jottings_keep_their_moment_and_a_retry_isnt_added_twice(client):
     client.delete(f"/api/recordings/{rid}/jottings/{j1['id']}")
     assert [j["text"] for j in client.get(f"/api/recordings/{rid}").json()["jottings"]] == [""]
     assert client.post(f"/api/recordings/{rid}/jottings", json={"text": "no moment"}).status_code == 422
+
+
+def notes(client):
+    return [(n["title"], n["body"]) for n in client.get("/api/notifications").json()]
+
+
+def test_it_stops_itself_after_quiet_and_trims_the_silence(client, transcriber, monkeypatch):
+    monkeypatch.setattr(recordings, "QUIET_STOP", 5)  # 10 minutes in the app
+    import wave
+    heard = []
+    original = transcriber.file
+    transcriber.file = lambda path: (heard.append(wave.open(str(path)).getnframes() / SECOND), original(path))[1]
+    transcriber.segments = [{"start": 0.0, "end": 3.0, "text": "And that's all for today."}]
+    rid = start(client)
+    for seq in range(3):
+        send(client, rid, seq, tone(1))
+    codes = [send(client, rid, seq, silence(1)).status_code for seq in range(3, 12)]
+    assert codes[-1] == 409 and 200 in codes  # stopped once 5 s of silence had come
+    rec = wait_for(lambda: client.get(f"/api/recordings/{rid}").json(), lambda r: r["status"] == "done")
+    assert rec["transcript"][0]["text"] == "And that's all for today."
+    assert heard == [8.0]  # 3 s of sound + 5 s; the rest of the silence trimmed
+    assert notes(client)[-2][0].startswith("Stopped recording") and "quiet" in notes(client)[-2][1]
+
+
+def test_it_stops_when_audio_stops_coming_or_the_class_is_over(client, llm, clock, transcriber):
+    course = a_course(client, llm)
+    transcriber.segments = [{"start": 0.0, "end": 1.0, "text": "Hello."}]
+    lost = start(client)
+    send(client, lost, 0, tone(1))
+    clock.advance(minutes=29)
+    client.post("/api/scheduler/tick")
+    assert client.get(f"/api/recordings/{lost}").json()["status"] == "recording"  # 29 min: maybe the Wi-Fi, keep waiting
+    clock.advance(minutes=2)
+    client.post("/api/scheduler/tick")
+    wait_for(lambda: client.get(f"/api/recordings/{lost}").json(), lambda r: r["status"] == "done")
+    assert any("no audio arrived for 30 minutes" in b for _, b in notes(client))
+    # a class on now (the clock is 10:31 on a Wednesday): recording it stops 15 min after it ends at 11:00
+    client.post("/api/events", json={"title": "CS 259 class", "course_id": course, "start": "2026-09-28T10:00",
+                                     "end": "2026-09-28T11:00", "repeat": "MO,WE", "until": "2026-12-04"})
+    rid = start(client, course)
+    assert client.get(f"/api/recordings/{rid}").json()["ends_at"] == "2026-09-30T11:00"
+    clock.advance(minutes=45)  # 11:16
+    send(client, rid, 0, tone(1))  # audio is still coming in
+    client.post("/api/scheduler/tick")
+    wait_for(lambda: client.get(f"/api/recordings/{rid}").json(), lambda r: r["status"] == "done")
+    assert any("the class ended 15 minutes ago" in b for _, b in notes(client))

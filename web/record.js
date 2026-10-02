@@ -75,7 +75,7 @@ async function pump() {
       if (r.status === 409) {
         const d = (await r.json()).detail;
         if (typeof d?.next === "number") { rec.queue = rec.queue.filter(p => p.seq >= d.next); continue; }  // it has these already
-        rec.queue = [];  // stopped elsewhere
+        stoppedByThePC(typeof d === "string" ? d : "This recording has stopped.");  // auto-stop, or stopped on another device
         break;
       }
       if (!r.ok) throw new Error(String(r.status));
@@ -92,6 +92,16 @@ async function pump() {
     drawLive();
   }
   rec.pumping = false;
+}
+
+function stoppedByThePC(why) {
+  const id = rec.id;
+  releaseCapture();
+  rec.wake?.release().catch(() => {});
+  rec.pip?.close();
+  Object.assign(rec, { id: null, queue: [], lines: [], partial: "", pip: null });
+  toast(`${esc(why)} The transcript is on its way.`);
+  location.hash = `#lecture/${id}`;
 }
 
 async function keepAwake() {

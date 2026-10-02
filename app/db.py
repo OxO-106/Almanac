@@ -115,6 +115,7 @@ COLUMNS = [
     ("questions", "target", "text"),
     ("questions", "options", "text"),
     ("sources", "url", "text"),  # a course website read from its address (pages.py)
+    ("recordings", "ends_at", "text"),  # a Recording started during its class: the class's end (auto-stop 15 min after)
 ]
 
 # UCLA Registrar, Annual Academic Calendar 2026-27. Week 1 is the first Monday
