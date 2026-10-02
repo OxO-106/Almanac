@@ -297,8 +297,9 @@ views.record = async (arg) => {
   return `<div class="page">
     <header class="head"><h1>Record a lecture</h1>
       <p class="voice small">Captions while it runs, then a clean transcript; the audio is deleted once the transcript is written.</p></header>
-    ${open ? `<div class="notice">A recording from ${esc(fmtDay(open.date))}${open.course_id ? ` (${esc(courseName(open.course_id))})` : ""} is still open.
-      <div class="row-actions"><button class="btn small" onclick="resumeRecording(${open.id}, 'mic')">Resume with the microphone</button>
+    ${open ? `<div class="notice">A recording from ${esc(fmtDay(open.date))}${open.course_id ? ` (${esc(courseName(open.course_id))})` : ""} is running.
+      <div class="row-actions"><a class="btn primary small" href="#follow/${open.id}">Follow along</a>
+        <button class="btn small" onclick="resumeRecording(${open.id}, 'mic')">Resume here with the microphone</button>
         <button class="btn small" onclick="resumeRecording(${open.id}, 'device')">Resume with a tab's audio</button>
         <button class="btn quiet small" onclick="rec.id=${open.id}; stopRecording()">Stop it</button></div></div>` : ""}
     <form class="rec-start" onsubmit="event.preventDefault(); startRecording(this)">
@@ -314,5 +315,50 @@ views.record = async (arg) => {
     </form></div>`;
 };
 
+// ---- reading along on another device (the phone): Captions and Jottings, read-only ----
+
+const follow = { id: null, lines: [], timer: null, jottings: [], tick: 0 };
+
+views.follow = async (id) => {
+  id = Number(id);
+  const r = await api(`/api/recordings/${id}`);
+  await loadLookups();
+  if (r.status !== "recording") return `<div class="page"><p class="voice">This recording has stopped. <a href="#lecture/${id}">Open the lecture</a>.</p></div>`;
+  if (follow.id !== id) Object.assign(follow, { id, lines: [], jottings: r.jottings, tick: 0 });
+  clearTimeout(follow.timer);
+  setTimeout(pollFollow);
+  return `<div class="page wide">
+    <header class="head"><div class="dateline">${r.course_id ? esc(courseName(r.course_id)) : "Lecture"}${r.kind_name ? ` · ${esc(r.kind_name)}` : ""}</div>
+      <div class="rec-bar"><span id="follow-status"><span class="rec-dot"></span>Following along</span></div></header>
+    <div class="rec-layout">
+      <section><h2>Captions <span class="meta">read-only; recording on another device</span></h2><div class="captions" id="follow-captions"></div></section>
+      <section><h2>Jottings</h2><div class="jottings" id="follow-jottings"></div></section>
+    </div></div>`;
+};
+
+async function pollFollow() {
+  clearTimeout(follow.timer);
+  if (!location.hash.startsWith(`#follow/${follow.id}`)) return;  // left the page
+  try {
+    const s = await api(`/api/recordings/${follow.id}/live?since=${follow.lines.length}`);
+    if (s.stopped) { render(); return; }
+    follow.lines.push(...s.lines);
+    if (follow.tick++ % 4 === 0) follow.jottings = (await api(`/api/recordings/${follow.id}`)).jottings;  // every few seconds
+    const box = $("#follow-captions");
+    if (box) {
+      const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+      box.innerHTML = follow.lines.map(l => `<p><span class="ts">${mmss(l.start)}</span><span>${esc(l.text)}</span></p>`).join("")
+        + (s.partial ? `<p class="partial"><span class="ts"></span><span>${esc(s.partial)}</span></p>` : "")
+        || `<p class="empty">${s.captions_error ? `Captions aren't available: ${esc(s.captions_error)}` : "Captions appear here as the lecture goes."}</p>`;
+      if (atBottom) box.scrollTop = box.scrollHeight;
+      $("#follow-status").innerHTML = `<span class="rec-dot"></span>Following along · ${mmssLong(s.seconds)}`;
+    }
+    const jb = $("#follow-jottings");
+    if (jb) jb.innerHTML = follow.jottings.map(j => `<div class="jotting"><span class="ts">${mmss(j.at)}</span>
+      <span class="what">${j.text ? esc(j.text) : `<i class="mark">Marked</i>`}</span></div>`).join("") || `<p class="empty">No jottings yet.</p>`;
+  } catch { /* the PC is unreachable for a moment: try again */ }
+  follow.timer = setTimeout(pollFollow, 1500);
+}
+
 // app.js draws the first page on load; if that was #record before this file arrived, draw it now
-if (location.hash.startsWith("#record")) render();
+if (/^#(record|follow)/.test(location.hash)) render();

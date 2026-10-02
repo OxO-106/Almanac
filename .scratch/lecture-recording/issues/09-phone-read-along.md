@@ -4,9 +4,11 @@
 
 **Blocked by:** 05
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Captions on the phone keep up with the recording device within a couple of seconds
-- [ ] The phone can't stop, pause or edit the Recording
+- [x] Captions on the phone keep up with the recording device within a couple of seconds
+- [x] The phone can't stop, pause or edit the Recording
 
 ## Comments
+
+2026-10-02. While a Recording runs, Record on any other device offers "Follow along" (`#follow/<id>`): its Captions and provisional line, and its Jottings, polled every 1.5 s (`/api/recordings/{id}/live`), no controls. When it stops, the view says so and links to the lecture. Checked in two browser tabs, the follower at phone size: captions and a Jotting typed on the recorder showed up; the follower was about 1 s behind (0:41 vs 0:42); stopping on the recorder turned the follower into "This recording has stopped. Open the lecture."

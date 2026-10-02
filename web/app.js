@@ -1162,7 +1162,7 @@ async function drawView(n) {
 
 let seenVersion = null;
 const planVersion = () => api("/api/version").then(r => r.v).catch(() => seenVersion);
-const busy = () => !!(sending || location.hash.startsWith("#record") || $("#say")?.value ||$("#editor")?.open || ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName));
+const busy = () => !!(sending || /^#(record|follow)/.test(location.hash) || $("#say")?.value ||$("#editor")?.open || ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName));
 
 async function stayCurrent() {
   if (document.visibilityState !== "visible" || seenVersion === null) return;
