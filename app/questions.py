@@ -85,7 +85,9 @@ def answer(con, llm, clock, question_id, text, reply: Reply):
     else:  # date, other
         filled += _dates(con, llm, clock, q, targets, text, reply)
         if purpose == "other" and not filled:
-            reply.read(f"(You asked: {q['text']})\n{text}")  # e.g. "October 21st": find or add the one-pager
+            about = con.execute("select about from sources where id = ?", (q["source_id"],)).fetchone() if q.get("source_id") else None
+            course = f" about {about['about'].split(':')[0]}" if about and about["about"] else ""
+            reply.read(f"(You asked{course}: {q['text']})\n{text}")  # e.g. "October 21st": find or add the one-pager
     n = len(held)
     if n or filled:
         reply.say((f"Updated {'; '.join(filled)}." if filled else "") + (" " if filled and n else "") +

@@ -133,14 +133,27 @@ def test_an_ellipsis_may_skip_a_table_rows_cells_but_not_whole_rows(client, llm)
     assert [d["title"] for d in src["dropped"]] == ["Final project report"]
 
 
-def test_a_task_with_no_date_or_lecture_is_left_out(client, llm):
-    # "Read papers before lectures" is an instruction, not something to plan.
+def test_a_task_with_no_date_or_lecture_is_left_out_and_asked_about(client, llm):
+    # "Read papers before lectures" is likely an instruction, not something to plan: not
+    # suggested, but asked about, since only the student knows
     llm.replies = [course_reply([]), items_reply(item(kind="task", title="Read papers before lectures",
                                                       quote="Select a paper", when={"type": "unknown"}))]
     src = upload(client, "cs239.txt", SYLLABUS.encode())
     box = inbox(client)
-    assert box["proposals"] == [] and box["questions"] == []
+    assert box["proposals"] == []
+    assert [(q["text"], q["purpose"]) for q in box["questions"]] == [
+        ("I couldn't place “Read papers before lectures”: the document doesn't say when. Is it something you need to do? If so, when?", "other")]
     assert [(d["title"], d["reason"]) for d in src["dropped"]] == [("Read papers before lectures", "no date or lecture stated")]
+
+
+def test_several_left_out_things_are_one_question(client, llm):
+    llm.replies = [course_reply([]), items_reply(
+        item(kind="task", title="Read papers before lectures", quote="Select a paper", when={"type": "unknown"}),
+        item(kind="deadline", title="Peer review", quote="Peer review is due after the final", when={"type": "unknown"}))]
+    upload(client, "cs239.txt", SYLLABUS.encode())
+    texts = [q["text"] for q in inbox(client)["questions"]]
+    assert "I couldn't place 2 things, even on a second look: “Peer review”; “Read papers before lectures”. " \
+           "Do you need to do any of them? If so, tell me which and when." in texts
 
 
 READINGS = """Course Schedule

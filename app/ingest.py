@@ -722,6 +722,16 @@ def _ask_readings(con, clock, source_id, made):
             con.execute("update proposals set question_id = ? where id = ? and status = 'pending'", (q["id"], p["id"]))
 
 
+def ask_left_out(con, clock, source_id, dropped):
+    """What's still left out after the second look is asked about, not just
+    listed: the student says whether it's theirs and when (read like chat).
+    Drafted questions whose quote didn't check out aren't asked again."""
+    items = [(d["title"], d.get("reason")) for d in dropped if d.get("kind") != "course" and not d["title"].rstrip().endswith("?")]
+    if items:
+        quote = next((d.get("quote") for d in dropped if d.get("quote")), None) if len(items) == 1 else None
+        inbox.ask(con, clock, source_id, asks.left_out(items), quote, "other")
+
+
 def _ask_slots(con, clock, source_id, slots):
     """For each slot choice with two or more dates: hold the dates and ask which
     one is the student's, with the dates as buttons. The others are dropped."""
@@ -843,7 +853,7 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
         if (row := row_quote(x.get("quote"), text)):
             x["quote"] = row  # "Wed Oct 21 Proposal one-pager" → "Wed Oct 21 … Proposal one-pager"
             return True
-        dropped.append({"title": title, "quote": x.get("quote"), "reason": "quote not found in the document"})
+        dropped.append({"title": title, "quote": x.get("quote"), "reason": "quote not found in the document", "kind": "course"})
         return False
 
     # Pass A: which course(s). Reuse a known Course (same number and instructor).
@@ -1071,6 +1081,7 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
 
     with WRITE:
         con.execute("update sources set dropped = ? where id = ?", (json.dumps(dropped), source_id))
+    ask_left_out(con, clock, source_id, dropped)
 
 
 HEADING_LINES = 15  # how far above an item its date heading may be (one table row)

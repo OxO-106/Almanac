@@ -34,5 +34,18 @@ def read_each(course, n):
             f"Should I add a task to read each one the day before its class?")
 
 
+def left_out(items):
+    """items: (title, reason) the reader couldn't place even on a second look."""
+    why = {"no date or lecture stated": "the document doesn't say when",
+           "quote not found in the document": "I couldn't find where the document says it"}
+    if len(items) == 1:
+        title, reason = items[0]
+        return (f"I couldn't place “{title}”: {why.get(reason, reason)}. "
+                f"Is it something you need to do? If so, when?")
+    listed = "; ".join(f"“{t}”" for t, _ in items)
+    return (f"I couldn't place {len(items)} things, even on a second look: {listed}. "
+            f"Do you need to do any of them? If so, tell me which and when.")
+
+
 def which_slot(title, labels):
     return f"Which day is your “{title}”: {' or '.join(labels)}?"

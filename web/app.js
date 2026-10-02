@@ -534,7 +534,7 @@ const uploadRow = s => {
   const status = s.status === "processing" ? `<span class="spin"></span> reading…` : s.status === "failed" ? `<span class="bad">couldn't read it</span>` : "read";
   // what's still left out after a second look, each with why
   const why = { "quote not found in the document": "I couldn't find it in the document", "no date or lecture stated": "the document doesn't say when" };
-  const dropped = s.dropped.length ? `<details class="upload-note"><summary>${s.dropped.length} thing${s.dropped.length > 1 ? "s" : ""} I left out, even on a second look</summary>
+  const dropped = s.dropped.length ? `<details class="upload-note"><summary>${s.dropped.length} thing${s.dropped.length > 1 ? "s" : ""} I couldn't place, even on a second look. I've asked you in <a href="#chat">Chat</a></summary>
     <ul>${s.dropped.map(d => `<li>${esc(d.title)}: ${esc(why[d.reason] || d.reason || "")}${d.quote ? ` (“${esc(d.quote)}”)` : ""}</li>`).join("")}</ul></details>` : "";
   const name = s.url ? `<a class="name" href="${esc(s.url)}" target="_blank" rel="noopener" title="${esc(s.url)}">${esc(s.title)}</a>`
     : `<span class="name">${esc(s.title)}</span>`;
