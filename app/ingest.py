@@ -120,6 +120,12 @@ The quote must contain the date you report. When the date is in a heading or tab
 - "choice": one thing that happens on one of several dates, depending on the slot the student signs up for or is assigned (e.g. presentations split over two class days). One item, with each date as an entry in "options" ({"when", "quote"}); not one item per date.
 Do not list regular lectures, grading percentages, or policies."""
 
+READINGS_PROMPT = RULES + """
+Task: the schedule below lists readings (papers, chapters) under class dates. List every reading in it, one per item, titled exactly as the document writes it (join a title broken across lines; copy it word for word). Not session topics or headings ("Model Architecture: Modern Attention Mechanism", "Agents: Coding Agents"), deliverables, links ("Docs, Code"), or "No class" rows."""
+
+READINGS_SCHEMA = {"type": "object", "properties": {"readings": {"type": "array", "items": {"type": "object", "properties": {
+    "title": {"type": "string"}}, "required": ["title"]}}}, "required": ["readings"]}
+
 WHEN = {"type": "object", "properties": {
     "type": {"type": "string", "enum": ["date", "datetime", "week", "relative", "weekday", "in_days", "unknown"]},
     "next_week": {"type": "boolean"}, "days": {"type": "integer"},
@@ -652,6 +658,63 @@ def _find_slots(items, resolved, keep):
                 items[i]["slot"] = "same:" + " ".join(sorted(words))
 
 
+READING_WORDS = re.compile(r"\b(readings?|reading list|papers?)\b", re.I)
+READING_REACH = 150  # words from a class date to the last reading listed under it
+
+
+def _listed_readings(llm, context, text, today, term) -> list[dict]:
+    """Readings a schedule lists under class dates, as tasks dated by the class
+    (the day before is set in _settle). The model names the titles; code finds
+    each one in the document and the date heading above it, so a title that
+    isn't in the document, or isn't under a date, is not planned."""
+    heads = [m for m in DATE_HEADING.finditer(text) if m.group("month")]
+    if len(heads) < 2 or not READING_WORDS.search(text):
+        return []
+    schedule = text[heads[0].start():]
+    titles = []
+    for part in chunks(schedule):
+        try:
+            titles += [r["title"] for r in _ask_model(llm, READINGS_PROMPT, READINGS_SCHEMA, context, part)["readings"]]
+        except Exception:
+            continue
+    words = _words(text)
+    at = []  # (word index, heading, when) for each date heading
+    for m in heads:
+        month = next(i for i, name in enumerate(MONTHS, 1) if m.group("month").lower()[:3] == name[:3])
+        heading = m.group(0).strip(" \t-•*·")
+        at.append((len(_words(text[:m.start()])), heading, {"type": "date", "month": month, "day": int(m.group("day"))}))
+    out, seen = [], set()
+    for title in titles:
+        # "… Attention Architecture Paper": the next cell ("Paper Registration") ran in
+        title = re.sub(r"\s+paper$", "", re.sub(r"\s+", " ", (title or "").strip()), flags=re.I)
+        q = _words(title)
+        if len(q) < 2 or tuple(q) in seen:
+            continue
+        start = next((s for s in range(len(words)) if _match_at(q, words, s) != -1), None)
+        under = [h for h in at if start is not None and h[0] <= start]
+        if not under or start - under[-1][0] > READING_REACH:
+            continue
+        seen.add(tuple(q))
+        _, heading, when = under[-1]
+        out.append({"kind": "task", "title": capitalize(f"Read {title}"), "quote": f"{heading} … {title}",
+                    "when": when, "_listed": True})
+    return out
+
+
+def _ask_readings(con, clock, source_id, made):
+    """The schedule's readings are suggested held, with one question: does the
+    student read them all (for a seminar where each student presents one, they
+    may only read their own)."""
+    if not made:
+        return
+    about = con.execute("select about from sources where id = ?", (source_id,)).fetchone()["about"] or ""
+    q = inbox.ask(con, clock, source_id, asks.read_each(about.split(":")[0].split(";")[0].strip(), len(made)), None, "choice",
+                  None, [{"label": "Yes", "adds": [p["id"] for p in made]}, {"label": "No", "adds": []}])
+    with WRITE:
+        for p in made:
+            con.execute("update proposals set question_id = ? where id = ? and status = 'pending'", (q["id"], p["id"]))
+
+
 def _ask_slots(con, clock, source_id, slots):
     """For each slot choice with two or more dates: hold the dates and ask which
     one is the student's, with the dates as buttons. The others are dropped."""
@@ -711,7 +774,8 @@ def _settle(items, text, today, term, lectures):
                     known.setdefault(it["title"].lower(), resolved[i].value)
     lecture_days = {d for d, _ in lectures.values()}
     for i, it in enumerate(items):
-        if it["kind"] == "task" and resolved[i].value and resolved[i].value[:10] in lecture_days \
+        if it["kind"] == "task" and resolved[i].value and "_fixed" not in it \
+                and (resolved[i].value[:10] in lecture_days or it.get("_listed")) \
                 and re.match(r"(read|review|skim)\b", it["title"], re.I):
             # dated by its lecture's row: read it the day before
             day = date.fromisoformat(resolved[i].value[:10]) - timedelta(days=1)
@@ -869,6 +933,15 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
                     items.append(x)
         resolved, keep_items, undated = _settle(items, text, today, term, lectures)
 
+    # Step 4b, the reading list: a schedule that lists papers under class dates
+    # ("Readings are listed by lecture date") but that the item pass read as topics
+    # (or as papers to present) is read for its readings alone. Code finds the
+    # class each title sits under; each reading is due the day before.
+    if not any(it["kind"] == "task" and re.match(r"read\b", it["title"], re.I) for it in items):
+        if listed := _listed_readings(llm, context, text, today, term):
+            items += listed
+            resolved, keep_items, undated = _settle(items, text, today, term, lectures)
+
     # Second look: what was left out (quote not found, or no date) goes back to
     # the model once, for the exact passage and its date. Whatever checks out
     # is planned like everything else; the rest is listed as left out.
@@ -946,7 +1019,7 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
     for d in range(len(drafts)):
         ask_draft(d)
 
-    no_class, slots = [], {}
+    no_class, slots, readings = [], {}, []
     for i in keep_items:
         it = items[i]
         if i in weekly_ids and (wk := weekly(it["quote"])):
@@ -969,7 +1042,10 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
                 inbox.add_target(con, q["id"], made["id"])
         if made and it.get("slot") and resolved[i].value:
             slots.setdefault(it["slot"], []).append((made, resolved[i].value, it["title"]))
+        if made and it.get("_listed"):
+            readings.append(made)
     _ask_slots(con, clock, source_id, slots)
+    _ask_readings(con, clock, source_id, readings)
 
     for course, short, m in meetings:
         office = m.get("type") == "office_hours"

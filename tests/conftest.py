@@ -30,6 +30,7 @@ class FakeLLM:
         self.ready = True
         self.replies = []
         self.rows = []
+        self.readings = []
         self.requests = []
 
     def status(self):
@@ -42,6 +43,9 @@ class FakeLLM:
         if "which the first reading found nothing in" in messages[0]["content"]:
             # the schedule-row coverage pass: tests script it with llm.rows
             return self.rows.pop(0) if self.rows else json.dumps({"items": []})
+        if "lists readings (papers, chapters) under class dates" in messages[0]["content"]:
+            # the reading-list pass: tests script it with llm.readings
+            return self.readings.pop(0) if self.readings else json.dumps({"readings": []})
         if not self.replies and schema:
             # passes a test doesn't script: the questions pass, chat actions
             for key in ("questions", "actions"):

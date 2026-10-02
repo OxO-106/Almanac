@@ -295,3 +295,35 @@ def test_the_open_ended_slot_question_is_not_asked_beside_the_one_with_buttons(c
     upload(client, "ding.txt", doc.encode())
     assert sorted(q["text"] for q in inbox(client)["questions"]) == [
         "Which day is your “Final project report”: Mon Nov 30 or Wed Dec 2?", "Which team are you on?"]
+
+
+def test_a_reading_list_by_class_date_becomes_readings_the_day_before(client, llm):
+    doc = ("Instructor: Robin Ding\nEach student will present one paper from the course reading list.\nSchedule\nReadings are listed by lecture date.\n"
+           "Mon Oct 5\nModel Architecture:\nModern Attention\nGQA: Training Generalized\nMulti-Query Transformer\n"
+           "Wed Oct 7\nLanguage Modeling\nScaling Laws for Neural\nLanguage Models\nWed Oct 14\nCourse project proposal\n")
+    proposal = item(kind="deadline", title="Course project proposal", quote="Wed Oct 14 Course project proposal",
+                    when={"type": "date", "month": 10, "day": 14})
+    llm.replies = [course(number="CS 239", instructor="Robin Ding", quote="Instructor: Robin Ding"), items_reply(proposal)]
+    llm.readings = [json.dumps({"readings": [{"title": "GQA: Training Generalized Multi-Query Transformer"},
+                                             {"title": "Scaling Laws for Neural Language Models"},
+                                             {"title": "A paper the model made up"}]})]
+    upload(client, "ding.txt", doc.encode())
+    got = props(client)
+    gqa, scaling = got["Read GQA: Training Generalized Multi-Query Transformer"], got["Read Scaling Laws for Neural Language Models"]
+    assert (data(gqa)["due"], data(scaling)["due"]) == ("2026-10-04", "2026-10-06")
+    assert not any("made up" in s for s in got)
+    question = "The CS 239 · Robin Ding schedule lists 2 readings by class date. Should I add a task to read each one the day before its class?"
+    assert gqa["blocked_by"] == question
+    assert client.get("/api/chat").json()["current"]["options"] == ["Yes", "No"]
+    client.post("/api/chat", json={"text": "Yes"})
+    assert props(client)["Read GQA: Training Generalized Multi-Query Transformer"]["blocked_by"] is None
+
+
+def test_no_to_the_reading_list_leaves_the_readings_out(client, llm):
+    doc = "Instructor: Robin Ding\nSchedule\nReadings are listed by lecture date.\nMon Oct 5\nGQA: Training Generalized\nMulti-Query Transformer\nWed Oct 7\nOverview\n"
+    llm.replies = [course(number="CS 239", instructor="Robin Ding", quote="Instructor: Robin Ding"), items_reply()]
+    llm.readings = [json.dumps({"readings": [{"title": "GQA: Training Generalized Multi-Query Transformer"}]})]
+    upload(client, "ding.txt", doc.encode())
+    assert client.get("/api/chat").json()["current"]["options"] == ["Yes", "No"]
+    client.post("/api/chat", json={"text": "No"})
+    assert not any(s.startswith("Read") for s in props(client))

@@ -29,5 +29,10 @@ def paper_pages(title):
     return f"How many pages is the paper for “{title}”?"
 
 
+def read_each(course, n):
+    return (f"The {course} schedule lists {n} reading{'s' if n != 1 else ''} by class date. "
+            f"Should I add a task to read each one the day before its class?")
+
+
 def which_slot(title, labels):
     return f"Which day is your “{title}”: {' or '.join(labels)}?"

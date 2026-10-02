@@ -18,9 +18,20 @@ def _words(title):
     return set(ingest._words(title)) - ingest.STOP
 
 
+READING = re.compile(r"\s*(read|review|skim)\b", re.I)
+READING_WORDS = {"read", "review", "skim", "paper", "chapter"}
+
+
 def _same(a_title, b_title) -> bool:
     a, b = _words(a_title), _words(b_title)
-    return bool(a and b) and len(a & b) / min(len(a), len(b)) >= 0.5
+    need = 0.5
+    if READING.match(a_title) and READING.match(b_title):
+        # two papers for one class share words ("Language Models"): the shorter
+        # title must be nearly all in the longer ("Read the ReAct paper")
+        # ("Read P5. SWE-agent": the list's number isn't in the other title)
+        a, b = ({w for w in x - READING_WORDS if not re.fullmatch(r"p\d+", w)} for x in (a, b))
+        need = 0.8
+    return bool(a and b) and len(a & b) / min(len(a), len(b)) >= need
 
 
 def _compatible(a, b) -> bool:

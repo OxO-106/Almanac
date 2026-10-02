@@ -85,6 +85,40 @@
         ],
         "date": "2026-12-02",
         "quote": "Wed Dec 2 Final project report"
+      },
+      {
+        "all": [
+          "read",
+          "gqa"
+        ],
+        "date": "2026-10-04",
+        "quote": "Mon Oct 5 ... gqa (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "megatron",
+          "parallelism"
+        ],
+        "date": "2026-10-20",
+        "quote": "Wed Oct 21 ... megatron parallelism (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "efficient",
+          "clusters"
+        ],
+        "date": "2026-10-20",
+        "quote": "Wed Oct 21 ... efficient clusters (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "sglang"
+        ],
+        "date": "2026-11-08",
+        "quote": "Mon Nov 9 ... sglang (read the day before)"
       }
     ],
     "allowed": [
@@ -117,6 +151,302 @@
           "proposal|report|mid|final|present|paper|team"
         ],
         "date": null
+      },
+      {
+        "all": [
+          "read",
+          "native",
+          "sparse"
+        ],
+        "date": "2026-10-04",
+        "quote": "Mon Oct 5 ... native sparse (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "gated",
+          "delta"
+        ],
+        "date": "2026-10-04",
+        "quote": "Mon Oct 5 ... gated delta (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "kimi"
+        ],
+        "date": "2026-10-04",
+        "quote": "Mon Oct 5 ... kimi (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "scaling",
+          "laws"
+        ],
+        "date": "2026-10-06",
+        "quote": "Wed Oct 7 ... scaling laws (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "compute-optimal"
+        ],
+        "date": "2026-10-06",
+        "quote": "Wed Oct 7 ... compute-optimal (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "naturalness"
+        ],
+        "date": "2026-10-06",
+        "quote": "Wed Oct 7 ... naturalness (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "evaluating",
+          "large"
+        ],
+        "date": "2026-10-06",
+        "quote": "Wed Oct 7 ... evaluating large (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "lora"
+        ],
+        "date": "2026-10-11",
+        "quote": "Mon Oct 12 ... lora (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "outrageously"
+        ],
+        "date": "2026-10-11",
+        "quote": "Mon Oct 12 ... outrageously (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "switch",
+          "transformers"
+        ],
+        "date": "2026-10-11",
+        "quote": "Mon Oct 12 ... switch transformers (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "textbooks"
+        ],
+        "date": "2026-10-18",
+        "quote": "Mon Oct 19 ... textbooks (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "wizardlm"
+        ],
+        "date": "2026-10-18",
+        "quote": "Mon Oct 19 ... wizardlm (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "magicoder"
+        ],
+        "date": "2026-10-18",
+        "quote": "Mon Oct 19 ... magicoder (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "zero",
+          "memory"
+        ],
+        "date": "2026-10-20",
+        "quote": "Wed Oct 21 ... zero memory (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "zero-infinity"
+        ],
+        "date": "2026-10-20",
+        "quote": "Wed Oct 21 ... zero-infinity (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "memgpt"
+        ],
+        "date": "2026-10-25",
+        "quote": "Mon Oct 26 ... memgpt (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "crosscodeeval"
+        ],
+        "date": "2026-10-25",
+        "quote": "Mon Oct 26 ... crosscodeeval (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "swe-bench"
+        ],
+        "date": "2026-10-25",
+        "quote": "Mon Oct 26 ... swe-bench (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "react"
+        ],
+        "date": "2026-10-27",
+        "quote": "Wed Oct 28 ... react (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "reflexion"
+        ],
+        "date": "2026-10-27",
+        "quote": "Wed Oct 28 ... reflexion (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "openhands"
+        ],
+        "date": "2026-10-27",
+        "quote": "Wed Oct 28 ... openhands (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "swe-agent"
+        ],
+        "date": "2026-11-01",
+        "quote": "Mon Nov 2 ... swe-agent (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "pagedattention"
+        ],
+        "date": "2026-11-01",
+        "quote": "Mon Nov 2 ... pagedattention (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "fast",
+          "inference"
+        ],
+        "date": "2026-11-15",
+        "quote": "Mon Nov 16 ... fast inference (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "multi-token"
+        ],
+        "date": "2026-11-15",
+        "quote": "Mon Nov 16 ... multi-token (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "dspark"
+        ],
+        "date": "2026-11-15",
+        "quote": "Mon Nov 16 ... dspark (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "dflash"
+        ],
+        "date": "2026-11-15",
+        "quote": "Mon Nov 16 ... dflash (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "deepseek-r1"
+        ],
+        "date": "2026-11-17",
+        "quote": "Wed Nov 18 ... deepseek-r1 (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "on-policy",
+          "distillation"
+        ],
+        "date": "2026-11-17",
+        "quote": "Wed Nov 18 ... on-policy distillation (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "self-distilled"
+        ],
+        "date": "2026-11-17",
+        "quote": "Wed Nov 18 ... self-distilled (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "cybergym"
+        ],
+        "date": "2026-11-22",
+        "quote": "Mon Nov 23 ... cybergym (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "exploitgym"
+        ],
+        "date": "2026-11-22",
+        "quote": "Mon Nov 23 ... exploitgym (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "ctf-dojo"
+        ],
+        "date": "2026-11-22",
+        "quote": "Mon Nov 23 ... ctf-dojo (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "cve-factory"
+        ],
+        "date": "2026-11-22",
+        "quote": "Mon Nov 23 ... cve-factory (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "vero"
+        ],
+        "date": "2026-11-24",
+        "quote": "Wed Nov 25 ... vero (read the day before)"
+      },
+      {
+        "all": [
+          "read",
+          "aristotle"
+        ],
+        "date": "2026-11-24",
+        "quote": "Wed Nov 25 ... aristotle (read the day before)"
       }
     ],
     "questions": [
@@ -483,7 +813,7 @@
   "26F-COM SCI-269-SEM-3 Seminar_ Current Topics in Artificial Intelligence (cross-listed).pdf": {
     "courses": [
       {
-        "number": "COM SCI 269",
+        "number": "CS 269",
         "instructor": "Stefano Soatto"
       }
     ],

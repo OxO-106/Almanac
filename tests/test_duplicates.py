@@ -19,6 +19,12 @@ def test_the_rule():
     # a weekly class is not a one-off on one of its days
     assert not s("events", {"title": "CS 239 class", "start": "2026-09-28T16:00", "repeat": "MO,WE"},
                  "events", {"title": "CS 239 class", "start": "2026-09-28T16:00"})
+    # two papers for the same class are two readings; the same paper said shorter is one
+    read = lambda t: {"title": t, "due": "2026-10-20"}
+    assert not s("tasks", read("Read Megatron-LM: Training Multi-Billion Parameter Language Models Using Model Parallelism"),
+                 "tasks", read("Read Efficient Large-Scale Language Model Training on GPU Clusters Using Megatron-LM"))
+    assert not s("tasks", read("Read Scaling Laws for Neural Language Models"), "tasks", read("Read Training Compute-Optimal Large Language Models"))
+    assert s("tasks", read("Read P2. ReAct: Synergizing Reasoning and Acting in Language Models"), "tasks", read("Read the ReAct paper"))
 
 
 def test_bruin_learn_or_chat_adding_a_due_item_fills_in_the_session_instead(client):
