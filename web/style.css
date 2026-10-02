@@ -358,3 +358,7 @@ dialog .why { font: italic 15px/1.45 var(--serif); color: var(--muted); margin: 
 .site-form { display: flex; gap: 8px; margin: 10px 0 4px; }
 .site-form input { flex: 1; min-width: 0; font: 14px var(--sans); color: var(--ink); background: var(--ground); border: 1px solid var(--btn-line); border-radius: 8px; padding: 7px 9px; }
 .upload a.name { color: inherit; text-decoration: underline; text-decoration-color: var(--line, currentColor); text-underline-offset: 2px; }
+
+.transcript p { margin: 0 0 12px; line-height: 1.6; display: flex; gap: 12px; }
+.transcript .ts { flex: none; width: 44px; font: 12px var(--sans); color: var(--muted); padding-top: 4px; font-variant-numeric: tabular-nums; }
+.unclear { text-decoration: underline dotted var(--muted); text-underline-offset: 3px; cursor: help; }

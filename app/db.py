@@ -54,6 +54,13 @@ create table if not exists notifications (id integer primary key autoincrement, 
   url text, created_at text not null);
 create table if not exists briefings (date text primary key, data text not null);
 create table if not exists catchup (id integer primary key autoincrement, text text not null, consumed integer not null default 0);
+-- A lecture Recording (app/recordings.py). Its audio is a temporary file, never a column;
+-- `pending` holds the uncleaned text only between transcription and clean-up (ADR 0001).
+create table if not exists recordings (
+  id integer primary key autoincrement, source_id integer references sources on delete set null,
+  course_id integer references courses on delete set null, date text not null, kind text,
+  status text not null, error text, seconds real, pending text, transcript text, jottings text,
+  created_at text not null);
 create table if not exists chat_summaries (id integer primary key autoincrement, upto integer not null, text text not null, created_at text not null);
 create table if not exists chat_messages (
   id integer primary key autoincrement, role text not null, text text not null, question_id integer references questions on delete set null,

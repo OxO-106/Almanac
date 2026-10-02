@@ -48,7 +48,7 @@ class FakeLLM:
             return self.readings.pop(0) if self.readings else json.dumps({"readings": []})
         if not self.replies and schema:
             # passes a test doesn't script: the questions pass, chat actions
-            for key in ("questions", "actions"):
+            for key in ("questions", "actions", "segments"):
                 if key in schema.get("properties", {}):
                     return json.dumps({key: []})
         return self.replies.pop(0)
@@ -59,6 +59,26 @@ class FakeLLM:
         half = len(text) // 2
         yield text[:half]
         yield text[half:]
+
+
+class FakeTranscriber:
+    """Parakeet's stand-in: `segments` is what the next file transcribes to."""
+    def __init__(self):
+        self.segments, self.seconds, self.files, self.error = [], 0.0, [], None
+
+    def file(self, path):
+        self.files.append(path)
+        if self.error:
+            raise RuntimeError(self.error)
+        return [dict(s) for s in self.segments], self.seconds
+
+    def window(self, pcm16):
+        return ""
+
+
+@pytest.fixture
+def transcriber():
+    return FakeTranscriber()
 
 
 @pytest.fixture
@@ -72,7 +92,7 @@ def llm():
 
 
 @pytest.fixture
-def client(tmp_path, clock, llm):
-    app = create_app(db_path=tmp_path / "almanac.db", llm=llm, clock=clock)
+def client(tmp_path, clock, llm, transcriber):
+    app = create_app(db_path=tmp_path / "almanac.db", llm=llm, clock=clock, transcriber=transcriber)
     with TestClient(app) as c:
         yield c

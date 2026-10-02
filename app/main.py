@@ -5,13 +5,14 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import canvas, chat, checkins, db, dev, goals, inbox, ingest, note, overviews, plan, planner, push, scheduler, timers  # noqa: F401 (checkins registers jobs)
+from . import canvas, chat, checkins, db, dev, goals, inbox, ingest, note, overviews, plan, planner, push, recordings, scheduler, timers  # noqa: F401 (checkins registers jobs)
 from .clock import SystemClock, local
 from .config import DB_PATH, WEB_DIR
 from .llm import DEFAULT_READER, Ollama
+from .transcriber import Parakeet
 
 
-def create_app(db_path: Path = DB_PATH, llm=None, clock=None) -> FastAPI:
+def create_app(db_path: Path = DB_PATH, llm=None, clock=None, transcriber=None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app):
         # Real time only: tests move a fake clock and tick by hand.
@@ -28,6 +29,8 @@ def create_app(db_path: Path = DB_PATH, llm=None, clock=None) -> FastAPI:
     app.state.reader = llm or Ollama(lambda: db.settings(con), "reader_model", DEFAULT_READER)
     app.state.clock = clock or SystemClock()
     app.state.fetch = canvas.fetch_url  # tests swap in a fake feed
+    app.state.transcriber = transcriber or Parakeet()  # speech to text for Recordings; tests use a fake
+    recordings.recover(con, app.state.db_path.parent / "recording-audio")
 
     @app.get("/api/version")
     def version(request: Request):
@@ -58,6 +61,7 @@ def create_app(db_path: Path = DB_PATH, llm=None, clock=None) -> FastAPI:
     app.include_router(inbox.router)  # before plan's catch-all /api/{kind}
     app.include_router(ingest.router)
     app.include_router(chat.router)
+    app.include_router(recordings.router)
     app.include_router(planner.router)
     app.include_router(goals.router)
     app.include_router(scheduler.router)

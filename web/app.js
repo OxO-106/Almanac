@@ -837,7 +837,8 @@ views.course = async (id) => {
   await loadLookups();
   const c = lookups.courses.find(c => c.id === id);
   if (!c) return `<div class="page"><p class="empty">That course isn't in your plan.</p></div>`;
-  const [deadlines, tasks, events, projects] = await Promise.all(["deadlines", "tasks", "events", "projects"].map(k => api(`/api/${k}?course_id=${id}`)));
+  const [deadlines, tasks, events, projects, lectures] = await Promise.all(
+    ["deadlines", "tasks", "events", "projects", "recordings"].map(k => api(`/api/${k}?course_id=${id}`)));
   const t = await api("/api/today");
   const upcoming = [...deadlines.filter(d => d.due && d.due.slice(0, 10) >= t.date).map(d => ({ ...d, kind: "deadlines", at: d.due })),
                     ...events.filter(e => !e.repeat && e.start.slice(0, 10) >= t.date).map(e => ({ ...e, kind: "events", at: e.start })),
@@ -856,8 +857,65 @@ views.course = async (id) => {
         <a class="what" onclick='edit("${x.kind}", ${x.id})'>${x.kind === "deadlines" ? "Due: " : ""}${esc(x.title)}</a></div>`).join("") || `<p class="empty">Nothing coming up.</p>`}</section>
     ${projects.length ? `<section><h2>Projects</h2>${projects.map(p => `<div class="when-row"><span class="when">${p.deadline ? esc(fmtDay(p.deadline)) : ""}</span>
       <a class="what" onclick='edit("projects", ${p.id})'>${esc(p.title)}</a></div>`).join("")}</section>` : ""}
+    <section><div class="group-head"><h2>Lectures</h2>
+      <label class="btn small" title="A recording made with the laptop's recorder, a phone voice memo or a Zoom download">Upload a recording
+        <input type="file" accept="audio/*,video/*" hidden onchange="uploadRecording(${id}, this.files)"></label></div>
+      ${lectures.map(lectureRow).join("") || `<p class="empty">No lectures yet. Upload a recording, and I'll write it up as a clean transcript.</p>`}</section>
   </div>`;
 };
+
+// ---- Lectures (Recordings) ----------------------------------------------------
+
+const LECTURE_STATUS = { transcribing: "transcribing…", cleaning: "cleaning up the text…", failed: "couldn't transcribe" };
+const mmss = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+const lectureRow = r => `<div class="when-row"><span class="when">${esc(fmtDay(r.date))}</span>
+  <a class="what" href="#lecture/${r.id}">${r.status === "done" ? (r.transcript ? `${Math.round(r.seconds / 60)} min transcript` : "Transcript deleted")
+    : `${r.status === "failed" ? "" : `<span class="spin"></span> `}${esc(LECTURE_STATUS[r.status] || r.status)}`}</a></div>`;
+
+async function uploadRecording(courseId, files) {
+  const f = files[0];
+  if (!f) return;
+  const body = new FormData();
+  body.append("file", f);
+  // the lecture's date: when the file was made (a recording uploaded later is still that day's lecture)
+  const d = new Date(f.lastModified || Date.now()), day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const r = await fetch(`/api/recordings?course_id=${courseId}&date=${day}`, { method: "POST", body });
+  toast(r.ok ? `Transcribing ${esc(f.name)}. I'll let you know when the transcript is ready; the audio is deleted once it is.` : esc(detail(new Error(`${r.status} ${await r.text()}`))));
+  render();
+}
+
+// "[?]": a word the transcript isn't sure of, underlined rather than asked about
+const unclear = t => esc(t).replace(/(\S+) \[\?\]/g, `<span class="unclear" title="Not sure this was heard right">$1</span>`);
+
+views.lecture = async (id) => {
+  const r = await api(`/api/recordings/${id}`);
+  await loadLookups();
+  const course = lookups.courses.find(c => c.id === r.course_id);
+  const body = r.status === "done"
+    ? (r.transcript ? `<div class="transcript">${r.transcript.map(s => `<p><span class="ts">${mmss(s.start)}</span><span>${unclear(s.text)}</span></p>`).join("")}</div>`
+      : `<p class="empty">You deleted this transcript.</p>`)
+    : r.status === "failed" ? `<div class="notice">${esc(r.error || "Something went wrong.")}</div>
+        ${r.retry ? `<button class="btn small" onclick="retryLecture(${r.id})">Clean up again</button>` : ""}`
+    : `<p class="voice small"><span class="spin"></span> ${esc(LECTURE_STATUS[r.status])} This takes about a minute per 15 minutes of lecture.</p>`;
+  return `<div class="page">
+    <header class="head"><div class="dateline">${course ? `<a href="#course/${course.id}">${esc(course.number)} · ${esc(course.instructor)}</a>` : "Lecture"}</div>
+      <h1>${esc(fmtLong(r.date))}</h1>
+      ${r.status === "done" && r.transcript ? `<p class="voice small">${Math.round(r.seconds / 60)} minutes. Underlined words are ones I'm not sure were heard right.</p>
+        <div class="row-actions"><button class="btn quiet small" onclick="deleteTranscript(${r.id})">Delete transcript</button></div>` : ""}</header>
+    <section>${body}</section>
+  </div>`;
+};
+
+async function deleteTranscript(id) {
+  if (!confirm("Delete this transcript? The lecture stays in the list; the text can't be brought back (the audio is already gone).")) return;
+  await api(`/api/recordings/${id}/transcript`, { method: "DELETE" });
+  render();
+}
+
+async function retryLecture(id) {
+  try { await api(`/api/recordings/${id}/retry`, { method: "POST" }); } catch (e) { toast(esc(detail(e))); }
+  render();
+}
 
 // ---- Plan (everything, by kind) ------------------------------------------------
 
