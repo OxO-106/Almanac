@@ -265,3 +265,18 @@ def test_optional_readings_are_not_tasks(client, llm):
         item(kind="task", title="Read CodeAct", quote="CodeAct [Optional — team presentations]", when={"type": "unknown"}))]
     upload(client, "kim.txt", doc.encode())
     assert [p["summary"] for p in inbox(client)["proposals"] if p["summary"].startswith("Read")] == ["Read P5. SWE-agent"]
+
+
+def test_a_schedule_row_the_first_reading_missed_is_read_again(client, llm):
+    text = ("Wed Oct 7 Language Modeling\nFri Oct 9 No Class — Project Team List Due\n"
+            "Mon Oct 12 Model Architecture\nWed Oct 14 Course project proposal\n")
+    proposal = item(title="Course project proposal", quote="Wed Oct 14 Course project proposal", when={"type": "date", "month": 10, "day": 14})
+    llm.replies = [course(), items_reply(proposal)]  # the first reading misses the team list
+    llm.rows = [items_reply(item(title="Project team list", quote="Fri Oct 9 ... Project Team List Due",
+                                 when={"type": "date", "month": 10, "day": 9}))]
+    upload(client, "cs239.txt", text.encode())
+    assert data(props(client)["Project team list"])["due"] == "2026-10-09"
+    rows = next(r for r in llm.requests if "which the first reading found nothing in" in r["messages"][0]["content"])
+    sent = rows["messages"][-1]["content"]
+    assert "Project Team List Due" in sent
+    assert "Course project proposal" not in sent and "Language Modeling" not in sent  # covered, or nothing due

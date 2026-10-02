@@ -467,7 +467,7 @@ def test_what_was_left_out_gets_a_second_look(client, llm):
     assert got["Project check-in"]["due"] == "2026-11-12"
     assert got["Read UCLA's Academic Integrity Statement"]["due"] == "2026-10-02"  # "first week": by the end of Week 1
     assert [d["title"] for d in src["dropped"]] == ["Final exam"]
-    assert "Items:\n0. Project check-in" in llm.requests[2]["messages"][-1]["content"]
+    assert any("Items:\n0. Project check-in" in r["messages"][-1]["content"] for r in llm.requests)
 
 
 def test_weekly_meetings_are_read_from_the_text_when_the_model_reports_none(client, llm):

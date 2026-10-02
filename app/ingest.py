@@ -680,6 +680,8 @@ def _tidy(it):
         return None
     if it["kind"] == "task" and re.search(r"\boptional\b", it.get("quote") or "", re.I):
         return None  # optional readings are for whoever picks them, not tasks
+    if re.match(r"(suggested|optional)\b", it["title"], re.I) and it["kind"] in ("event", "deadline", "task"):
+        return None  # "Suggested team presentations": ideas to choose from, not the student's plan
     it["title"] = capitalize(it["title"].strip())
     if re.match(r"no class\b", it["title"], re.I):
         it["kind"] = "no_class"  # a day off, not something to do
@@ -694,7 +696,9 @@ def _settle(items, text, today, term, lectures):
     for rnd in ("absolute", "relative"):
         for i, it in enumerate(items):
             if ((it.get("when") or {}).get("type") == "relative") == (rnd == "relative"):
-                resolved[i] = resolve(it, today, term, known)
+                # a date found by a fallback (heading above, lecture table) is kept: running
+                # the fallback again would start from the quote it already extended
+                resolved[i] = it["_fixed"] if "_fixed" in it else resolve(it, today, term, known)
                 if resolved[i].value:
                     known.setdefault(it["title"].lower(), resolved[i].value)
     lecture_days = {d for d, _ in lectures.values()}
@@ -703,17 +707,19 @@ def _settle(items, text, today, term, lectures):
                 and re.match(r"(read|review|skim)\b", it["title"], re.I):
             # dated by its lecture's row: read it the day before
             day = date.fromisoformat(resolved[i].value[:10]) - timedelta(days=1)
-            resolved[i] = When(day.isoformat())
+            resolved[i] = it["_fixed"] = When(day.isoformat())
             continue
         if resolved[i].value or (it.get("when") or {}).get("type") == "relative":
             continue
         if it["kind"] == "task":
             # A reading is due the day before the lecture it's for.
-            resolved[i] = _before_lecture(it, lectures) or _before_lecture(it, lectures, _repair(it, text, today, term, known)) or resolved[i]
+            if w := _before_lecture(it, lectures) or _before_lecture(it, lectures, _repair(it, text, today, term, known)):
+                resolved[i] = it["_fixed"] = w
         elif it["kind"] in ("deadline", "event"):
             # Only schedule entries (deadlines, sessions): general instructions such
             # as "read the papers" sit under headings they don't belong to.
-            resolved[i] = _repair(it, text, today, term, known) or resolved[i]
+            if w := _repair(it, text, today, term, known):
+                resolved[i] = it["_fixed"] = w
 
     keep, undated, seen = [], [], []
     # slot dates first, then sessions: of a session and its deadline, the session (time, place) is kept
@@ -840,6 +846,20 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
     term = current_term(con, today)
     lectures = lecture_dates(text, today, term)
     resolved, keep_items, undated = _settle(items, text, today, term, lectures)
+
+    # Step 8, coverage: schedule rows that list something due or happening
+    # ("Fri Oct 9 No Class — Project Team List Due") but that nothing read
+    # lands on are read again on their own, then checked like everything else.
+    if rows := _uncovered_rows(text, items, resolved, keep_items, today, term):
+        try:
+            got = _ask_model(llm, ROWS_PROMPT, ITEMS_SCHEMA, context, "\n\n".join(rows))["items"]
+        except Exception:
+            got = []
+        for n, it in enumerate(got):
+            for x in _expand_choice(it, f"rows.{n}"):
+                if (q := checked_quote(x.get("quote"), text)) and (x := _tidy({**x, "quote": q})):
+                    items.append(x)
+        resolved, keep_items, undated = _settle(items, text, today, term, lectures)
 
     # Second look: what was left out (quote not found, or no date) goes back to
     # the model once, for the exact passage and its date. Whatever checks out
@@ -970,6 +990,48 @@ DATE_HEADING = re.compile(
     rf"^[^\w\n]*(?:[A-Za-z]+\s+\d{{1,2}}\s*:\s*)?"
     rf"(?:(?:(?:mon|tue|wed|thu|fri|sat|sun)\w*,?\s+)?(?P<month>{_MONTH_RE})\.?\s+(?P<day>\d{{1,2}})\b(?!\s*,?\s*\d{{4}}\s*,?\s*\d{{1,2}}:)"
     rf"|week\s+(?P<week>\d{{1,2}})\b)", re.I | re.M)
+
+
+ROWS_PROMPT = RULES + """
+Task: each part below is one row of the course schedule, which the first reading found nothing in. These rows were picked because they name something the student submits, takes or presents: a list or report to hand in, a test or exam, a report or presentation day, a check-in, a sign-up. Report each such thing as an item ("deadline" for something handed in, "event" for something taken or presented in class, "choice", or "no_class"), even when the row doesn't say "due", with a quote from the row that includes its date, marking a skipped middle with "...". For example: "Fri Oct 9 No Class Project Team List" → no_class and a deadline "Project team list"; "Wed Nov 4 Mid-term project report" → an event "Mid-term project report"; "Week 1: Introduction, gating test" → an event "Gating test" in week 1. Not lecture topics, readings, or suggested/optional presentations."""
+
+ROW_WORDS = re.compile(r"\b(due|deadline|submit\w*|report|proposal|team list|test|exam|quiz|midterm|final|check-?in|"
+                       r"registration|register|sign-?up|assessment|deliverables?|demo)\b", re.I)
+
+
+def _uncovered_rows(text, items, resolved, keep, today, term) -> list[str]:
+    """Dated schedule rows (a date or "Week N" heading and what follows it) that
+    mention a deliverable or session, on days no item read so far lands on."""
+    covered = set()
+    for i in keep:
+        w = resolved[i]
+        if items[i]["kind"] == "no_class" or not w.value:
+            continue
+        a, b = (w.window.split("/") if w.window else (w.value[:10], w.value[:10]))
+        d = date.fromisoformat(a)
+        while d.isoformat() <= b:
+            covered.add(d.isoformat())
+            d += timedelta(days=1)
+    heads = list(DATE_HEADING.finditer(text))
+    out = []
+    for k, m in enumerate(heads):
+        end = heads[k + 1].start() if k + 1 < len(heads) else len(text)
+        row = text[m.start():min(end, m.start() + 600)].strip()
+        if not ROW_WORDS.search(row):
+            continue
+        if m.group("week"):
+            when = {"type": "week", "week": int(m.group("week"))}
+        else:
+            month = next(i for i, name in enumerate(MONTHS, 1) if m.group("month").lower()[:3] == name[:3])
+            when = {"type": "date", "month": month, "day": int(m.group("day"))}
+        w = resolve({"title": "", "quote": m.group(0).strip(), "when": when}, today, term, {})
+        if not w.value:
+            continue
+        first, last = (w.window[:10], w.window[11:]) if w.window else (w.value[:10], w.value[:10])
+        if any(first <= x <= last for x in covered):
+            continue
+        out.append(row)
+    return out[:20]
 
 
 def _repair(it, text, today, term, known):

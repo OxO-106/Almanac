@@ -29,6 +29,7 @@ class FakeLLM:
     def __init__(self):
         self.ready = True
         self.replies = []
+        self.rows = []
         self.requests = []
 
     def status(self):
@@ -38,6 +39,9 @@ class FakeLLM:
 
     def chat(self, messages, schema=None, **kw):
         self.requests.append({"messages": messages, "schema": schema})
+        if "which the first reading found nothing in" in messages[0]["content"]:
+            # the schedule-row coverage pass: tests script it with llm.rows
+            return self.rows.pop(0) if self.rows else json.dumps({"items": []})
         if not self.replies and schema:
             # passes a test doesn't script: the questions pass, chat actions
             for key in ("questions", "actions"):
