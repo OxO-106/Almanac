@@ -665,6 +665,14 @@ def _ask_slots(con, clock, source_id, slots):
         with WRITE:
             for p, _, _ in group:
                 con.execute("update proposals set question_id = ? where id = ? and status = 'pending'", (q["id"], p["id"]))
+            # the open-ended version of this question ("Which date have you signed up for your
+            # final project report presentation?") is now asked with buttons: don't ask it twice
+            topic = set(_words(group[0][2])) - STOP - _SLOT_WORDS
+            for r in con.execute("select id, text from questions where source_id = ? and status = 'open' and id != ? "
+                                 "and coalesce(purpose, 'other') = 'other'", (source_id, q["id"])).fetchall():
+                said = set(_words(r["text"]))
+                if topic <= said and said & {"slot", "date", "day", "signed", "sign", "assigned", "when"}:
+                    con.execute("update questions set status = 'dismissed' where id = ?", (r["id"],))
 
 
 def _day_label(when: str) -> str:

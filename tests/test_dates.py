@@ -280,3 +280,18 @@ def test_a_schedule_row_the_first_reading_missed_is_read_again(client, llm):
     sent = rows["messages"][-1]["content"]
     assert "Project Team List Due" in sent
     assert "Course project proposal" not in sent and "Language Modeling" not in sent  # covered, or nothing due
+
+
+def test_the_open_ended_slot_question_is_not_asked_beside_the_one_with_buttons(client, llm):
+    doc = "Mon Nov 30 Final project report\nWed Dec 2 Final project report\nSign up for one presentation slot.\n"
+    two = [item(kind="event", title="Final project report", quote="Mon Nov 30 Final project report", when={"type": "date", "month": 11, "day": 30}),
+           item(kind="event", title="Final project report", quote="Wed Dec 2 Final project report", when={"type": "date", "month": 12, "day": 2})]
+    asked = json.dumps({"questions": [
+        {"question": "Which specific date have you signed up for your final project report presentation?", "quote": "Sign up for one presentation slot."},
+        {"question": "Which team are you on?", "quote": "Sign up for one presentation slot."}]})
+    llm.replies = [course(), items_reply(*two), asked, json.dumps({"merged": [
+        {"question": "Which specific date have you signed up for your final project report presentation?", "from": [0]},
+        {"question": "Which team are you on?", "from": [1]}]})]
+    upload(client, "ding.txt", doc.encode())
+    assert sorted(q["text"] for q in inbox(client)["questions"]) == [
+        "Which day is your “Final project report”: Mon Nov 30 or Wed Dec 2?", "Which team are you on?"]
