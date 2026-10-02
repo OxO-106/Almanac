@@ -21,7 +21,7 @@ def test_a_weekly_class_and_a_task_after_each_class(client, llm, clock):
          "days": "MO,WE", "start_time": "14:00", "end_time": "15:50"})]
     client.post("/api/chat", json={"text": MSG})
     props = {p["summary"]: p for p in client.get("/api/inbox").json()["proposals"]}
-    cls = props["COM SCI 269 · Soatto class meetings"]["ops"][0]["data"]
+    cls = props["CS 269 · Soatto class meetings"]["ops"][0]["data"]
     assert (cls["repeat"], cls["start"][11:], cls["end"][11:], cls["course_id"]) == ("MO,WE", "14:00", "15:50", 1)  # not Ding's: "recording"
     (watch,) = [p for s, p in props.items() if s == "Watch CS269 recording after each class, before the next"]
     first, second = watch["ops"][0]["data"], watch["ops"][1]["data"]

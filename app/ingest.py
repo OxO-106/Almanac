@@ -105,7 +105,7 @@ RULES = """You read a university course document for a student and report what i
 - Set "provisional": true when the document calls the schedule provisional, tentative or subject to change."""
 
 COURSE_PROMPT = RULES + """
-Task: list the course(s) this document is for: course number as department and number only (e.g. "CS 239", "COM SCI 269"; not a term or section code), instructor's full name (only someone the document calls the instructor or professor), title, and the regular weekly meetings: lecture, discussion, lab, seminar, and office hours, each with "type" (lecture, discussion, lab, seminar, office_hours), days as MO,TU,WE,TH,FR,SA,SU, start and end as HH:MM 24-hour, and location (a room, or the online meeting link given for it). If the instructor or a meeting time is not written, leave it empty; do not guess. Quote the line that names the course."""
+Task: list the course(s) this document is for: course number as department and number only (e.g. "CS 239"; "COM SCI 269" is written "CS 269"; not a term or section code), instructor's full name (only someone the document calls the instructor or professor), title, and the regular weekly meetings: lecture, discussion, lab, seminar, and office hours, each with "type" (lecture, discussion, lab, seminar, office_hours), days as MO,TU,WE,TH,FR,SA,SU, start and end as HH:MM 24-hour, and location (a room, or the online meeting link given for it). If the instructor or a meeting time is not written, leave it empty; do not guess. Quote the line that names the course."""
 
 ITEMS_PROMPT = RULES + """
 Task: list everything in this part of the document the student must attend, submit or do:
@@ -1230,9 +1230,7 @@ def number_in(s: str) -> str | None:
     return course_number(f"{m.group(1)} {m.group(2)}") if m else None
 
 
-def course_number(s: str) -> str:
-    """"CS239" and "cs  239" → "CS 239"."""
-    return re.sub(r"\s+", " ", re.sub(r"([A-Za-z])(\d)", r"\1 \2", s)).strip()
+course_number = plan.course_number  # "COM SCI 269" → "CS 269"
 
 
 def _propose_item(con, clock, source_id, it, course, when: When, prior, matched, question=None):

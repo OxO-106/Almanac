@@ -23,7 +23,6 @@ from .scheduler import JOBS, Job, notify
 router = APIRouter(prefix="/api")
 CHECK_HOURS = (6, 9, 12, 15, 18, 21)
 SOURCE_TITLE = "Bruin Learn"
-DEPT_ALIASES = {"COM SCI": "CS"}  # Canvas uses the registrar's department names
 
 
 def fetch_url(url: str) -> str:
@@ -75,16 +74,13 @@ def parse(text: str) -> list[dict]:
 
 
 def section(code: str) -> tuple[str, str] | None:
-    """"26F-COM SCI-239-LEC-4" → ("COM SCI 239", "LEC-4")."""
+    """"26F-COM SCI-239-LEC-4" → ("CS 239", "LEC-4")."""
     m = re.match(r"^\d{2}[A-Z]-(.+?)-(\d+[A-Z]*)-([A-Z]+-?\d+)$", code or "")
-    return (f"{m.group(1)} {m.group(2)}", m.group(3)) if m else None
+    return (ingest.course_number(f"{m.group(1)} {m.group(2)}"), m.group(3)) if m else None
 
 
 def _norm_number(number: str) -> str:
-    n = ingest.course_number(number).upper()
-    for long, short in DEPT_ALIASES.items():
-        n = n.replace(long, short)
-    return n.replace(" ", "")
+    return ingest.course_number(number).upper().replace(" ", "")
 
 
 # ---- course for a section -----------------------------------------------------

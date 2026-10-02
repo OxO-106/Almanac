@@ -439,7 +439,7 @@ def _match_course(con, named, text):
                and re.search(rf"\b{re.escape(c['instructor'].split()[-1].lower())}\b", said)]
     if len(by_name) == 1:
         return by_name[0]["id"]
-    # by number, as written or by its digits ("CS269" is COM SCI 269), if only one course has it
+    # by number, as written or by its digits ("CS269" is CS 269), if only one course has it
     def digits(number):
         m = re.search(r"\d+[a-z]?", number.lower())
         return m.group() if m else None
@@ -553,7 +553,7 @@ def _actions(con, llm, clock, text, reply_id, message_id=None) -> list[int] | No
                     c = con.execute("select number, instructor from courses where id = ?", (course,)).fetchone() if course is not None else None
                     short = f"{c['number']} · {c['instructor'].split()[-1]}" if c else title
                     m = {"days": ",".join(days), "start": a.get("start_time"), "end": a.get("end_time"), "quote": a["quote"]}
-                    # one of their courses: "COM SCI 269 class"; otherwise the name they used
+                    # one of their courses: "CS 269 class"; otherwise the name they used
                     p = ingest._propose_meetings(con, clock, source, course, short, m, term, [], {}, set(), None if c else title)
                     if p:
                         made.append(p["id"])

@@ -1,6 +1,7 @@
 """Goals, Projects, Tasks, Events, Deadlines and Courses: CRUD and Today."""
 
 import json
+import re
 from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -10,6 +11,18 @@ from .clock import local
 from .db import WRITE
 
 DAYS = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
+
+
+# Department names the registrar and syllabi write in full, as the student says them.
+DEPARTMENTS = [(re.compile(r"^(com(p(uter)?)?\.?\s*sci(ence)?\.?|comsci|compsci)(?=\s|$)", re.I), "CS")]
+
+
+def course_number(s: str) -> str:
+    """"CS239", "cs  239", "COM SCI 269", "Computer Science 269" → "CS 239", "CS 269"; "COM SCI M146" → "CS M146"."""
+    s = re.sub(r"\s+", " ", re.sub(r"^([A-Za-z]+)(\d)", r"\1 \2", (s or "").strip())).strip()  # "CS239"; "M146" stays
+    for pattern, short in DEPARTMENTS:
+        s = pattern.sub(short, s)
+    return s.upper()
 
 
 def _date(v):
@@ -56,7 +69,7 @@ def _holidays(v):
 
 # kind -> {field: validator}; `required` fields must be present on create.
 KINDS = {
-    "courses": ({"number": str, "instructor": str, "title": str, "color": str}, {"number", "instructor"}),
+    "courses": ({"number": course_number, "instructor": str, "title": str, "color": str}, {"number", "instructor"}),
     "goals": ({"title": str, "why": str, "horizon": str, "status": str}, {"title"}),
     "projects": ({"title": str, "goal_id": int, "course_id": int, "deadline": _date_or_time, "team": bool,
                   "status": str, "notes": str, "slips": int}, {"title"}),

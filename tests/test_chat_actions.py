@@ -132,10 +132,10 @@ def test_questions_name_the_course_not_the_file(client, llm):
                                   "quote": "Instructor: Robin Ding", "meetings": []}]), items_reply()]
     upload(client, "26F-COM SCI-269-SEM-3 Seminar_ Current Topics.txt", SYLLABUS.encode())
     text = chat(client)["current"]["text"]
-    assert text == "Who teaches COM SCI 269: Advanced Topics in AI: Agentic Learning? The document doesn't name the instructor."
+    assert text == "Who teaches CS 269: Advanced Topics in AI: Agentic Learning? The document doesn't name the instructor."
     client.post("/api/chat/skip")
     client.post("/api/questions", json={"source_id": 1, "text": "Which option will you take?"})
-    assert chat(client)["current"]["text"] == ("Quick question about COM SCI 269 (instructor not named yet): Advanced Topics in AI: "
+    assert chat(client)["current"]["text"] == ("Quick question about CS 269 (instructor not named yet): Advanced Topics in AI: "
                                                "Agentic Learning: Which option will you take?")
 
 

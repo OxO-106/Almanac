@@ -217,7 +217,7 @@ def test_a_course_title_given_as_the_number_falls_back_to_the_file_name(client, 
     llm.replies = [course_reply([{"number": "Advanced Topics in AI: Agentic Learning", "instructor": "Robin Ding",
                                   "quote": "Instructor: Robin Ding", "meetings": []}]), items_reply()]
     upload(client, "26F-COM SCI-269-SEM-3 Seminar_ Current Topics.pdf".replace(".pdf", ".txt"), SYLLABUS.encode())
-    assert inbox(client)["proposals"][0]["ops"][0]["data"]["number"] == "COM SCI 269"
+    assert inbox(client)["proposals"][0]["ops"][0]["data"]["number"] == "CS 269"
     assert "File name: 26F-COM SCI-269-SEM-3" in llm.requests[0]["messages"][-1]["content"]
 
 
@@ -504,3 +504,9 @@ def test_the_same_presentation_on_two_close_dates_is_a_slot_choice(client, llm):
     upload(client, "ding.txt", doc.encode())
     slots = [p for p in inbox(client)["proposals"] if p["summary"] == "Final project report"]
     assert len(slots) == 2 and all(p["blocked_by"] == "Which day is your “Final project report”: Mon Nov 30 or Wed Dec 2?" for p in slots)
+
+
+def test_every_spelling_of_computer_science_is_cs():
+    from app.plan import course_number
+    assert [course_number(x) for x in ["COM SCI 269", "COMSCI269", "Comp Sci 131", "Computer Science 32", "cs  239", "COM SCI M146", "EC ENGR 133A"]] == \
+        ["CS 269", "CS 269", "CS 131", "CS 32", "CS 239", "CS M146", "EC ENGR 133A"]

@@ -69,7 +69,7 @@ def test_class_meetings_become_a_recurring_event_that_skips_holidays_and_no_clas
                     when={"type": "date", "month": 11, "day": 24})
     llm.replies = [course([meeting]), items_reply(no_class)]
     upload(client, "cs269.txt", DOC.encode())
-    ev = data(props(client)["COM SCI 269 · Soatto class meetings"])
+    ev = data(props(client)["CS 269 · Soatto class meetings"])
     assert (ev["start"], ev["end"], ev["repeat"], ev["until"]) == ("2026-09-28T16:00", "2026-09-28T17:50", "MO,WE", "2026-12-04")
     assert ev["skip"] == "2026-11-11,2026-11-24"
     assert "Thanksgiving Break" not in props(client)
@@ -81,7 +81,7 @@ def test_a_meeting_without_a_stated_time_is_asked_about(client, llm):
     upload(client, "cs269.txt", DOC.encode())
     assert not any("class meetings" in s for s in props(client))
     assert [q["text"] for q in inbox(client)["questions"]] == [
-        "What time does COM SCI 269 · Soatto meet on TU/TH? The document doesn't say."]
+        "What time does CS 269 · Soatto meet on TU/TH? The document doesn't say."]
 
 
 def test_relative_dates_resolve_from_another_item_in_the_document(client, llm):
@@ -249,13 +249,13 @@ def test_office_hours_are_offered_unticked_and_a_location_must_be_in_the_documen
         items_reply()]
     upload(client, "cs269.txt", doc.encode())
     got = props(client)
-    lecture, office = got["COM SCI 269 · Soatto class meetings"], got["COM SCI 269 office hours (weekly)"]
+    lecture, office = got["CS 269 · Soatto class meetings"], got["CS 269 office hours (weekly)"]
     assert data(lecture)["location"] == "Room 1200"
     assert "location" not in data(office)  # "Boelter 3532" isn't in the document
     assert office["optional"] and not lecture["optional"]
     src = client.get("/api/sources").json()[0]
     client.post(f"/api/sources/{src['id']}/accept-all")
-    assert [p["summary"] for p in inbox(client)["proposals"]] == ["COM SCI 269 office hours (weekly)"]  # left for the student
+    assert [p["summary"] for p in inbox(client)["proposals"]] == ["CS 269 office hours (weekly)"]  # left for the student
 
 
 def test_optional_readings_are_not_tasks(client, llm):

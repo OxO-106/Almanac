@@ -71,7 +71,7 @@ def test_a_section_matching_two_courses_is_asked_about_once(client, llm):
     kim = client.post("/api/courses", json={"number": "CS 239", "instructor": "Miryung Kim"}).json()
     connect(client, Feed())
     q = client.get("/api/chat").json()["current"]
-    assert "Which of your courses is COM SCI 239 (LEC-4) on Bruin Learn: CS 239 · Ding or CS 239 · Kim?" in q["text"]
+    assert "Which of your courses is CS 239 (LEC-4) on Bruin Learn: CS 239 · Ding or CS 239 · Kim?" in q["text"]
     assert proposals(client)[0]["blocked_by"]
     client.post("/api/chat", json={"text": "It's Kim's"})
     (p,) = proposals(client)
@@ -95,7 +95,7 @@ def test_a_waiting_item_waits_on_the_question_when_its_course_is_ambiguous(clien
     client.post("/api/courses", json={"number": "CS 239", "instructor": "Robin Ding"})
     client.post("/api/courses", json={"number": "CS 239", "instructor": "Miryung Kim"})
     client.post("/api/canvas/fetch")
-    assert proposals(client)[0]["blocked_by"].startswith("Which of your courses is COM SCI 239 (LEC-4)")
+    assert proposals(client)[0]["blocked_by"].startswith("Which of your courses is CS 239 (LEC-4)")
 
 
 def test_fetching_again_changes_nothing_unless_canvas_did(client):
