@@ -337,7 +337,8 @@ views.chat = async () => {
     const body = isCurrent
       ? `<div class="ask-card"><p class="q">${esc(m.text)}</p>
           ${m.quote ? `<div class="from">From the source: “${esc(m.quote)}”</div>` : ""}
-          ${c.current.options?.length ? `<div class="row-actions">${c.current.options.map(o => `<button class="btn" onclick="answerQuestion(${js(o)})">${esc(o)}</button>`).join("")}</div>` : ""}
+          ${c.current.options?.length ? `<div class="row-actions">${c.current.options.map(o => `<button class="btn" onclick="answerQuestion(${js(o)})">${esc(o)}</button>`).join("")}
+            <button class="btn quiet" onclick="answerOwn()">Something else…</button></div>` : ""}
           <div class="row-actions"><button class="btn quiet small" onclick="chatAction('skip')">Ask again later</button>
             <button class="btn quiet small" onclick="chatAction('dismiss')">Not relevant to me</button>
             ${c.waiting ? `<span class="meta">${c.waiting} more after this</span>` : ""}</div></div>`
@@ -365,6 +366,14 @@ function chatSend(e) {
   if (!text) return;
   box.value = "";
   sendChat(text);
+}
+
+// None of the buttons fits: say it in your own words ("It's due on November 11th")
+function answerOwn() {
+  const say = $("#say");
+  if (!say) return;
+  say.placeholder = "Your answer, in your own words";
+  say.focus();
 }
 
 async function rewindTo(id) {

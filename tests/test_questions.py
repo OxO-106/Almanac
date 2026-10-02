@@ -56,6 +56,40 @@ def test_a_slot_choice_shows_buttons_and_keeps_only_the_chosen_slot(client):
     assert chat(client)["messages"][-1]["text"].startswith("Got it: Mon Nov 30.")
 
 
+def slots(client):
+    src = source(client)
+    con, clock = client.app.state.db, client.app.state.clock
+    nov4 = inbox_mod.propose(con, clock, src["id"], "Mid-term project report, Wed Nov 4",
+                             [{"op": "create", "kind": "deadlines", "data": {"title": "Mid-term project report", "due": "2026-11-04"}}])
+    nov9 = inbox_mod.propose(con, clock, src["id"], "Mid-term project report, Mon Nov 9",
+                             [{"op": "create", "kind": "deadlines", "data": {"title": "Mid-term project report", "due": "2026-11-09"}}])
+    q = inbox_mod.ask(con, clock, src["id"], "Which day is your “Mid-term project report”: Wed Nov 4 or Mon Nov 9?", None, "choice", None,
+                      [{"label": "Wed Nov 4", "adds": [nov4["id"]]}, {"label": "Mon Nov 9", "adds": [nov9["id"]]}])
+    chat(client)
+    return q
+
+
+def test_a_date_none_of_the_options_had_is_taken(client):
+    slots(client)
+    client.post("/api/chat", json={"text": "It's due on November 11th"})
+    (p,) = pending(client).values()
+    assert p["ops"][0]["data"]["due"] == "2026-11-11"
+    assert chat(client)["messages"][-1]["text"].startswith("Got it: Wed Nov 11.") and chat(client)["current"] is None
+    mine = [m for m in chat(client)["messages"] if m["role"] == "user"][-1]
+    client.post(f"/api/chat/rewind/{mine['id']}")  # the dates are back as they were
+    assert sorted(p["ops"][0]["data"]["due"] for p in pending(client).values()) == ["2026-11-04", "2026-11-09"]
+
+
+def test_a_message_thats_none_of_the_options_is_read_as_chat_and_the_question_waits(client, llm):
+    q = slots(client)
+    llm.replies = ["Sure, I can help with that.", json.dumps({"actions": []})]
+    client.post("/api/chat", json={"text": "can you remind me what CS 239 is about?"})
+    said = chat(client)
+    assert [m["text"] for m in said["messages"][-2:]] == ["Sure, I can help with that.", "Back to my question: " + q["text"]]
+    assert said["current"]["question_id"] == q["id"] and said["current"]["options"] == ["Wed Nov 4", "Mon Nov 9"]
+    assert len(pending(client)) == 2
+
+
 def test_rewinding_a_choice_puts_back_what_it_dropped(client):
     src = source(client)
     con, clock = client.app.state.db, client.app.state.clock

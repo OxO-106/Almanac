@@ -210,19 +210,20 @@ def _snooze(con, clock, question_id, days):
 
 def _answer(con, llm, clock, question, text, message_id=None):
     """A reply to the open question: "not yet" asks again later; anything else
-    goes to the handler for what the question is for (questions.py)."""
+    goes to the handler for what the question is for (questions.py). False:
+    it wasn't an answer (none of a choice's options), so it's read as chat."""
     q0 = con.execute("select status, answer, answered_at, snoozed_until from questions where id = ?", (question["id"],)).fetchone()
     _record(con, message_id, "questions_before", [question["id"], dict(q0) if q0 else None])
     if (days := _later(text, _urgent(con, question))) is not None:
         _snooze(con, clock, question["id"], days)
-        return
+        return None
 
     def read(said):  # an answer that's for no particular item, read like a chat message
         made = _actions(con, llm, clock, said, None, message_id)
         if made:
             _say(con, clock, "assistant", "Here's what I'd add. Check the dates are right:", proposals=made)
 
-    questions.answer(con, llm, clock, question["id"], text, questions.Reply(
+    return questions.answer(con, llm, clock, question["id"], text, questions.Reply(
         say=lambda t, qid=None: _say(con, clock, "assistant", t, qid),
         record=lambda key, value: _record(con, message_id, key, value),
         read=read))
@@ -700,9 +701,10 @@ def _reply(con, llm, clock, text, focus=None):
     cur = _current(con, clock)
     mid = _say(con, clock, "user", text)
     if cur:
-        _answer(con, llm, clock, {"id": cur["question_id"], "text": cur["text"]}, text, mid)
-        yield "done", 0
-        return
+        if _answer(con, llm, clock, {"id": cur["question_id"], "text": cur["text"]}, text, mid) is not False:
+            yield "done", 0
+            return
+        # not an answer to it (none of its options): an ordinary message; the question stays open
     messages = _messages(con, llm, clock, text, focus)
     parts = []
     for piece in llm.stream(messages, temperature=0.4):
@@ -712,6 +714,8 @@ def _reply(con, llm, clock, text, focus=None):
     made = _actions(con, llm, clock, text, reply_id, mid)
     if made:  # the suggestions, right in the conversation
         _say(con, clock, "assistant", "Here's what I'd add. Check the dates are right:", proposals=made)
+    if cur and (q := con.execute("select * from questions where id = ? and status = 'open'", (cur["question_id"],)).fetchone()):
+        _say(con, clock, "assistant", "Back to my question: " + q["text"], q["id"], q["quote"])  # its buttons, below the reply
     yield "done", None if made is None else len(made)
 
 

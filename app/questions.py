@@ -71,11 +71,11 @@ def answer(con, llm, clock, question_id, text, reply: Reply):
         return
     if purpose == "choice":
         picked = _pick(q["options"], text)
-        if picked is None:
-            reply.say("Which one? " + " / ".join(o["label"] for o in q["options"]), question_id)
-            return
+        day = None if picked else _other_day(con, clock, q, text)
+        if picked is None and day is None:
+            return False  # none of the options: read as an ordinary message; the question stays open
         _mark(con, clock, question_id, text)
-        _choose(con, clock, q, picked, reply)
+        _choose(con, clock, q, picked or q["options"][0], reply, day)
         return
     _mark(con, clock, question_id, text)
     held = [inbox._proposal(con, r["id"]) for r in con.execute(
@@ -268,8 +268,50 @@ def _pick(options, text):
     return hits[0] if len(hits) == 1 else None
 
 
-def _choose(con, clock, q, picked, reply):
-    """Keep the chosen option; drop what only the others would add."""
+def _slot_items(con, q):
+    """For a question between dates of one thing ("Wed Nov 4 or Mon Nov 9?"): each
+    option's dated item, else None."""
+    out = []
+    for o in q["options"]:
+        ids = [pid for pid in o.get("adds", []) if _exists(con, pid)] if isinstance(o, dict) else []
+        if len(ids) != 1:
+            return None
+        p = inbox._proposal(con, ids[0])
+        if p["ops"][0]["op"] != "create" or p["ops"][0]["kind"] not in DATE_FIELD:
+            return None
+        out.append(p)
+    return out or None
+
+
+def _other_day(con, clock, q, text) -> str | None:
+    """A date that's none of the options ("It's due on November 11th"), in the student's own words."""
+    if not _slot_items(con, q) or not (when := ingest.said_when(text)):
+        return None
+    today = local(clock.now()).date()
+    w = ingest.resolve({"title": "", "quote": text, "when": when}, today, current_term(con, today), {})
+    return w.value if w.value and not w.window else None
+
+
+def _choose(con, clock, q, picked, reply, day=None):
+    """Keep the chosen option; drop what only the others would add. `day`: a date
+    the student gave that none of the options had; the kept item moves to it."""
+    label = picked["label"]
+    if day:
+        p = _slot_items(con, q)[q["options"].index(picked)]
+        o = p["ops"][0]
+        field = DATE_FIELD[o["kind"]]
+        old = o["data"].get(field) or ""
+        value = day if len(day) > 10 or len(old) <= 10 else day + old[10:]  # same time of day, if it had one
+        if p["status"] == "pending":
+            reply.record("proposals_before", [p["id"], json.dumps(p["ops"]), p["summary"]])
+            o["data"][field] = value
+            o["data"].pop("window", None)
+            _save_ops(con, p)
+        elif p["status"] == "accepted" and p.get("applied"):
+            if done := inbox.propose_and_accept(con, clock, p["source_id"], f"Date “{o['data']['title']}”: {_fmt(value)}",
+                                                [{"op": "update", "kind": o["kind"], "id": p["applied"][0], "data": {field: value}}]):
+                reply.record("made", done["id"])
+        label = _fmt(value)
     dropped, keep = [], set(picked.get("adds", []))
     for o in q["options"]:
         if o is picked:
@@ -290,7 +332,7 @@ def _choose(con, clock, q, picked, reply):
                 if ops and (done := inbox.propose_and_accept(con, clock, p["source_id"], f"Remove {p['summary']}", ops)):
                     reply.record("made", done["id"])
                     dropped.append(p["summary"])
-    reply.say(f"Got it: {picked['label']}." + (f" I've left out {', '.join(dropped)}." if dropped else ""))
+    reply.say(f"Got it: {label}." + (f" I've left out {', '.join(dropped)}." if dropped else ""))
 
 
 # ---- dates -------------------------------------------------------------------------------
