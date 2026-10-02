@@ -28,3 +28,5 @@
 **On the 15.7 min CS 259 clip:** the final pass took 61 s (Parakeet about 10 s, the clean-up the rest); 0 fillers left; the instructor's name right; 2 doubtful terms marked, both genuinely not what was said; no false marks.
 
 Example, before → after: "Uh first I will talk uh about uh course logistics. It will be twice per week on uh Monday and Wednesday at two PM for two hours." → "First, I will talk about course logistics. It will be twice per week, on Monday and Wednesday at 2 PM for two hours or slightly less."
+
+2026-10-02, the student: a name heard as another name becoming the course's name ("Mayu" → "Miodrag") is fine, even good. Such swaps are no longer marked; only ordinary words turned into course terms, or terms added from nothing, are.

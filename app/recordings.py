@@ -127,12 +127,15 @@ LIKE = 0.6  # how alike a heard word and the course term put in its place must b
 
 
 def _doubtful_terms(cleaned: str, heard: str, vocab) -> str:
-    """Mark [?] a course term the clean-up wrote in place of words that sound
-    nothing like it: "Potkonyak" → "Potkonjak" and "G Q A" → "GQA" are fixes,
-    "call me Mayu" → "call me Miodrag" a guess. The two texts are lined up word
-    by word, so a term is compared only with what was heard in its place."""
+    """Mark [?] a course term the clean-up wrote where nothing like it was said:
+    "computer science" → "Achievements in Computer Science" (words added from
+    the course title). Fixes pass: "Potkonyak" → "Potkonjak", "G Q A" → "GQA",
+    and a name heard as another name ("call me Mayu" → "call me Miodrag": the
+    student wants the course's names used). The two texts are lined up word by
+    word, so a term is compared only with what was heard in its place."""
     names = {w.lower() for t in vocab for w in re.findall(r"[\w'-]+", t) if len(w) > 2}
-    heard_w = [w.lower() for w in re.findall(r"[\w'-]+", heard)]
+    heard_raw = re.findall(r"[\w'-]+", heard)
+    heard_w = [w.lower() for w in heard_raw]
     found = list(re.finditer(r"[\w'-]+", cleaned))
     like = lambda a, b: SequenceMatcher(None, a, b).ratio() >= LIKE
     doubtful = set()
@@ -141,10 +144,11 @@ def _doubtful_terms(cleaned: str, heard: str, vocab) -> str:
         if tag not in ("replace", "insert"):
             continue
         was = heard_w[i1:i2]
+        a_name = tag == "replace" and all(w[:1].isupper() for w in heard_raw[i1:i2])  # a name heard in its place
         for k in range(j1, j2):
             w = found[k].group(0).lower()
             # heard nearby as it is ("computer science" said, written "Computer Science"): fine, however it aligned
-            if w in names and w not in heard_w and not any(like(w, x) for x in was + ["".join(was)]):
+            if w in names and w not in heard_w and not a_name and not any(like(w, x) for x in was + ["".join(was)]):
                 doubtful.add(k)
     out, last = [], 0
     for k, m in enumerate(found):

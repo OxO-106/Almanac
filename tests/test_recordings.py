@@ -102,8 +102,11 @@ def test_the_syllabus_counts_even_when_the_instructor_was_answered_in_chat(clien
 def test_a_course_term_put_where_nothing_like_it_was_heard_is_marked():
     vocab = ["Miodrag Potkonjak", "Kimi Linear", "GQA", "Turing"]
     d = recordings._doubtful_terms
+    # a name heard as another name becomes the course's name, unmarked (the student wants it)
     assert d("My name is Miodrag Potkonjak. You can call me Miodrag.", "My name is Miodrak Potkonyak. You can call me Mayu.",
-             vocab) == "My name is Miodrag Potkonjak. You can call me Miodrag [?]."  # a nickname isn't a mishearing
+             vocab) == "My name is Miodrag Potkonjak. You can call me Miodrag."
+    # an ordinary word turned into a course term is still marked
+    assert d("It is related to Kimi Linear.", "it is related to the model", vocab) == "It is related to Kimi [?] Linear [?]."
     assert d("Today we read GQA and Kimi Linear.", "Today we we read uh G Q A and Kimmy linear.", vocab) == "Today we read GQA and Kimi Linear."
     assert d("The Turing Award.", "the during award", vocab) == "The Turing Award."
     assert d("We discussed Kimi Linear.", "we discussed the new model", vocab) == "We discussed Kimi [?] Linear [?]."
