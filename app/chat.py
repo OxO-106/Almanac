@@ -17,7 +17,7 @@ from datetime import date, timedelta
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from . import goals, inbox, ingest, merge, questions
+from . import goals, inbox, ingest, lecture_notes, merge, questions
 from .clock import local
 from .db import WRITE
 from . import plan
@@ -243,11 +243,12 @@ Use "change" or "remove", not a new item, when they talk about something already
 Also, when the student said which course or project it belongs to: "course" as they named it (e.g. "Ding's CS 239"), "project" likewise.
 A class or meeting that repeats every week ("MW 2pm - 3:50pm"): one "event" with "days" (e.g. "MO,WE"), "start_time" and "end_time" (24-hour "HH:MM"), as said; no "when".
 Something to do after every class of a course ("watch the recording before the next class"): one "task" with "each_class": true; no "when". Don't ask for dates the schedule already gives.
+- "notes": they ask to change the notes of one of their lectures (listed below): "make Monday's CS 259 notes shorter", "add the derivation to my 269 notes". "title" is the change they ask for, in their words; "course" the course as they named it.
 If the message is just conversation, return no actions."""
 
 ACTIONS_SCHEMA = {"type": "object", "properties": {"actions": {"type": "array", "items": {"type": "object", "properties": {
     "type": {"type": "string", "enum": ["task", "event", "deadline", "goal", "project", "memory", "progress", "question",
-                                        "change", "remove"]},
+                                        "change", "remove", "notes"]},
     "title": {"type": "string"}, "quote": {"type": "string"}, "when": ingest.WHEN, "done": {"type": "boolean"},
     "why": {"type": "string"}, "horizon": {"type": "string"}, "topic": {"type": "string"},
     "course": {"type": "string"}, "project": {"type": "string"},
@@ -270,6 +271,8 @@ def _context(con, clock) -> str:
               now.date().isoformat(), now.date().isoformat())
     goals = q("select title from goals where status = 'active'")
     memories = q("select text from memories order by id limit 40")
+    lectures = q("select r.date, c.number, c.instructor from recordings r left join courses c on c.id = r.course_id "
+                 "where r.notes is not null order by r.date desc, r.id desc limit 10")
     lines = lambda rows, f: "\n".join(f"- {f(r)}" for r in rows) or "- none"
     return (f"Today is {now:%A, %B %d, %Y}, {now:%H:%M} in Los Angeles.\n\n"
             f"Coming up in the next two weeks:\n{lines(upcoming, lambda r: f'{r['at']}: {r['title']}')}\n\n"
@@ -277,7 +280,8 @@ def _context(con, clock) -> str:
             f"Weekly classes:\n{lines(weekly, lambda r: f'{r['title']}: {r['repeat']} {r['start'][11:16]}' + (f'-{r['end'][11:16]}' if r['end'] else '') + (f' ({r['location']})' if r['location'] else ''))}\n\n"
             f"Planned sessions and deadlines:\n{lines(dated, lambda r: f'{r['title']} ({r['at']})')}\n\n"
             f"Goals:\n{lines(goals, lambda r: r['title'])}\n\n"
-            f"What you know about the student:\n{lines(memories, lambda r: r['text'])}")
+            f"What you know about the student:\n{lines(memories, lambda r: r['text'])}\n\n"
+            f"Lectures with notes (you can change them when asked):\n{lines(lectures, _lecture_line)}")
 
 
 KEEP = 10             # recent messages always sent verbatim
@@ -316,7 +320,8 @@ def _messages(con, llm, clock, text, focus=None):
         "select role, text from chat_messages where id > ? order by id desc limit ?", (upto, HISTORY + 1))][::-1][:-1]
     system = ("You are Almanac, a personal assistant for a university student. Be brief and warm. Never invent facts "
               "about their courses or dates; if you don't know, ask. When they mention things to do, plans or goals, say "
-              "you'll suggest adding them, for them to confirm; don't claim anything is already scheduled. No emoji.\n\n"
+              "you'll suggest adding them, for them to confirm; don't claim anything is already scheduled. When they "
+              "ask to change the notes of a lecture, say in a few words that you're making the change now (don't say it's done: the result comes in your next message). No emoji.\n\n"
               + _context(con, clock) + goals.focus_text(con, focus)
               + (f"\n\nEarlier in this conversation (summary):\n{summary}" if summary else ""))
     return [{"role": "system", "content": system}, *history, {"role": "user", "content": text}]
@@ -501,6 +506,87 @@ def _match_project(con, named, course_id, text):
     return hits[0] if len(hits) == 1 else None
 
 
+def _lecture_line(r) -> str:
+    return (f"{r['number']} · {r['instructor'].split()[-1]}" if r["number"] else "Lecture") + f", {(d := date.fromisoformat(r['date'])):%a %b} {d.day}"
+
+
+WEEKDAY = re.compile(r"\b(mon|tues|wednes|thurs|fri|satur|sun)day\b", re.I)
+
+
+def _match_lecture(con, clock, named, text):
+    """(recording, None) for the lecture whose notes the student means, or (None, why not):
+    the named course's, on the day they said (a weekday: the latest such day), else its latest."""
+    rows = [dict(r) for r in con.execute("select r.*, c.number, c.instructor from recordings r left join courses c on c.id = r.course_id "
+                                         "where r.notes is not null order by r.date desc, r.id desc")]
+    if (course := _match_course(con, named, text)) is not None:
+        rows = [r for r in rows if r["course_id"] == course]
+    elif named and (n := re.search(r"\d+[a-z]?", named.lower())):  # "CS 239" when there are two: either one's
+        rows = [r for r in rows if r["number"] and n.group() in r["number"].lower()]
+    today = local(clock.now()).date()
+    day = None
+    if re.search(r"\btoday'?s?\b", text, re.I):
+        day = today
+    elif re.search(r"\byesterday'?s?\b", text, re.I):
+        day = today - timedelta(days=1)
+    elif m := WEEKDAY.search(text):
+        want = ["mon", "tues", "wednes", "thurs", "fri", "satur", "sun"].index(m.group(1).lower())
+        day = today - timedelta(days=(today.weekday() - want) % 7)
+    elif (w := ingest.said_when(text)) and w.get("type") == "date" and w.get("month"):
+        try:
+            day = date(today.year, w["month"], w["day"])
+        except ValueError:
+            day = None
+        day = day.replace(year=day.year - 1) if day and day > today else day
+    if day:
+        rows = [r for r in rows if r["date"] == day.isoformat()]
+        if not rows:
+            return None, f"I don't have notes for {'that course on ' if named else 'a lecture on '}{day:%a %b} {day.day}."
+    return (rows[0], None) if rows else (None, "I couldn't tell which lecture's notes you mean.")
+
+
+def _change_notes(con, llm, clock, a, text, message_id):
+    """A "notes" action: the change is made now (Undo: "undo that" or Rewind)."""
+    rec, why = _match_lecture(con, clock, a.get("course"), text)
+    if not rec:
+        _say(con, clock, "assistant", why)
+        return
+    label = _lecture_line(rec)
+    if rec["notes_status"] in lecture_notes.BUSY:
+        _say(con, clock, "assistant", f"The {label} notes are being written or changed right now. Ask me again in a minute.")
+        return
+    try:
+        done = lecture_notes.change(con, llm, clock, rec["id"], a["title"])
+    except Exception as e:
+        _say(con, clock, "assistant", f"I couldn't change the {label} notes: " + (str(e) if isinstance(e, ValueError) else f"{type(e).__name__}: {e}"))
+        return
+    _record(con, message_id, "notes", [rec["id"], done["version"]])
+    _say(con, clock, "assistant", f"{done['summary']} [Open the {label} notes](#lecture/{rec['id']}). Say “undo that” to put them back.")
+
+
+UNDO = re.compile(r"^\s*(please\s+)?(undo|revert|put (it|them) back|change (it|them) back)\b.{0,30}$", re.I)
+
+
+def _undo_notes(con, clock, text) -> bool:
+    """ "Undo that" right after a notes change: the notes as they were."""
+    if not UNDO.match(text):
+        return False
+    last = con.execute("select * from chat_messages where role = 'user' order by id desc limit 1").fetchone()
+    changed = json.loads(last["effects"]).get("notes") if last and last["effects"] else None
+    if not changed:
+        return False
+    mid = _say(con, clock, "user", text)
+    for rid, vid in reversed(changed):
+        lecture_notes.restore(con, rid, vid)
+    with WRITE:  # done: undoing again does nothing, and Rewind of the earlier message has nothing left to restore
+        e = json.loads(last["effects"])
+        e.pop("notes")
+        con.execute("update chat_messages set effects = ? where id = ?", (json.dumps(e), last["id"]))
+    rec = con.execute("select r.date, c.number, c.instructor from recordings r left join courses c on c.id = r.course_id where r.id = ?",
+                      (changed[-1][0],)).fetchone()
+    _say(con, clock, "assistant", f"Done: the {_lecture_line(rec)} notes are back as they were. [Open them](#lecture/{changed[-1][0]}).")
+    return mid is not None
+
+
 def _actions(con, llm, clock, text, reply_id, message_id=None) -> list[int] | None:
     """Suggestions from the student's message. Returns the proposals made,
     or None if the model call failed (e.g. Ollama busy with another app)."""
@@ -528,6 +614,9 @@ def _actions(con, llm, clock, text, reply_id, message_id=None) -> list[int] | No
             _record(con, message_id, "asked", q["id"])
             with WRITE:  # the reply just asked it: the student's next message answers it
                 con.execute("update chat_messages set question_id = ? where id = ?", (q["id"], reply_id))
+            continue
+        if kind == "notes":
+            _change_notes(con, llm, clock, a, text, message_id)
             continue
         if kind in ("change", "remove"):
             if (p := _change_or_remove(con, clock, source, a, title, text, today, term)):
@@ -605,6 +694,9 @@ def _actions(con, llm, clock, text, reply_id, message_id=None) -> list[int] | No
 
 def _reply(con, llm, clock, text, focus=None):
     """Handle one message; yields ("token", text) pieces then ("done", proposed)."""
+    if _undo_notes(con, clock, text):
+        yield "done", 0
+        return
     cur = _current(con, clock)
     mid = _say(con, clock, "user", text)
     if cur:
@@ -723,6 +815,8 @@ def rewind(con, message_id) -> str | None:
     with WRITE:
         for m in con.execute("select * from chat_messages where id >= ? order by id desc", (message_id,)).fetchall():
             e = json.loads(m["effects"]) if m["effects"] else {}
+            for rid, vid in reversed(e.get("notes", [])):
+                lecture_notes.restore(con, rid, vid)
             for pid in reversed(e.get("made", [])):
                 inbox.withdraw(con, pid)
             for pid in e.get("rejected", []):

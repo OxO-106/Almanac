@@ -224,3 +224,208 @@ def tick_replay_task(con, clock, rec):
         recordings.notify(con, clock, "recording", f"Ticked off “{task['title']}”",
                           f"You recorded the {rec['date']} lecture. If you haven't watched it yet, open the task and mark it not done.", f"#lecture/{rec['id']}")
     return task
+
+
+# ---- living notes (phase 3): the student's edits, change requests, Undo ----------
+# Every change keeps the notes before it in note_versions; Undo puts the newest
+# back (and again for the one before). A change request returns only the
+# sections it changes, so the rest stay exactly as they were.
+
+BUSY = ("writing", "changing")
+
+
+def set_notes(con, clock, rec_id, notes, why) -> int:
+    """New notes, the old ones kept first. Returns the kept version's id."""
+    with WRITE:
+        old = con.execute("select notes from recordings where id = ?", (rec_id,)).fetchone()["notes"]
+        vid = con.execute("insert into note_versions (recording_id, notes, why, made_at) values (?, ?, ?, ?)",
+                          (rec_id, old or "", why, local(clock.now()).strftime("%Y-%m-%dT%H:%M"))).lastrowid
+        con.execute("update recordings set notes = ?, notes_error = null where id = ?", (notes, rec_id))
+    return vid
+
+
+def last_change(con, rec_id):
+    return con.execute("select * from note_versions where recording_id = ? order by id desc limit 1", (rec_id,)).fetchone()
+
+
+def restore(con, rec_id, version_id=None) -> str | None:
+    """Put back the notes kept before a change (the newest, or a given one and
+    every change after it). Returns what was undone, or None."""
+    v = con.execute("select * from note_versions where id = ? and recording_id = ?", (version_id, rec_id)).fetchone() \
+        if version_id is not None else last_change(con, rec_id)
+    if not v:
+        return None
+    with WRITE:
+        con.execute("update recordings set notes = ?, notes_error = null where id = ?", (v["notes"] or None, rec_id))
+        con.execute("delete from note_versions where recording_id = ? and id >= ?", (rec_id, v["id"]))
+    return v["why"]
+
+
+CHANGE_PROMPT = f"""You change a university student's lecture notes the way they ask. The notes are theirs; change only what the request is about and keep everything else as it is.
+- Return only the sections you change, each whole: "replaces" is the heading of the section it replaces, exactly as in the notes without "## " ("" for a new section); "markdown" is the new section, starting with its "## " heading. "before" places a new section: the heading of the section it goes before, e.g. the first section's heading for the top ("" for the end, before "Announced"; "" for a replaced one). To remove a section, return it with "markdown": "". A request about everything ("shorter", "fix the formatting") returns every section.
+- Use the transcript for anything to add ("add the derivation", "what did the student ask about X"): only what it says, no guesses about what was meant. If the lecture didn't cover (part of) what they ask for, add nothing for that part and don't name it in headings or points; say so only in the summary ("He didn't talk about grading."), never in the notes.
+- Lines starting "{JOT} " are the student's own: keep them word for word with their points under them, unless the request is about them. Don't start other lines with "{JOT}".
+- Markdown: "## " sections, "### " subsections, "- " points (sub-points indented by two spaces). No tables.
+- "summary": one short sentence to the student on what you changed ("Turned the GQA section into bullets.")."""
+
+CHANGE_SCHEMA = {"type": "object", "properties": {
+    "summary": {"type": "string"},
+    "sections": {"type": "array", "items": {"type": "object", "properties": {
+        "replaces": {"type": "string"}, "markdown": {"type": "string"}, "before": {"type": "string"}},
+        "required": ["replaces", "before", "markdown"]}}},
+    "required": ["summary", "sections"]}
+
+TRANSCRIPT_CHARS = 50_000  # with the notes and the answer, inside the model's window
+_LAST = re.compile(r"## (announced|more of your jottings)\b", re.I)
+ABOUT_JOTTINGS = re.compile(rf"jott|{JOT}|my (own )?(lines|marks)|what i (wrote|jotted)|\bmark(s|ed)?\b", re.I)
+_JOT_LINE = re.compile(rf"(\s*)(?:[-*] )?{JOT}\s*(.*)")
+NOT_SAID = re.compile(r"\b(did not|didn't|does not|doesn't|was not|wasn't|were not|weren't|not)\s+(specif|discuss|mention|cover|explain|say|said|state|address|detail|go into|talk)", re.I)
+
+
+def _sections(notes: str) -> list[str]:
+    out, cur = [], []
+    for line in notes.splitlines():
+        if line.startswith("## ") and cur:
+            out.append("\n".join(cur).strip("\n"))
+            cur = []
+        cur.append(line)
+    if cur:
+        out.append("\n".join(cur).strip("\n"))
+    return [s for s in out if s.strip()]
+
+
+def _hnorm(h: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", h.lower()).strip()
+
+
+def _heading(section: str) -> str:
+    first = section.split("\n", 1)[0]
+    return _hnorm(first[3:]) if first.startswith("## ") else ""
+
+
+def apply_sections(notes: str, changed: list[dict]) -> str:
+    """The notes with the model's changed sections in place; a new one goes before
+    the section it names, else at the end, before "Announced"."""
+    secs = _sections(notes)
+
+    def find(heading):
+        h = _hnorm(re.sub(r"^#+\s*", "", heading or ""))
+        return next((i for i, s in enumerate(secs) if s and h and _heading(s) == h), None)
+
+    new = []
+    for c in changed:
+        md = (c.get("markdown") or "").strip()
+        if (hit := find(c.get("replaces"))) is not None:
+            secs[hit] = md
+        elif md:
+            new.append((c.get("before"), md))
+    for before, md in new:
+        at = find(before)
+        secs.insert(at if at is not None else next((i for i, s in enumerate(secs) if s and _LAST.match(s)), len(secs)), md)
+    return "\n\n".join(s for s in secs if s)
+
+
+def _jot_norm(t: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[(\[]?\d+:\d\d[)\]]?", "", t)).strip(" .-").lower()
+
+
+def restore_jottings(old: str, new: str) -> str:
+    """After a change: a {JOT} line the old notes didn't have isn't the student's
+    (it becomes an ordinary point); one of theirs the change dropped goes back
+    above the point most like the ones it was above before."""
+    old_lines, lines = old.splitlines(), new.splitlines()
+    theirs = {_jot_norm(m.group(2)) for l in old_lines if (m := _JOT_LINE.match(l))}
+    for n, l in enumerate(lines):
+        if (m := _JOT_LINE.match(l)) and _jot_norm(m.group(2)) not in theirs:
+            lines[n] = f"{m.group(1)}- {m.group(2).strip()}"
+    have = {_jot_norm(m.group(2)) for l in lines if (m := _JOT_LINE.match(l))}
+    left = []
+    for i in reversed([i for i, l in enumerate(old_lines) if (m := _JOT_LINE.match(l)) and _jot_norm(m.group(2)) not in have]):
+        under = []
+        for l in old_lines[i + 1:]:
+            if l.startswith("#") or len(under) == 3 or (_JOT_LINE.match(l) and under):
+                break
+            if not _JOT_LINE.match(l):  # a jotting right above another one: what's under that one
+                under.append(l)
+        text = _JOT_LINE.match(old_lines[i]).group(2).strip()
+        want = _keywords(" ".join(under) or text)
+        best, score, section = None, 0, ""
+        for n, l in enumerate(lines):
+            if l.startswith("## "):
+                section = l.lower()
+            if "announced" in section or not re.match(r"\s*[-*] ", l):
+                continue
+            if (hit := len(want & _keywords(l))) > score:
+                best, score = n, hit
+        if best is None:
+            left.append(text)
+        else:
+            lines.insert(best, re.match(r"\s*", lines[best]).group(0) + f"{JOT} {text}")
+    out = "\n".join(lines)
+    if left:
+        out += "\n\n## More of your jottings\n" + "\n".join(f"{JOT} {t}" for t in reversed(left))
+    return out
+
+
+def _transcript_for(segments, request: str) -> str:
+    """The Transcript, or for a long one the parts that match the request."""
+    full = _transcript(segments)
+    if len(full) <= TRANSCRIPT_CHARS:
+        return full
+    want = _keywords(request)
+    keep, size = set(), 0
+    for i in sorted(range(len(segments)), key=lambda i: -len(want & _keywords(segments[i]["text"]))):
+        for j in range(max(0, i - 6), min(len(segments), i + 7)):
+            if j not in keep:
+                keep.add(j)
+                size += len(segments[j]["text"]) + 8
+        if size > TRANSCRIPT_CHARS:
+            break
+    out, prev = [], None
+    for j in sorted(keep):
+        if prev is not None and j != prev + 1:
+            out.append("…")
+        out.append(f"[{_stamp(segments[j]['start'])}] {segments[j]['text']}")
+        prev = j
+    return "\n".join(out)
+
+
+def change(con, llm, clock, rec_id, request: str) -> dict:
+    """Make the change the student asked for. Returns {"summary", "version"}.
+    Raises (ValueError: said to the student) leaving the notes as they were."""
+    rec = con.execute("select * from recordings where id = ?", (rec_id,)).fetchone()
+    old = rec["notes"] or ""
+    if not old:
+        raise ValueError("This lecture has no notes yet.")
+    segments = json.loads(rec["transcript"] or "[]")
+    got = json.loads(llm.chat([{"role": "system", "content": CHANGE_PROMPT},
+                               {"role": "user", "content": f"{_context(con, rec)}\n\nThe notes:\n{old}\n\n"
+                                + (f"Transcript:\n{_transcript_for(segments, request)}\n\n" if segments else "")
+                                + f"The student asks: {request}"}],
+                              schema=CHANGE_SCHEMA, temperature=0, max_tokens=10000, timeout=1200))
+    new = apply_sections(old, got.get("sections") or [])
+    new = re.sub(r"\s*\((?:likely|probably|possibly|presumably|perhaps)\b[^)]*\)", "", new, flags=re.I)
+    # what the lecture didn't cover is for the summary, not a point in the notes
+    had = set(old.splitlines())
+    new = "\n".join(l for l in new.splitlines() if l in had or not NOT_SAID.search(l))
+    if not ABOUT_JOTTINGS.search(request):
+        new = restore_jottings(old, new)
+    if new.strip() == old.strip():
+        raise ValueError("I didn't find anything in the notes to change for that.")
+    vid = set_notes(con, clock, rec_id, new.strip(), f"“{request.strip()[:80]}”")
+    return {"summary": (got.get("summary") or "").strip() or "Changed the notes.", "version": vid}
+
+
+def change_in_background(con, llm, clock, rec_id, request):
+    """The lecture page's change request: notes_status says it's running, notes_error why it failed."""
+    try:
+        done = change(con, llm, clock, rec_id, request)
+    except Exception as e:
+        with WRITE:
+            con.execute("update recordings set notes_status = 'done', notes_error = ? where id = ?",
+                        (f"I couldn't make that change: {e}" if isinstance(e, ValueError) else f"I couldn't make that change ({type(e).__name__}: {e}).", rec_id))
+        return
+    with WRITE:
+        con.execute("update recordings set notes_status = 'done' where id = ?", (rec_id,))
+    rec = con.execute("select * from recordings where id = ?", (rec_id,)).fetchone()
+    recordings.notify(con, clock, "recording", "Notes changed", f"{recordings._label(con, rec)}: {done['summary']}", f"#lecture/{rec_id}")

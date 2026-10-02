@@ -236,6 +236,11 @@ def recover(con, folder: Path):
                     "Upload the recording again.' where status in ('transcribing', 'cleaning') and pending is null")
     for r in con.execute("select id from recordings where status = 'cleaning' and pending is not null").fetchall():
         _set(con, r["id"], status="failed", error="Almanac stopped while cleaning the transcript. Try again.")
+    with WRITE:  # notes interrupted: written ones can be written again; a change wasn't made
+        con.execute("update recordings set notes_status = 'failed', notes_error = 'Almanac stopped while writing them.' "
+                    "where notes_status = 'writing'")
+        con.execute("update recordings set notes_status = 'done', notes_error = 'Almanac stopped before making your change. Ask again.' "
+                    "where notes_status = 'changing'")
 
 
 def _view(con, r) -> dict:
@@ -248,6 +253,8 @@ def _view(con, r) -> dict:
     lk = lecture_kind(con, r["course_id"], r["date"])
     d["papers"] = lk["papers"] if lk and lk["kind"] == d["kind"] else []
     d["kind_name"] = KIND_NAMES.get(d["kind"] or "")
+    v = con.execute("select why from note_versions where recording_id = ? order by id desc limit 1", (r["id"],)).fetchone()
+    d["undo"] = v and v["why"]  # what Undo would take back
     return d
 
 
@@ -343,6 +350,53 @@ def retry_notes(id: int, background: BackgroundTasks, request: Request):
     from . import lecture_notes
     background.add_task(lecture_notes.after_transcript, s.db, s.llm, s.clock, id)
     return {"id": id, "notes_status": "writing"}
+
+
+def _notes_free(con, id):
+    from . import lecture_notes
+    r = con.execute("select * from recordings where id = ?", (id,)).fetchone()
+    if not r:
+        raise HTTPException(404)
+    if r["notes_status"] in lecture_notes.BUSY:
+        raise HTTPException(409, "The notes are being written or changed; try again when that's done.")
+    return r
+
+
+@router.put("/recordings/{id}/notes")
+async def edit_notes(id: int, request: Request):
+    """The student's own edit (the notes are theirs); Undo puts the old ones back."""
+    from . import lecture_notes
+    s = request.app.state
+    _notes_free(s.db, id)
+    notes = ((await request.json()).get("notes") or "").strip()
+    lecture_notes.set_notes(s.db, s.clock, id, notes or None, "your edit")
+    return _view(s.db, s.db.execute("select * from recordings where id = ?", (id,)).fetchone())
+
+
+@router.post("/recordings/{id}/notes/change", status_code=202)
+async def change_notes(id: int, background: BackgroundTasks, request: Request):
+    """"Shorter", "add the derivation": the model makes the change, applied at once, with Undo."""
+    from . import lecture_notes
+    s = request.app.state
+    r = _notes_free(s.db, id)
+    ask = ((await request.json()).get("request") or "").strip()
+    if not ask:
+        raise HTTPException(422, "Say what to change.")
+    if not r["notes"]:
+        raise HTTPException(409, "This lecture has no notes yet.")
+    _set(s.db, id, notes_status="changing", notes_error=None)
+    background.add_task(lecture_notes.change_in_background, s.db, s.llm, s.clock, id, ask)
+    return {"id": id, "notes_status": "changing"}
+
+
+@router.post("/recordings/{id}/notes/undo")
+def undo_notes(id: int, request: Request):
+    from . import lecture_notes
+    s = request.app.state
+    _notes_free(s.db, id)
+    if (why := lecture_notes.restore(s.db, id)) is None:
+        raise HTTPException(409, "There's no change to undo.")
+    return {**_view(s.db, s.db.execute("select * from recordings where id = ?", (id,)).fetchone()), "undone": why}
 
 
 @router.delete("/recordings/{id}/transcript", status_code=204)

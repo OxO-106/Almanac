@@ -410,3 +410,8 @@ dialog .why { font: italic 15px/1.45 var(--serif); color: var(--muted); margin: 
 .notes .almanac { font: 600 13px var(--sans); color: var(--slate); }
 .notes li.almanac-line { color: var(--ink-2); }
 details.later > summary { cursor: pointer; font: 14px var(--sans); color: var(--muted); margin: 8px 0; }
+.notes-tools { margin: 4px 0 18px; }
+.notes-tools .row-actions { margin-top: 6px; }
+.notes-tools .notice { margin-top: 8px; }
+.notes-edit textarea { width: 100%; box-sizing: border-box; min-height: 320px; font: 14px/1.55 ui-monospace, Consolas, monospace; color: var(--ink);
+  background: var(--ground); border: 1px solid var(--btn-line); border-radius: 8px; padding: 10px 12px; resize: vertical; }

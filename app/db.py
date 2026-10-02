@@ -66,6 +66,10 @@ create table if not exists recordings (
   course_id integer references courses on delete set null, date text not null, kind text,
   status text not null, error text, seconds real, pending text, transcript text, jottings text,
   created_at text not null);
+-- The notes of a Recording before each change (by hand, a change request, chat): Undo puts one back.
+create table if not exists note_versions (
+  id integer primary key autoincrement, recording_id integer not null references recordings on delete cascade,
+  notes text not null, why text not null, made_at text not null);
 create table if not exists chat_summaries (id integer primary key autoincrement, upto integer not null, text text not null, created_at text not null);
 create table if not exists chat_messages (
   id integer primary key autoincrement, role text not null, text text not null, question_id integer references questions on delete set null,

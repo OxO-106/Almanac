@@ -297,7 +297,8 @@ const md = s => esc(s).split(/\n{2,}/).map(par => {
   const lines = par.split("\n");
   if (lines.every(l => /^[-•] /.test(l))) return `<ul>${lines.map(l => `<li>${l.slice(2)}</li>`).join("")}</ul>`;
   return `<p>${lines.join("<br>")}</p>`;
-}).join("").replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<i>$2</i>").replace(/`([^`]+)`/g, "<code>$1</code>");
+}).join("").replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<i>$2</i>").replace(/`([^`]+)`/g, "<code>$1</code>")
+  .replace(/\[([^\]]+)\]\((#[\w/-]+)\)/g, '<a href="$2">$1</a>');
 
 const chatFocus = () => { try { return JSON.parse(sessionStorage.getItem("chatFocus")); } catch { return null; } };
 function unfocus() { try { sessionStorage.removeItem("chatFocus"); } catch { } render(); }
@@ -926,7 +927,19 @@ views.lecture = async (id) => {
   const course = lookups.courses.find(c => c.id === r.course_id);
   const transcript = r.transcript ? `<div class="transcript">${r.transcript.map(s => `<p><span class="ts">${mmss(s.start)}</span><span>${unclear(s.text)}</span></p>`).join("")}</div>`
     : `<p class="empty">You deleted this transcript.</p>`;
-  const notes = r.notes ? `<section class="notes">${notesMd(r.notes)}</section>`
+  const changing = r.notes_status === "changing";
+  const tools = `<div class="notes-tools">
+      ${changing ? `<p class="voice small"><span class="spin"></span> Making your change…</p>`
+        : `<form class="jot-form notes-ask" onsubmit="askNotes(event, ${r.id})"><input name="request" autocomplete="off"
+            placeholder="Ask for a change: shorter, add the derivation, bullets for one part…"><button class="btn small">Change</button></form>`}
+      <div class="row-actions">${changing ? "" : `<button class="btn quiet small" onclick="editNotes(${r.id})">Edit</button>`}
+        ${r.undo && !changing ? `<button class="btn quiet small" onclick="undoNotes(${r.id})">${ICON.undo} Undo ${esc(r.undo)}</button>` : ""}</div>
+      ${r.notes_error && r.notes_status === "done" ? `<div class="notice">${esc(r.notes_error)}</div>` : ""}</div>`;
+  const notes = r.notes && editingNotes === r.id ? `<section class="notes-edit"><textarea id="notes-text" spellcheck="true">${esc(r.notes)}</textarea>
+      <p class="meta">“## ” starts a section, “- ” a point (two spaces more for a sub-point), “✎ ” one of your own lines.</p>
+      <div class="row-actions"><button class="btn" onclick="saveNotes(${r.id})">Save</button>
+        <button class="btn quiet" onclick="editingNotes = null; render()">Cancel</button></div></section>`
+    : r.notes ? `${tools}<section class="notes">${notesMd(r.notes)}</section>`
     : r.notes_status === "writing" ? `<p class="voice small"><span class="spin"></span> Writing your notes from the transcript${r.jottings.length ? " and your jottings" : ""}…</p>`
     : r.notes_status === "failed" ? `<div class="notice">I couldn't write the notes: ${esc(r.notes_error || "")}
         <div class="row-actions"><button class="btn small" onclick="retryNotes(${r.id})">Write again</button></div></div>` : "";
@@ -948,6 +961,35 @@ views.lecture = async (id) => {
     ${body}
   </div>`;
 };
+
+// The notes are the student's: edited by hand, or changed on request; every change can be undone.
+let editingNotes = null;  // the lecture whose notes are open for editing (the page doesn't redraw under it)
+
+function editNotes(id) {
+  editingNotes = id;
+  render().then(() => { const t = $("#notes-text"); if (t) { t.style.height = Math.min(Math.max(320, t.scrollHeight + 8), innerHeight * .75) + "px"; t.focus(); } });
+}
+
+async function saveNotes(id) {
+  try { await send("PUT", `/api/recordings/${id}/notes`, { notes: $("#notes-text").value }); editingNotes = null; }
+  catch (e) { toast(esc(detail(e))); }
+  render();
+}
+
+async function askNotes(ev, id) {
+  ev.preventDefault();
+  const request = ev.target.request.value.trim();
+  if (!request) return;
+  try { await send("POST", `/api/recordings/${id}/notes/change`, { request }); }
+  catch (e) { toast(esc(detail(e))); }
+  document.activeElement?.blur();
+  render();
+}
+
+async function undoNotes(id) {
+  try { await api(`/api/recordings/${id}/notes/undo`, { method: "POST" }); } catch (e) { toast(esc(detail(e))); }
+  render();
+}
 
 async function retryNotes(id) {
   try { await api(`/api/recordings/${id}/notes/retry`, { method: "POST" }); } catch (e) { toast(esc(detail(e))); }
@@ -1206,7 +1248,7 @@ async function drawView(n) {
 
 let seenVersion = null;
 const planVersion = () => api("/api/version").then(r => r.v).catch(() => seenVersion);
-const busy = () => !!(sending || /^#(record|follow)/.test(location.hash) || $("#say")?.value ||$("#editor")?.open || ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName));
+const busy = () => !!(sending || /^#(record|follow)/.test(location.hash) || $("#say")?.value ||$("#editor")?.open || editingNotes !== null && location.hash.startsWith("#lecture/") || ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName));
 
 async function stayCurrent() {
   if (document.visibilityState !== "visible" || seenVersion === null) return;

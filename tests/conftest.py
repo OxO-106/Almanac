@@ -33,6 +33,7 @@ class FakeLLM:
         self.readings = []
         self.lectures, self.lecture_requests = [], []
         self.notes, self.notes_requests, self.announced, self.announce_requests = [], [], [], []
+        self.changes, self.change_requests = [], []
         self.requests = []
 
     def status(self):
@@ -45,6 +46,10 @@ class FakeLLM:
             # what a lecture announced: scripted with llm.announced
             self.announce_requests.append({"messages": messages, "schema": schema})
             return self.announced.pop(0) if self.announced else json.dumps({"items": []})
+        if messages[0]["content"].startswith("You change a university student's lecture notes"):
+            # a change request to a lecture's notes: scripted with llm.changes (the sections changed)
+            self.change_requests.append({"messages": messages, "schema": schema})
+            return self.changes.pop(0) if self.changes else json.dumps({"summary": "", "sections": []})
         if messages[0]["content"].startswith(("You write study notes", "You combine the notes")):
             # lecture notes: scripted with llm.notes, logged apart
             self.notes_requests.append({"messages": messages, "schema": schema})

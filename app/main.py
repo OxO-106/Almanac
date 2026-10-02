@@ -43,7 +43,9 @@ def create_app(db_path: Path = DB_PATH, llm=None, clock=None, transcriber=None) 
             "(select count(*) from proposals where status = 'pending'), (select coalesce(max(id), 0) from questions), "
             "(select count(*) from questions where status = 'open'), (select coalesce(max(id), 0) from chat_messages), "
             "(select count(*) from chat_messages), (select coalesce(max(id), 0) from notifications), "
-            "(select count(*) from sources where status = 'processing'), (select coalesce(max(id), 0) from sources)").fetchone()
+            "(select count(*) from sources where status = 'processing'), (select coalesce(max(id), 0) from sources), "
+            "(select count(*) from recordings where notes_status in ('writing', 'changing')), "
+            "(select coalesce(max(id), 0) from note_versions), (select count(*) from note_versions)").fetchone()
         return {"v": "-".join(str(x) for x in parts)}
 
     @app.get("/api/health")

@@ -66,7 +66,7 @@ A line the user types (or a bare mark) during a Recording, stamped with the mome
 _Avoid_: Note, annotation, comment
 
 **Lecture notes**:
-Notes written from a Transcript, built on the user's Jottings: their lines kept as written, filled in with what the lecturer said, plus topics they didn't jot. The user's to edit; the assistant changes them only when asked.
+Notes written from a Transcript, built on the user's Jottings: their lines kept as written, filled in with what the lecturer said, plus topics they didn't jot. The user's to edit; the assistant changes them only when asked. Every change, by hand or on request, can be undone.
 _Avoid_: Summary, study guide
 
 **Proposal**:

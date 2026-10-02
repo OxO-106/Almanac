@@ -1,6 +1,6 @@
 # Lecture recording: captions, transcripts and notes
 
-Status: phases 1 and 2 built (2026-10-02): tickets 01-12 done; the laptop checks in 05 and 07 are the student's. Phases 3-4 not started.
+Status: phases 1-3 built (2026-10-02): tickets 01-15 done; the laptop checks in 05 and 07 are the student's. Phase 4 not started.
 
 Vocabulary (in `CONTEXT.md`): **Recording**, **Captions**, **Transcript**, **Jotting**, **Lecture notes**, **Lecture kind** (Paper session, Concept lecture, Presentation day).
 
