@@ -117,6 +117,12 @@ def test_streamed_replies_arrive_in_pieces_then_the_actions(client, llm):
     assert tokens == "Sounds good! I added a task."
     assert events[-1]["type"] == "done"
     assert events[-1]["proposed"] == 1
+    # each message is announced the moment it's saved, so the page shows the reply
+    # before the slower search for suggestions ends
+    said = [(i, e["text"]) for i, e in enumerate(events) if e["type"] == "said"]
+    assert [who for _, who in said] == ["user", "assistant", "assistant"]  # message, reply, the suggestions
+    last_token = max(i for i, e in enumerate(events) if e["type"] == "token")
+    assert said[0][0] < last_token < said[1][0] < said[2][0] < len(events) - 1
 
 
 def test_a_failed_suggestions_pass_is_reported_not_hidden(client, llm):

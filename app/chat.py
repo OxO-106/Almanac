@@ -32,12 +32,21 @@ def _utc(clock) -> str:
     return clock.now().isoformat(timespec="seconds")
 
 
+# A streamed reply's thread sets `said` so the page shows each message the
+# moment it's saved, not only when the slower steps after it (reading the
+# message for suggestions, an answer's dates) are done.
+_stream = threading.local()
+
+
 def _say(con, clock, role, text, question_id=None, quote=None, proposals=None) -> int:
     """proposals: ids of suggestions this message presents (shown as a card)."""
     with WRITE:
-        return con.execute("insert into chat_messages (role, text, question_id, quote, created_at, proposals) values (?,?,?,?,?,?)",
-                           (role, text, question_id, quote, local(clock.now()).strftime("%Y-%m-%dT%H:%M"),
-                            json.dumps(proposals) if proposals else None)).lastrowid
+        mid = con.execute("insert into chat_messages (role, text, question_id, quote, created_at, proposals) values (?,?,?,?,?,?)",
+                          (role, text, question_id, quote, local(clock.now()).strftime("%Y-%m-%dT%H:%M"),
+                           json.dumps(proposals) if proposals else None)).lastrowid
+    if said := getattr(_stream, "said", None):
+        said(role)
+    return mid
 
 
 def _record(con, message_id, key, value):
@@ -659,6 +668,7 @@ async def post_stream(request: Request):
 
     def run():
         parts = []
+        _stream.said = lambda role: out.put(("said", role))
         try:
             for kind, value in _reply(s.db, s.llm, s.clock, text, body.get("focus")):
                 if kind == "token":
@@ -682,7 +692,7 @@ async def post_stream(request: Request):
                     listening.clear()
                     break
                 kind, value = item
-                yield "data: " + json.dumps({"type": kind, "text": value} if kind in ("token", "error") else
+                yield "data: " + json.dumps({"type": kind, "text": value} if kind in ("token", "error", "said") else
                                             {"type": kind, "proposed": value}) + "\n\n"
             else:
                 if await request.is_disconnected():

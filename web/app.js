@@ -383,12 +383,23 @@ async function clearChat() {
 }
 
 async function sendChat(text) {
-  const thread = $("#thread");
-  thread.insertAdjacentHTML("beforeend", `<div class="mine">${esc(text)}</div>
-    <article class="turn" id="live"><div class="who"><b>Almanac</b></div><div class="say"><span class="typing"><i></i><i></i><i></i></span></div></article>`);
-  scrollTo(0, document.body.scrollHeight);
-  const say = $("#live .say");
-  let reply = "", proposed = 0;
+  $("#thread").insertAdjacentHTML("beforeend", `<div class="mine">${esc(text)}</div>`);
+  // the reply being written; after a message is saved, a line saying what's still going on
+  const live = (html = `<span class="typing"><i></i><i></i><i></i></span>`) => {
+    $("#live")?.remove();
+    $("#thread")?.insertAdjacentHTML("beforeend", `<article class="turn" id="live"><div class="who"><b>Almanac</b></div><div class="say">${html}</div></article>`);
+    scrollTo(0, document.body.scrollHeight);
+    return $("#live .say");
+  };
+  let say = live(), reply = "", proposed = 0, replied = false;
+  // show what's been saved now, keeping a draft in the reply box
+  const showSaved = async () => {
+    if (!location.hash.startsWith("#chat")) return;
+    const draft = $("#say")?.value;
+    await render();
+    if (draft && $("#say")) { $("#say").value = draft; $("#say").dispatchEvent(new Event("input")); }
+    say = live(replied ? `<span class="waiting-line">Checking whether there's anything to add to your plan…</span>` : undefined);
+  };
   try {
     const r = await fetch("/api/chat/stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, focus: chatFocus() }) });
     if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
@@ -403,6 +414,7 @@ async function sendChat(text) {
       for (const ev of events) {
         const e = JSON.parse(ev.replace(/^data: /, ""));
         if (e.type === "token") { reply += e.text; say.innerHTML = md(reply); scrollTo(0, document.body.scrollHeight); }
+        else if (e.type === "said") { if (e.text === "assistant") replied = true; await showSaved(); }
         else if (e.type === "done") proposed = e.proposed;
         else if (e.type === "error") toast(`I couldn't reply: ${esc(e.text)}`);
       }
