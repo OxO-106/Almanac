@@ -869,7 +869,7 @@ views.course = async (id) => {
 const LECTURE_STATUS = { transcribing: "transcribing…", cleaning: "cleaning up the text…", failed: "couldn't transcribe" };
 const mmss = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 const lectureRow = r => `<div class="when-row"><span class="when">${esc(fmtDay(r.date))}</span>
-  <a class="what" href="#lecture/${r.id}">${r.status === "done" ? (r.transcript ? `${Math.round(r.seconds / 60)} min transcript` : "Transcript deleted")
+  <a class="what" href="#lecture/${r.id}">${r.kind_name ? `${esc(r.kind_name)} · ` : ""}${r.status === "done" ? (r.transcript ? `${Math.max(1, Math.round(r.seconds / 60))} min transcript` : "Transcript deleted")
     : `${r.status === "failed" ? "" : `<span class="spin"></span> `}${esc(LECTURE_STATUS[r.status] || r.status)}`}</a></div>`;
 
 async function uploadRecording(courseId, files) {
@@ -900,7 +900,8 @@ views.lecture = async (id) => {
   return `<div class="page">
     <header class="head"><div class="dateline">${course ? `<a href="#course/${course.id}">${esc(course.number)} · ${esc(course.instructor)}</a>` : "Lecture"}</div>
       <h1>${esc(fmtLong(r.date))}</h1>
-      ${r.status === "done" && r.transcript ? `<p class="voice small">${Math.round(r.seconds / 60)} minutes. Underlined words are ones I'm not sure were heard right.</p>
+      ${r.kind_name ? `<p class="voice small">${esc(r.kind_name)}${r.papers.length ? `: ${r.papers.map(esc).join("; ")}` : ""}</p>` : ""}
+      ${r.status === "done" && r.transcript ? `<p class="voice small">${Math.max(1, Math.round(r.seconds / 60))} minute${Math.round(r.seconds / 60) > 1 ? "s" : ""}. Underlined words are ones I'm not sure were heard right.</p>
         <div class="row-actions"><button class="btn quiet small" onclick="deleteTranscript(${r.id})">Delete transcript</button></div>` : ""}</header>
     <section>${body}</section>
   </div>`;

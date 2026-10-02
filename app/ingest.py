@@ -4,6 +4,7 @@ The model only reads and quotes: it reports what the document states, with a
 verbatim quote and dates as written. Code checks every quote against the
 text, turns dates into calendar dates, and queues Proposals for review."""
 
+import functools
 import io
 import json
 from pathlib import Path
@@ -295,19 +296,28 @@ def _match_at(q, t, start):
 ELLIPSIS_GAP = 30  # words a "..." may skip: a table row's cells, not the next row
 
 
+@functools.lru_cache(maxsize=8)
+def _row_starts(text: str) -> frozenset:
+    """Word positions where a schedule row starts (a date heading line)."""
+    return frozenset(len(_words(text[:m.start()])) for m in DATE_HEADING.finditer(text))
+
+
 def quoted(quote: str, text: str, gap: int = ELLIPSIS_GAP) -> bool:
     """The quote's words appear in the document in order and close together.
-    Pieces joined by "..." may be up to `gap` words apart."""
+    Pieces joined by "..." may be up to `gap` words apart, within one schedule
+    row: "Mon Nov 2 ... Mid-term project report" can't skip over the "Wed Nov 4"
+    row the report is in."""
     t = _words(text)
     parts = [p for p in (_words(x) for x in re.split(r"\.\.\.|…", quote or "")) if p]
     if not parts or sum(map(len, parts)) < 2:
         return False
+    rows = _row_starts(text) if len(parts) > 1 else frozenset()
 
     def rest(pieces, frm):
         if not pieces:
             return True
         return any((end := _match_at(pieces[0], t, s)) >= 0 and rest(pieces[1:], end)
-                   for s in range(frm, min(frm + gap + 1, len(t))))
+                   for s in range(frm, min(frm + gap + 1, len(t))) if not any(frm <= r < s for r in rows))
 
     return any((end := _match_at(parts[0], t, s)) >= 0 and rest(parts[1:], end) for s in range(len(t)))
 
@@ -714,6 +724,91 @@ def _find_slots(items, resolved, keep):
                 items[i]["slot"] = "same:" + " ".join(sorted(words))
 
 
+LECTURES_PROMPT = RULES + """
+Task: how this course's class meetings are run.
+- "usual": what most class meetings are: "paper_session" (papers or topics are presented and discussed, usually by students taking turns, as in a seminar with graded presentations) or "concept_lecture" (the instructor teaches the material). Quote the passage that shows it.
+- "presentation_days": each class meeting in the schedule given to presenting projects (proposals, project reports, demos, final presentations), with its date as written ("when") and a quote that contains the date. A paper presented and discussed in a regular class is not a presentation day. Not days without class, not deliverables handed in outside class."""
+
+LECTURES_SCHEMA = {"type": "object", "properties": {
+    "usual": {"type": "object", "properties": {
+        "kind": {"type": "string", "enum": ["paper_session", "concept_lecture"]}, "quote": {"type": "string"}},
+        "required": ["kind", "quote"]},
+    "presentation_days": {"type": "array", "items": {"type": "object", "properties": {
+        "when": WHEN, "quote": {"type": "string"}}, "required": ["when", "quote"]}}},
+    "required": ["presentation_days"]}
+
+
+PROJECT_WORDS = re.compile(r"\b(projects?|proposals?|reports?|demos?|posters?|pitch(es)?|milestones?)\b", re.I)  # not "presentation": a paper is presented too
+
+
+PRESENTED = re.compile(r"\b(presentations?|presented|presents?|reports?|demos?|posters?|pitch(es)?|first half|second half)\b", re.I)
+
+
+def _schedule_rows(text, today, term):
+    """(day or week window, row text) for each schedule row: from a date heading
+    ("Wed Oct 14", "Week 9:") to the next."""
+    heads = list(DATE_HEADING.finditer(text))
+    out = []
+    for m, nxt in zip(heads, heads[1:] + [None]):
+        row = text[m.start(): nxt.start() if nxt else min(len(text), m.end() + 600)]
+        if m.group("week"):
+            when = {"type": "week", "week": int(m.group("week"))}
+        else:
+            month = next(k for k, n in enumerate(MONTHS, 1) if m.group("month").lower()[:3] == n[:3])
+            when = {"type": "date", "month": month, "day": int(m.group("day"))}
+        w = resolve({"title": "", "quote": m.group(0), "when": when}, today, term, {})
+        day = w.window if w.window else (w.value or "")[:10]
+        if day:
+            out.append((day, row))
+    return out
+
+
+def _lecture_kinds(con, llm, context, text, items, today, term, source_id):
+    """Step 9, Lecture kinds (spec: .scratch/lecture-recording): the course's usual
+    kind, read by the model and proven by its quote; each class date's papers,
+    from the readings already found (a class with papers is a Paper session);
+    and presentation days: a schedule row that names a project, report or
+    proposal and has no papers is one (code); a row with papers too (Ding's Nov 9:
+    "First half Mid-term project report, Second half" a paper) is one when the
+    model says so and the row says what's presented. Nothing per course is hard-coded."""
+    rows = []
+    try:
+        got = _ask_model(llm, LECTURES_PROMPT, LECTURES_SCHEMA, context, text[:QUESTIONS_CHARS])
+    except Exception:
+        got = {}
+    usual = got.get("usual") or {}
+    if usual.get("kind") and (q := checked_quote(usual.get("quote"), text)):
+        rows.append((None, usual["kind"], None, q))
+    papers: dict[str, list[str]] = {}
+    for it in items:  # all of them: a past lecture (watched as a replay) still has its papers
+        if it.get("_class") and re.match(r"(read|review|skim)\b", it["title"], re.I):
+            title = re.sub(r"^(read|review|skim)\s+", "", it["title"], flags=re.I)
+            if title not in papers.setdefault(it["_class"], []):
+                papers[it["_class"]].append(title)
+    has_papers = lambda day: any(p == day or ("/" in day and day[:10] <= p <= day[-10:]) for p in papers)
+    said = set()  # days the model names as presentation days
+    for d in got.get("presentation_days") or []:
+        q = checked_quote(d.get("quote"), text)
+        w = q and resolve({"title": "", "quote": q, "when": d.get("when")}, today, term, {})
+        if w and (w.value or w.window):
+            said.add(w.window or w.value[:10])
+    shown = set()
+    for day, row in _schedule_rows(text, today, term):
+        if day in shown or re.search(r"\bno class\b", row, re.I) or not PROJECT_WORDS.search(row):
+            continue
+        if has_papers(day) and not (day in said and PRESENTED.search(row)):
+            continue  # a paper day where something is only handed in ("Proposal one-pager")
+        shown.add(day)
+        quote = " ".join(row.split())[:160]
+        rows.append((day, "presentation_day", json.dumps(papers.pop(day)) if day in papers else None, quote))
+    for day, titles in sorted(papers.items()):
+        rows.append((day, "paper_session", json.dumps(titles), None))
+    with WRITE:
+        con.execute("delete from lecture_kinds where source_id = ?", (source_id,))
+        con.executemany("insert into lecture_kinds (source_id, date, kind, papers, quote) values (?, ?, ?, ?, ?)",
+                        [(source_id, *r) for r in rows])
+
+
 READING_WORDS = re.compile(r"\b(readings?|reading list|papers?)\b", re.I)
 READING_REACH = 150  # words from a class date to the last reading listed under it
 
@@ -844,6 +939,7 @@ def _settle(items, text, today, term, lectures):
                 and (resolved[i].value[:10] in lecture_days or it.get("_listed")) \
                 and re.match(r"(read|review|skim)\b", it["title"], re.I):
             # dated by its lecture's row: read it the day before
+            it["_class"] = resolved[i].value[:10]  # the class it's for (its Lecture kind lists it)
             day = date.fromisoformat(resolved[i].value[:10]) - timedelta(days=1)
             resolved[i] = it["_fixed"] = When(day.isoformat())
             continue
@@ -1128,6 +1224,8 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
             inbox.propose(con, clock, source_id, f"Remove “{row['title']}”? It's not in the new version of {title}.",
                           [{"op": "delete", "kind": kind, "id": row["id"]}])
 
+    _lecture_kinds(con, llm, context, text, items, today, term, source_id)
+
     with WRITE:
         con.execute("update sources set dropped = ? where id = ?", (json.dumps(dropped), source_id))
     ask_left_out(con, clock, source_id, dropped)
@@ -1249,6 +1347,7 @@ def _before_lecture(it, lectures, under=None) -> When | None:
         iso, heading = lectures[int(m.group(1))]
         day = date.fromisoformat(iso)
         it["quote"] = f"{heading} … {it['quote'].strip()}"
+    it["_class"] = day.isoformat()
     return When((day - timedelta(days=1)).isoformat())
 
 

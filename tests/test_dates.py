@@ -327,3 +327,10 @@ def test_no_to_the_reading_list_leaves_the_readings_out(client, llm):
     assert client.get("/api/chat").json()["current"]["options"] == ["Yes", "No"]
     client.post("/api/chat", json={"text": "No"})
     assert not any(s.startswith("Read") for s in props(client))
+
+
+def test_a_quote_cant_skip_into_another_dates_row():
+    from app.ingest import quoted
+    t = "Mon Nov 2\nAgents: Coding Agents\nSWE-agent\nWed Nov 4\nMid-term project report\nMon Nov 9\nFirst half\nMid-term project report\n"
+    assert not quoted("Mon Nov 2 ... Mid-term project report", t)  # the report is in the Nov 4 row
+    assert quoted("Mon Nov 9 ... Mid-term project report", t) and quoted("Wed Nov 4 Mid-term project report", t)

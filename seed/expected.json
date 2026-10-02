@@ -46,7 +46,7 @@
       },
       {
         "all": [
-          "one-pager|one page|one-page|one pager"
+          "one-pager|one page|one-page|one pager|proposal submission"
         ],
         "date": "2026-10-21",
         "quote": "Wed Oct 21 ... Proposal one-pager Due"
@@ -497,8 +497,36 @@
         ],
         "date": "2026-11-23",
         "why": "Nov 23 is a cyber-security lecture, the row above"
+      },
+      {
+        "all": [
+          "mid"
+        ],
+        "date": "2026-11-02",
+        "why": "the first-half mid-term report is Mon Nov 9 ('Mon Nov 9 First half Mid-term project report'); Nov 2 is a paper day"
       }
-    ]
+    ],
+    "lecture_kinds": {
+      "usual": "paper_session",
+      "dates": [
+        {
+          "date": "2026-10-05",
+          "kind": "paper_session",
+          "papers": [
+            "gqa",
+            "kimi"
+          ]
+        },
+        {
+          "date": "2026-10-14",
+          "kind": "presentation_day"
+        },
+        {
+          "date": "2026-11-30",
+          "kind": "presentation_day"
+        }
+      ]
+    }
   },
   "CS 239 Fall 2026 Course Schedule & Reading List.pdf": {
     "courses": [
@@ -786,6 +814,13 @@
           "integrity"
         ],
         "window": "2026-09-28/2026-10-02"
+      },
+      {
+        "all": [
+          "check-in|check in|checkin"
+        ],
+        "date": "2026-10-29",
+        "quote": "Thursday, October 29 — Mid-Project Check-in: Phase 1 Due (No Paper Presentation)"
       }
     ],
     "questions": [
@@ -808,7 +843,23 @@
         "why": "team presentation slot/topic is chosen at sign-up"
       }
     ],
-    "wrong_dates": []
+    "wrong_dates": [],
+    "lecture_kinds": {
+      "usual": "paper_session",
+      "dates": [
+        {
+          "date": "2026-10-13",
+          "kind": "paper_session",
+          "papers": [
+            "swe-agent"
+          ]
+        },
+        {
+          "date": "2026-12-03",
+          "kind": "presentation_day"
+        }
+      ]
+    }
   },
   "26F-COM SCI-269-SEM-3 Seminar_ Current Topics in Artificial Intelligence (cross-listed).pdf": {
     "courses": [
@@ -857,7 +908,16 @@
         "why": "the oral final can be replaced by an optional project: the student's choice"
       }
     ],
-    "wrong_dates": []
+    "wrong_dates": [],
+    "lecture_kinds": {
+      "usual": "concept_lecture",
+      "dates": [
+        {
+          "date": "2026-11-23",
+          "kind": "presentation_day"
+        }
+      ]
+    }
   },
   "CS259_F26_CourseInformation.pdf": {
     "courses": [
@@ -910,6 +970,10 @@
         "why": "final written report: no due date given"
       }
     ],
-    "wrong_dates": []
+    "wrong_dates": [],
+    "lecture_kinds": {
+      "usual": "paper_session",
+      "dates": []
+    }
   }
 }

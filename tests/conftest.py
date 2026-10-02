@@ -31,6 +31,7 @@ class FakeLLM:
         self.replies = []
         self.rows = []
         self.readings = []
+        self.lectures, self.lecture_requests = [], []
         self.requests = []
 
     def status(self):
@@ -39,6 +40,10 @@ class FakeLLM:
         return {"model": "fake", "ready": True, "message": ""}
 
     def chat(self, messages, schema=None, **kw):
+        if "how this course's class meetings are run" in messages[0]["content"]:
+            # the syllabus reader's last step, Lecture kinds: scripted with llm.lectures, logged apart
+            self.lecture_requests.append({"messages": messages, "schema": schema})
+            return self.lectures.pop(0) if self.lectures else json.dumps({"presentation_days": []})
         self.requests.append({"messages": messages, "schema": schema})
         if "which the first reading found nothing in" in messages[0]["content"]:
             # the schedule-row coverage pass: tests script it with llm.rows

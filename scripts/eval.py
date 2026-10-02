@@ -63,6 +63,7 @@ def run_one(path: Path, labels: dict, llm) -> dict:
             for d in json.loads(src_dropped := (con.execute("select dropped from sources").fetchone()[0] or "[]")):
                 print(f"      × dropped {d['title']} | {d['quote']!r}")
         questions = [r["text"] for r in con.execute("select text from questions order by id")]
+        kinds = [dict(r) for r in con.execute("select date, kind, papers from lecture_kinds order by id")]
         con.close()
 
     items = [p for p in props if p["op"] == "create" and p["kind"] in ("deadlines", "events", "tasks", "projects")
@@ -105,6 +106,22 @@ def run_one(path: Path, labels: dict, llm) -> dict:
                         "ok": any(e["repeat"] == m["repeat"] and e["start"][11:16] == m["start"]
                                   and (not m.get("location") or e.get("location") == m["location"]) for e in events)}
                        for m in labels["meetings"]]
+    # Lecture kinds: the usual kind, and each labelled date's kind (exact date, else a week holding it, else usual) and papers.
+    def kind_on(day):
+        exact = [k for k in kinds if k["date"] == day]
+        week = [k for k in kinds if k["date"] and "/" in k["date"] and k["date"][:10] <= day <= k["date"][-10:]]
+        return (exact or week or [k for k in kinds if k["date"] is None] or [None])[0]
+    lk = labels.get("lecture_kinds")
+    out["kinds"] = []
+    if lk:
+        usual = next((k["kind"] for k in kinds if k["date"] is None), None)
+        out["kinds"].append({"want": f"usually {lk['usual']}", "ok": usual == lk["usual"], "got": usual})
+        for want in lk["dates"]:
+            got = kind_on(want["date"])
+            papers = " ".join(json.loads(got["papers"] or "[]")).lower() if got else ""
+            ok = bool(got) and got["kind"] == want["kind"] and all(p in papers for p in want.get("papers", []))
+            out["kinds"].append({"want": f"{want['date']} {want['kind']}" + (f" with {', '.join(want['papers'])}" if want.get("papers") else ""),
+                                 "ok": ok, "got": got and f"{got['kind']} {papers[:80]}"})
     return out
 
 
@@ -122,7 +139,7 @@ def main():
     labels = json.loads((ROOT / "seed" / "expected.json").read_text(encoding="utf-8"))
     print(f"model: {llm.status()['model']}   runs: {args.runs}\n")
 
-    totals = {"req": 0, "req_ok": 0, "unsupported": 0, "noise": 0, "q": 0, "q_ok": 0, "secs": 0}
+    totals = {"req": 0, "req_ok": 0, "unsupported": 0, "noise": 0, "q": 0, "q_ok": 0, "k": 0, "k_ok": 0, "secs": 0}
     for name, lab in labels.items():
         if name.startswith("_") or args.only.lower() not in name.lower():
             continue
@@ -136,6 +153,8 @@ def main():
                 print(f"    {'✓' if x['ok'] else '✗'} {x['label']}" + ("" if x["ok"] else f"   [got: {', '.join(x['got']) or 'nothing'}]"))
             for q in r["questions"]:
                 print(f"    {'✓' if q['ok'] else '✗'} asks: {q['why']}")
+            for k in r["kinds"]:
+                print(f"    {'✓' if k['ok'] else '✗'} lecture kind: {k['want']}" + ("" if k["ok"] else f"   [got: {k['got'] or 'nothing'}]"))
             for u in r["unsupported"]:
                 print(f"    ! date not supported by the labels: {u}")
             if r["noise"]:
@@ -145,13 +164,15 @@ def main():
             totals["req_ok"] += sum(x["ok"] for x in r["required"])
             totals["q"] += len(r["questions"])
             totals["q_ok"] += sum(q["ok"] for q in r["questions"])
+            totals["k"] += len(r["kinds"])
+            totals["k_ok"] += sum(k["ok"] for k in r["kinds"])
             totals["unsupported"] += len(r["unsupported"])
             totals["noise"] += len(r["noise"])
             totals["secs"] += r["secs"]
     t = totals
     if t["req"]:
         print(f"SUMMARY  required found with the right date: {t['req_ok']}/{t['req']} ({100 * t['req_ok'] // t['req']}%)   "
-              f"questions asked: {t['q_ok']}/{t['q']}   unsupported dates: {t['unsupported']}   noise items: {t['noise']}   "
+              f"questions asked: {t['q_ok']}/{t['q']}   lecture kinds: {t['k_ok']}/{t['k']}   unsupported dates: {t['unsupported']}   noise items: {t['noise']}   "
               f"time: {t['secs']}s")
 
 

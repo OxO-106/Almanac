@@ -88,6 +88,25 @@ def _course_sources(con, c) -> list[int]:
     return sorted(ids)
 
 
+KIND_NAMES = {"paper_session": "Paper session", "concept_lecture": "Concept lecture", "presentation_day": "Presentation day"}
+
+
+def lecture_kind(con, course_id, day: str) -> dict | None:
+    """{"kind", "papers", "quote"} for this course's lecture on `day`, from its
+    syllabus: that date's row, a week containing it, else the course's usual kind."""
+    c = con.execute("select * from courses where id = ?", (course_id,)).fetchone() if course_id is not None else None
+    ids = _course_sources(con, c) if c else []
+    if not ids:
+        return None
+    rows = con.execute(f"select * from lecture_kinds where source_id in ({','.join('?' * len(ids))}) and source_id in "
+                       f"(select id from sources where replaced_by is null) order by id", ids).fetchall()
+    exact = [r for r in rows if r["date"] == day]
+    week = [r for r in rows if r["date"] and "/" in r["date"] and r["date"][:10] <= day <= r["date"][-10:]]
+    usual = [r for r in rows if r["date"] is None]
+    r = (exact or week or usual or [None])[0]
+    return r and {"kind": r["kind"], "papers": json.loads(r["papers"]) if r["papers"] else [], "quote": r["quote"]}
+
+
 def _chunks(segments):
     out, cur, size = [], [], 0
     for i, s in enumerate(segments):
@@ -217,6 +236,9 @@ def _view(con, r) -> dict:
     pending = d.pop("pending")
     d["retry"] = d["status"] == "failed" and pending is not None  # a failed clean-up can run again
     d["label"] = _label(con, r)
+    lk = lecture_kind(con, r["course_id"], r["date"])
+    d["papers"] = lk["papers"] if lk and lk["kind"] == d["kind"] else []
+    d["kind_name"] = KIND_NAMES.get(d["kind"] or "")
     return d
 
 
@@ -240,8 +262,10 @@ async def upload(file: UploadFile, background: BackgroundTasks, request: Request
         rid = s.db.execute("insert into recordings (source_id, course_id, date, status, created_at) values (?, ?, ?, 'transcribing', ?)",
                            (src, course_id, day, now.strftime("%Y-%m-%dT%H:%M"))).lastrowid
     rec = s.db.execute("select * from recordings where id = ?", (rid,)).fetchone()
+    lk = lecture_kind(s.db, course_id, day)
     with WRITE:
         s.db.execute("update sources set about = ? where id = ?", (_label(s.db, rec), src))
+        s.db.execute("update recordings set kind = ? where id = ?", (lk and lk["kind"], rid))
     folder = s.db_path.parent / "recording-audio"
     folder.mkdir(exist_ok=True)
     audio = folder / f"{rid}{ext}"
