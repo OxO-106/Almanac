@@ -186,6 +186,10 @@ def after_transcript(con, llm, clock, rec_id):
         with WRITE:
             con.execute("update recordings set notes_status = 'failed', notes_error = ? where id = ?",
                         (f"{type(e).__name__}: {e}", rec_id))
+    try:  # a replay ticks off its "watch the recording" task (ticket 12)
+        tick_replay_task(con, clock, rec)
+    except Exception as e:
+        print(f"replay task: {type(e).__name__}: {e}")
     try:  # what the lecturer announced → Proposals and questions (ticket 11)
         from . import announcements
         if (n := announcements.to_plan(con, llm, clock, rec, segments)):
@@ -194,3 +198,29 @@ def after_transcript(con, llm, clock, rec_id):
                               "#inbox")
     except Exception as e:
         print(f"announcements: {type(e).__name__}: {e}")
+
+
+WATCH = re.compile(r"\b(watch|re-?watch|recording|replay)\b", re.I)
+
+
+def tick_replay_task(con, clock, rec):
+    """Watching the lecture is done: its "watch the recording" task (the earliest
+    open one due on or after the lecture's day, else the most overdue) is marked
+    done as the student's own doing, so it shows in the task's history and can
+    be undone."""
+    if rec["course_id"] is None:
+        return None
+    tasks = [dict(r) for r in con.execute("select * from tasks where course_id = ? and status = 'open'", (rec["course_id"],))
+             if WATCH.search(r["title"])]
+    if not tasks:
+        return None
+    due = lambda t: (t["due"] or t["do_date"] or "9999")[:10]
+    ahead = sorted((t for t in tasks if due(t) >= rec["date"]), key=due)
+    task = ahead[0] if ahead else sorted(tasks, key=due)[0]
+    from . import inbox
+    p = inbox.propose_and_accept(con, clock, rec["source_id"], f"Mark “{task['title']}” done (you recorded the {rec['date']} lecture)",
+                                 [{"op": "update", "kind": "tasks", "id": task["id"], "data": {"status": "done"}}])
+    if p:
+        recordings.notify(con, clock, "recording", f"Ticked off “{task['title']}”",
+                          f"You recorded the {rec['date']} lecture. If you haven't watched it yet, open the task and mark it not done.", f"#lecture/{rec['id']}")
+    return task

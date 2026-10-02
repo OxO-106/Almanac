@@ -79,3 +79,24 @@ def test_the_models_guesses_about_meaning_are_taken_out(client, llm, transcriber
     llm.notes = ['## Patents\n- Apple\'s patent for "penny-free climbs" (likely referring to touch interfaces) is an example.']
     rec = lecture(client, transcriber, [{"start": 0.0, "end": 9.0, "text": "Apple patent for penny-free climbs."}])
     assert rec["notes"] == '## Patents\n- Apple\'s patent for "penny-free climbs" is an example.'
+
+
+def test_a_replay_ticks_off_the_task_for_that_lecture(client, llm, transcriber):
+    cid = client.post("/api/courses", json={"number": "CS 269", "instructor": "Stefano Soatto"}).json()["id"]
+    t1 = client.post("/api/tasks", json={"title": "Watch the CS 269 recording", "due": "2026-10-06", "course_id": cid}).json()
+    t2 = client.post("/api/tasks", json={"title": "Watch the CS 269 recording", "due": "2026-10-08", "course_id": cid}).json()
+    other = client.post("/api/tasks", json={"title": "Read the GQA paper", "due": "2026-10-06", "course_id": cid}).json()
+    transcriber.segments = [{"start": 0.0, "end": 5.0, "text": "Welcome back."}]
+    rid = client.post("/api/recordings/start", json={"course_id": cid, "date": "2026-10-05"}).json()["id"]
+    send(client, rid, 0, tone(1))
+    client.post(f"/api/recordings/{rid}/stop")
+    wait_for(lambda: client.get(f"/api/recordings/{rid}").json(), lambda r: r["notes_status"] == "done")
+    status = {t["id"]: t["status"] for t in client.get("/api/tasks").json()}
+    assert (status[t1["id"]], status[t2["id"]], status[other["id"]]) == ("done", "open", "open")  # the Oct 5 lecture's task only
+    assert any(n["title"] == "Ticked off “Watch the CS 269 recording”" for n in client.get("/api/notifications").json())
+    # through the gate, in the task's history: undoing it reopens the task
+    from app import inbox
+    con = client.app.state.db
+    (pid,) = [r["id"] for r in con.execute("select id from proposals where summary like 'Mark “Watch%' and status = 'accepted'")]
+    inbox.withdraw(con, pid)
+    assert client.get(f"/api/tasks/{t1['id']}").json()["status"] == "open"
