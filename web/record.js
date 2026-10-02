@@ -154,13 +154,47 @@ async function stopRecording() {
   if (rec.queue.length && !confirm(`${rec.queue.length} seconds of audio haven't reached the PC yet. Stop anyway?`)) { rec.paused = false; return; }
   try { await api(`/api/recordings/${id}/stop`, { method: "POST" }); } catch (e) { toast(esc(detail(e))); }
   rec.wake?.release().catch(() => {});
-  Object.assign(rec, { id: null, queue: [], lines: [], partial: "" });
+  rec.pip?.close();
+  Object.assign(rec, { id: null, queue: [], lines: [], partial: "", pip: null });
   location.hash = `#lecture/${id}`;
+}
+
+// ---- the floating caption window: always on top, over the lecture video (Chrome/Edge) ----
+
+const PIP_STYLE = `
+  html, body { margin: 0; height: 100%; background: #1F2A33; color: #F4F1EA; font: 22px/1.4 "Source Sans 3", "Segoe UI", system-ui, sans-serif; }
+  #pip { box-sizing: border-box; height: 100%; padding: 10px 16px; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; }
+  #pip p { margin: 0 0 4px; }
+  #pip .partial { color: #A9B4BC; }
+  #pip .note { font-size: 14px; color: #A9B4BC; }`;
+
+async function floatCaptions() {
+  if (rec.pip) { rec.pip.close(); return; }  // back to the page
+  try {
+    rec.pip = await documentPictureInPicture.requestWindow({ width: 620, height: 150 });
+  } catch (e) { toast(esc(`Couldn't open the caption window: ${e.message}`)); return; }
+  const d = rec.pip.document;
+  d.title = "Captions";
+  d.head.insertAdjacentHTML("beforeend", `<style>${PIP_STYLE}</style>`);
+  d.body.innerHTML = `<div id="pip"></div>`;
+  rec.pip.addEventListener("pagehide", () => { rec.pip = null; drawLive(); });
+  drawLive();
+}
+
+function drawPip() {
+  const box = rec.pip?.document.getElementById("pip");
+  if (!box) return;
+  const last = rec.lines.slice(-2).map(l => `<p>${esc(l.text)}</p>`).join("");
+  box.innerHTML = last + (rec.partial ? `<p class="partial">${esc(rec.partial)}</p>` : "")
+    || `<p class="note">${rec.captionsError ? `Captions aren't available: ${esc(rec.captionsError)}` : "Captions appear here a few seconds after the lecturer speaks."}</p>`;
+  if (rec.paused) box.insertAdjacentHTML("beforeend", `<p class="note">${esc(rec.note || "Paused")}</p>`);
 }
 
 const mmssLong = s => `${Math.floor(s / 3600) ? Math.floor(s / 3600) + ":" : ""}${String(Math.floor(s / 60) % 60).padStart(Math.floor(s / 3600) ? 2 : 1, "0")}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 
 function drawLive() {
+  drawPip();
+  if ($("#rec-float")) $("#rec-float").textContent = rec.pip ? "Captions here" : "Float captions";
   const bar = $("#rec-status"), box = $("#captions");
   if (!bar || !box) return;
   const status = rec.paused ? (rec.note || "Paused") : rec.unsent ? `Can't reach the PC: ${rec.unsent} s waiting, still recording` : "Recording";
@@ -235,6 +269,7 @@ views.record = async (arg) => {
       <header class="head"><div class="dateline">${c ? esc(courseName(c.id)) : "Lecture"}${rec.kind ? ` · ${esc(KINDS_LECTURE[rec.kind])}` : ""}</div>
         <div class="rec-bar"><span id="rec-status"></span>
           <button class="btn small" id="rec-pause" onclick="${rec.note ? `resumeRecording(${rec.id}, rec.source)` : "pauseRecording()"}">Pause</button>
+          ${"documentPictureInPicture" in window ? `<button class="btn small" id="rec-float" onclick="floatCaptions()">${rec.pip ? "Captions here" : "Float captions"}</button>` : ""}
           <button class="btn primary small" onclick="stopRecording()">Stop</button></div></header>
       <div class="rec-layout">
         <section><h2>Captions <span class="meta">rough, for following along; the transcript replaces them</span></h2><div class="captions" id="captions"></div></section>
