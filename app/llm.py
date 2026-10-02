@@ -1,6 +1,6 @@
-"""Local LLM access through Ollama, shared with Papercut: same model and the
-same context size, so Ollama keeps one copy loaded for both apps (a different
-num_ctx would make it reload the model on every switch)."""
+"""Local LLM access through Ollama, which Papercut shares: same context size, so
+a model loaded by one app serves the other without a reload (a different num_ctx
+would make Ollama reload it on every switch)."""
 
 import json
 from typing import Callable, Iterator
@@ -10,11 +10,13 @@ import httpx
 KEEP_ALIVE = "30m"
 TIMEOUT = httpx.Timeout(180, connect=10)
 NUM_CTX = 32768  # must match Papercut's
-DEFAULT_MODEL = "qwen3.5:9b-q8_0"
-# Reading documents uses a larger model: uploads are rare background jobs where
-# finding every deadline matters more than speed (see scripts/eval.py). It
-# doesn't fit on the GPU beside Papercut's model, so Ollama swaps them.
-DEFAULT_READER = "qwen3.5:35b-a3b"
+# One model for chat and documents: the 35B MoE reads chat far better than the 9B
+# (scripts/chat_eval.py: 32/32 vs 26/32) at the same speed once loaded, and finds
+# more deadlines in syllabi (scripts/eval.py). One model means Almanac never swaps
+# between its own two; Ollama swaps only when Papercut (the 9B) is used.
+DEFAULT_MODEL = "qwen3.5:35b-a3b"
+DEFAULT_READER = DEFAULT_MODEL
+FALLBACK_MODEL = "qwen3.5:9b-q8_0"  # if the 35B isn't downloaded
 # 127.0.0.1, not localhost: Windows tries IPv6 first and Ollama listens on IPv4.
 DEFAULT_URL = "http://127.0.0.1:11434"
 
@@ -22,7 +24,7 @@ DEFAULT_URL = "http://127.0.0.1:11434"
 class Ollama:
     """key: the settings entry under "ai" naming the model ("model" for chat,
     "reader_model" for documents). A reader model that isn't downloaded falls
-    back to the chat model."""
+    back to the chat model; a default chat model that isn't, to the 9B."""
 
     def __init__(self, settings: Callable[[], dict] = dict, key: str = "model", default: str = DEFAULT_MODEL):
         self._settings, self._key, self._default = settings, key, default
@@ -33,6 +35,8 @@ class Ollama:
         model = s.get(self._key) or self._default
         if self._key != "model" and not self._installed(url, model):
             model = s.get("model") or DEFAULT_MODEL
+        if not s.get("model") and model == DEFAULT_MODEL and not self._installed(url, model):
+            model = FALLBACK_MODEL
         return model, url
 
     @staticmethod

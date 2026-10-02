@@ -14,7 +14,7 @@ Design: [`.scratch/almanac-v1/spec.md`](.scratch/almanac-v1/spec.md) · vocabula
 
 **Laptop:** https://&lt;this PC&gt;.&lt;tailnet&gt;.ts.net:8443 over [Tailscale](https://tailscale.com), reachable only by your own devices (Papercut keeps the default port). `tailscale serve --https=8443 off` stops sharing it.
 
-**Models:** chat uses `qwen3.5:9b-q8_0` (shared with Papercut); reading documents uses `qwen3.5:35b-a3b` if it is pulled, else the 9B. Both run through Ollama on this PC.
+**Model:** chat and reading documents both use `qwen3.5:35b-a3b` (falls back to Papercut's `qwen3.5:9b-q8_0` if the 35B isn't pulled). It runs through Ollama on this PC; switching to Papercut swaps models, so the first reply after that takes about 20 s longer. `scripts/chat_eval.py` and `scripts/eval.py` compare models.
 
 ## Setup from scratch
 

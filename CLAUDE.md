@@ -1,6 +1,6 @@
 # Almanac
 
-A local personal assistant that turns syllabi, documents and chat into goals, projects, tasks and a calendar, and keeps you on track. All AI runs on this PC through Ollama, sharing Papercut's model (`D:\Read\paper-reader`). Spec: `.scratch/almanac-v1/spec.md`. Vocabulary: `CONTEXT.md`.
+A local personal assistant that turns syllabi, documents and chat into goals, projects, tasks and a calendar, and keeps you on track. All AI runs on this PC through Ollama (shared with Papercut, `D:\Read\paper-reader`); Almanac uses `qwen3.5:35b-a3b` for chat and documents. Compare models with `scripts/chat_eval.py` before changing it. Spec: `.scratch/almanac-v1/spec.md`. Vocabulary: `CONTEXT.md`.
 
 ## Rules
 
