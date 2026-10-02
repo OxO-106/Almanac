@@ -441,6 +441,55 @@ class When:
         self.value, self.window, self.provisional, self.ask = value, window, provisional, ask
 
 
+_WD = r"(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tues|tue|wed|thurs|thur|thu|fri|sat|sun)"
+SAID = [  # how a student says a date in chat, read by code (the model's reading can slip)
+    (re.compile(r"\bday after tomorrow\b"), lambda m: {"type": "in_days", "days": 2}),
+    (re.compile(r"\b(today|tonight)\b"), lambda m: {"type": "in_days", "days": 0}),
+    (re.compile(r"\btomorrow\b"), lambda m: {"type": "in_days", "days": 1}),
+    (re.compile(r"\bin (\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten) (day|week)s?\b"),
+     lambda m: {"type": "in_days", "days": (int(m[1]) if m[1].isdigit() else max(1, NUMBER_WORDS.index(m[1])) if m[1] in NUMBER_WORDS else 1)
+                * (7 if m[2] == "week" else 1)}),
+    (re.compile(rf"\bnext {_WD}\b"), lambda m: {"type": "weekday", "weekday": m[1][:2].upper(), "next_week": True}),
+    (re.compile(rf"(?<!every )(?<!next )\b{_WD}\b(?!s)"), lambda m: {"type": "weekday", "weekday": m[1][:2].upper()}),
+    (re.compile(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.? (\d{1,2})(st|nd|rd|th)?\b"),
+     lambda m: {"type": "date", "month": next(i for i, n in enumerate(MONTHS, 1) if n.startswith(m[1][:3])), "day": int(m[2])}),
+    (re.compile(r"\b(\d{1,2})(st|nd|rd|th)? of (jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b"),
+     lambda m: {"type": "date", "month": next(i for i, n in enumerate(MONTHS, 1) if n.startswith(m[3][:3])), "day": int(m[1])}),
+    (re.compile(r"\b(\d{1,2})/(\d{1,2})\b"), lambda m: {"type": "date", "month": int(m[1]), "day": int(m[2])}),
+]
+_CLOCK = re.compile(r"\b(?:at |by |@ ?)?(\d{1,2})(?::(\d{2}))? ?(am|pm|a\.m\.|p\.m\.)|\b(noon)\b|\bat (\d{1,2}):(\d{2})\b")
+
+
+def said_when(text: str) -> dict | None:
+    """The one date a chat message states, as a `when`, or None if it states
+    none or more than one (then the model's reading stands)."""
+    t, found, taken = _norm(text), [], []
+    for pattern, make in SAID:
+        for m in pattern.finditer(t):
+            if any(a < m.end() and m.start() < b for a, b in taken):
+                continue  # "next friday" isn't also "friday"; "day after tomorrow" isn't "tomorrow"
+            if m[0] == "may" or (pattern.pattern.startswith(r"\b(\d{1,2})/") and not (1 <= int(m[1]) <= 12)):
+                continue
+            taken.append((m.start(), m.end()))
+            found.append(make(m))
+    unique = {json.dumps(w, sort_keys=True) for w in found}
+    return found[0] if len(unique) == 1 else None
+
+
+def said_time(text: str) -> str | None:
+    """"at 3pm", "3:30 p.m.", "noon", "at 15:00" → "HH:MM" when the message states one time."""
+    times = set()
+    for m in _CLOCK.finditer(_norm(text)):
+        if m[4]:
+            times.add("12:00")
+        elif m[5]:
+            times.add(f"{int(m[5]):02d}:{m[6]}")
+        else:
+            h = int(m[1]) % 12 + (12 if m[3].startswith("p") else 0)
+            times.add(f"{h:02d}:{m[2] or '00'}")
+    return times.pop() if len(times) == 1 else None
+
+
 def resolve(it: dict, today: date, term: dict | None, known: dict) -> When:
     """Turn the model's report of a date into a calendar date, trusting only
     what the quote states. `known`: lower-case title → date of items resolved

@@ -211,3 +211,16 @@ def test_a_weekday_the_model_turned_into_a_date_counts_when_said(client, llm):
     say(client, "I need to email Prof. Smith about research by Friday, and call home")
     due = {p["summary"]: p["ops"][0]["data"].get("due") for p in proposals(client)}
     assert due == {"Email Prof. Smith about research": "2026-10-02", "Call home": None}
+
+
+def test_code_reads_the_date_words_when_the_model_slips(client, llm):
+    # "by Friday" put in the weekly-days field; "next Wednesday" read as in 3 days; the time only in start_time
+    llm.replies = ["ok", actions(act(title="Email Prof. Kim about my project idea", quote="email Prof. Kim about my project idea",
+                                     when={"type": "unknown"}, days="FR"))]
+    say(client, "I need to email Prof. Kim about my project idea by Friday")
+    assert proposals(client)[0]["ops"][0]["data"]["due"] == "2026-10-02"
+    llm.replies = ["ok", actions(act(type="event", title="Dentist appointment", quote="dentist appointment next Wednesday at 3pm",
+                                     when={"type": "in_days", "days": 3}, start_time="15:00"))]
+    say(client, "I have a dentist appointment next Wednesday at 3pm")
+    (dentist,) = [p for p in proposals(client) if p["summary"] == "Dentist appointment"]
+    assert (dentist["ops"][0]["kind"], dentist["ops"][0]["data"]["start"]) == ("events", "2026-10-07T15:00")

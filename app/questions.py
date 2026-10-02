@@ -19,7 +19,7 @@ import json
 import re
 from datetime import date, timedelta
 
-from . import canvas, inbox, ingest, merge
+from . import asks, canvas, inbox, ingest, merge, plan
 from .clock import local
 from .db import WRITE
 from .plan import current_term
@@ -61,6 +61,14 @@ def answer(con, llm, clock, question_id, text, reply: Reply):
         n = _held(con, question_id)
         reply.say(linked + (f" {n} suggestion{'s are' if n > 1 else ' is'} ready in Suggestions." if n else ""))
         return
+    if purpose == "meeting":
+        made = _meeting(con, llm, clock, q, text, reply)
+        if not made:  # not answered: say so and ask again, rather than closing it silently
+            reply.say(f"I didn't catch a time there. {asks.meeting_time_again(q['target'].get('days', []))}", question_id)
+            return
+        _mark(con, clock, question_id, text)
+        reply.say(f"Updated {made}.")
+        return
     if purpose == "choice":
         picked = _pick(q["options"], text)
         if picked is None:
@@ -80,8 +88,6 @@ def answer(con, llm, clock, question_id, text, reply: Reply):
     filled = []
     if purpose == "instructor":
         filled += _instructor(con, clock, targets, text, reply)
-    elif purpose == "meeting":
-        filled += _meeting(con, clock, q, text, reply)
     else:  # date, other
         filled += _dates(con, llm, clock, q, targets, text, reply)
         if purpose == "other" and not filled:
@@ -159,21 +165,95 @@ def _instructor(con, clock, targets, text, reply) -> list[str]:
 
 # ---- meeting time --------------------------------------------------------------------
 
-def _meeting(con, clock, q, text, reply) -> list[str]:
+MEETING_PROMPT = """The student answered when one of their classes meets. Report the start and end time (24-hour "HH:MM") the answer gives for that class. The answer may give the time itself ("10 to 11:50") or point to another class or day ("same as Tuesday", "right after Ding's lecture"); use the student's weekly classes listed to work it out. If the answer doesn't give a time and doesn't point to one, set "unclear": true. Never guess."""
+
+MEETING_SCHEMA = {"type": "object", "properties": {"start": {"type": "string"}, "end": {"type": "string"},
+                                                   "unclear": {"type": "boolean"}}, "required": ["unclear"]}
+
+
+def _classes(con, course=None) -> list[dict]:
+    """Weekly classes in the plan and in pending suggestions: {"title", "days",
+    "start", "end", "course", "event" | "proposal"}. `course`: only that course's."""
+    out = []
+    for r in con.execute("select * from events where repeat is not null"):
+        out.append({"title": r["title"], "days": r["repeat"].split(","), "start": r["start"][11:16], "end": (r["end"] or "")[11:16] or None,
+                    "course": r["course_id"], "event": dict(r)})
+    for r in con.execute("select id from proposals where status = 'pending' order by id"):
+        p = inbox._proposal(con, r["id"])
+        o = p["ops"][0]
+        if len(p["ops"]) == 1 and o["op"] == "create" and o["kind"] == "events" and o["data"].get("repeat"):
+            d = o["data"]
+            out.append({"title": d["title"], "days": d["repeat"].split(","), "start": d["start"][11:16],
+                        "end": (d.get("end") or "")[11:16] or None, "course": d.get("course_id"), "proposal": p})
+    return [c for c in out if course is None or c["course"] == course]
+
+
+def _times(con, llm, q, text):
+    """(start, end) the answer gives: written in it ("10am to 11:50am"), or, read by
+    the model, pointed to ("same as Tuesday"). A time must be in the answer or be
+    one of the student's classes, so the model can't invent one."""
+    letters = "".join({"MO": "M", "TU": "Tu", "WE": "W", "TH": "Th", "FR": "F", "SA": "Sa", "SU": "Su"}[d] for d in q["target"].get("days", []))
+    if wk := ingest.weekly(text) or ingest.weekly(f"{letters} {text}"):
+        return wk[1], wk[2]
+    classes = _classes(con)
+    listing = "\n".join(f"- {c['title']}: {','.join(c['days'])} {c['start']}" + (f"-{c['end']}" if c["end"] else "") for c in classes) or "- none"
+    try:
+        got = json.loads(llm.chat([{"role": "system", "content": MEETING_PROMPT},
+                                   {"role": "user", "content": f"The student's weekly classes:\n{listing}\n\nQuestion: {q['text']}\nAnswer: {text}"}],
+                                  schema=MEETING_SCHEMA, timeout=120))
+    except Exception:
+        return None
+    start, end = (got.get("start") or "")[:5], (got.get("end") or "")[:5] or None
+    if got.get("unclear") or not re.fullmatch(r"\d{2}:\d{2}", start):
+        return None
+    if ingest.time_in_quote(start, text):
+        return start, end if end and ingest.time_in_quote(end, text) else None
+    same = [c for c in classes if c["start"] == start]
+    if not same:
+        return None  # a time neither said nor anyone's class time
+    return start, next((c["end"] for c in same if c["end"] == end), same[0]["end"])
+
+
+def _meeting(con, llm, clock, q, text, reply) -> str | None:
+    """The class time the answer gives, as a weekly event; None if it gives none.
+    The same course at the same time on other days is one class on more days."""
     t = q["target"]
-    today = local(clock.now()).date()
-    term = current_term(con, today)
-    letters = "".join({"MO": "M", "TU": "Tu", "WE": "W", "TH": "Th", "FR": "F", "SA": "Sa", "SU": "Su"}[d] for d in t.get("days", []))
-    wk = ingest.weekly(text) or ingest.weekly(f"{letters} {text}")
-    if not (wk and term):
-        return []
+    days = [d for d in t.get("days", []) if d in plan.DAYS]
+    term = current_term(con, local(clock.now()).date())
+    times = days and term and _times(con, llm, q, text)
+    if not times:
+        return None
+    start, end = times
     link = re.search(r"https?://\S+", text)
-    data = ingest.meeting_data(term, wk[0], wk[1], wk[2], t.get("title") or f"{t.get('short', '').split(' · ')[0]} class",
-                               t.get("course"), link.group().rstrip(".,)") if link else None)
+    title = t.get("title") or f"{t.get('short', '').split(' · ')[0]} class"
+    label = lambda ds: f"{title}: {_weekly_label((ds, start, end))}"
+    for c in _classes(con, t.get("course")):
+        if c["start"] != start or c["end"] != end or set(days) <= set(c["days"]):
+            continue
+        both = [d for d in plan.DAYS if d in set(days) | set(c["days"])]
+        data = ingest.meeting_data(term, both, start, end, c["title"], t.get("course"))
+        old = c.get("event") or c["proposal"]["ops"][0]["data"]
+        change = {"start": data["start"], "repeat": data["repeat"]}
+        if "end" in data:
+            change["end"] = data["end"]
+        if skip := sorted(set(filter(None, (old.get("skip") or "").split(","))) | set(filter(None, data.get("skip", "").split(",")))):
+            change["skip"] = ",".join(skip)
+        if "proposal" in c:  # still a suggestion: it now covers both days
+            p = c["proposal"]
+            reply.record("proposals_before", [p["id"], json.dumps(p["ops"]), p["summary"]])
+            p["ops"][0]["data"].update(change)
+            _save_ops(con, p)
+        else:
+            p = inbox.propose(con, clock, _source(con, q), f"Add {'/'.join(d[0] + d[1].lower() for d in days)} to {c['title']}",
+                              [{"op": "update", "kind": "events", "id": c["event"]["id"], "data": change}], text)
+            if p and "id" in p:
+                reply.record("made", p["id"])
+        return label(both)
+    data = ingest.meeting_data(term, days, start, end, title, t.get("course"), link.group().rstrip(".,)") if link else None)
     p = merge.propose_or_fill(con, clock, _source(con, q), "events", data, text, None, f"{t.get('short', data['title'])} class meetings")
     if p:
         reply.record("made", p["id"])
-    return [f"{data['title']}: {_weekly_label(wk)}"]
+    return label(days)
 
 
 # ---- choice ----------------------------------------------------------------------------

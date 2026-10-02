@@ -13,8 +13,20 @@ def which_day(week, monday, friday, title):
     return f"Which day in Week {week} ({monday:%b} {monday.day} – {friday:%b} {friday.day}) is “{title}”? The document only gives the week."
 
 
+DAY_NAMES = {"MO": "Mondays", "TU": "Tuesdays", "WE": "Wednesdays", "TH": "Thursdays", "FR": "Fridays", "SA": "Saturdays", "SU": "Sundays"}
+
+
+def _days(days):
+    names = [DAY_NAMES.get(d, d) for d in days]
+    return " and ".join(names) if len(names) < 3 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
 def meeting_time(short, days):
-    return f"What time does {short} meet on {'/'.join(days)}? The document doesn't say."
+    return f"What time does {short} meet on {_days(days)}? The document doesn't say."
+
+
+def meeting_time_again(days):
+    return f"What time does it meet on {_days(days) or 'those days'}? For example: 10am to 11:50am, or the same as another class."
 
 
 def same_course(existing, name):

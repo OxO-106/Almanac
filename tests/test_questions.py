@@ -85,3 +85,45 @@ def test_question_wording_lives_in_one_place():
              for n, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1)
              if re.search(r"""f?["'](Who teaches|When is “|Which day in Week|What time does|Which of your courses|How many pages)""", line)]
     assert stray == []
+
+
+def meeting_question(client, src, days):
+    con, clock = client.app.state.db, client.app.state.clock
+    return inbox_mod.ask(con, clock, src["id"], f"What time does CS 239 · Kim meet on {'/'.join(days)}?", None, "meeting",
+                         {"course": None, "short": "CS 239 · Kim", "days": days, "title": None})
+
+
+def test_same_as_another_day_adds_that_day_to_the_class(client, llm):
+    src = source(client)
+    meeting_question(client, src, ["TU"])
+    chat(client)
+    client.post("/api/chat", json={"text": "10AM to 11:50AM"})  # a written time needs no model
+    meeting_question(client, src, ["TH"])
+    chat(client)
+    llm.replies = [json.dumps({"start": "10:00", "end": "11:50", "unclear": False})]
+    said = client.post("/api/chat", json={"text": "same as tuesday"}).json()["messages"]
+    (cls,) = [p for s, p in pending(client).items() if "class" in s]
+    data = cls["ops"][0]["data"]
+    assert (data["repeat"], data["start"][11:], data["end"][11:]) == ("TU,TH", "10:00", "11:50")  # one class, both days
+    assert said[-1]["text"].startswith("Updated CS 239 class: every Tu/Th, 10:00 AM–11:50 AM")
+    assert "CS 239 class: TU 10:00-11:50" in llm.requests[-1]["messages"][-1]["content"]  # the model saw Tuesday's time
+
+
+def test_an_answer_with_no_time_is_asked_again_not_closed(client, llm):
+    src = source(client)
+    q = meeting_question(client, src, ["TH"])
+    chat(client)
+    llm.replies = [json.dumps({"unclear": True})]
+    said = client.post("/api/chat", json={"text": "hmm let me check"}).json()
+    assert said["messages"][-1]["text"].startswith("I didn't catch a time there. What time does it meet on Thursdays?")
+    assert said["current"]["question_id"] == q["id"]  # still the open question
+    assert client.get(f"/api/questions/{q['id']}").json()["status"] == "open"
+
+
+def test_a_time_the_model_makes_up_is_not_used(client, llm):
+    src = source(client)
+    meeting_question(client, src, ["TH"])
+    chat(client)
+    llm.replies = [json.dumps({"start": "09:00", "end": "10:15", "unclear": False})]  # no class at 9, not in the answer
+    client.post("/api/chat", json={"text": "same as my other class"})
+    assert pending(client) == {}

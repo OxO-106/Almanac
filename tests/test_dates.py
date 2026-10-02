@@ -81,7 +81,7 @@ def test_a_meeting_without_a_stated_time_is_asked_about(client, llm):
     upload(client, "cs269.txt", DOC.encode())
     assert not any("class meetings" in s for s in props(client))
     assert [q["text"] for q in inbox(client)["questions"]] == [
-        "What time does CS 269 · Soatto meet on TU/TH? The document doesn't say."]
+        "What time does CS 269 · Soatto meet on Tuesdays and Thursdays? The document doesn't say."]
 
 
 def test_relative_dates_resolve_from_another_item_in_the_document(client, llm):

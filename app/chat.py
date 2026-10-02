@@ -380,7 +380,8 @@ def _change_or_remove(con, clock, source, a, title, text, today, term):
         return p if "id" in p else None
     field = DATE_FIELD[kind]
     data, said = {}, []
-    w = ingest.resolve({"title": row["title"], "quote": quote, "when": a.get("when")}, today, term, {}) if a.get("when") else None
+    when = ingest.said_when(quote) or a.get("when")  # the date words as code reads them win
+    w = ingest.resolve({"title": row["title"], "quote": quote, "when": when}, today, term, {}) if when else None
     old = row.get(field) or ""
     if w and w.value:
         day = w.value[:10]
@@ -575,10 +576,15 @@ def _actions(con, llm, clock, text, reply_id, message_id=None) -> list[int] | No
                     if "id" in p:
                         made.append(p["id"])
                     continue
-            w = ingest.resolve({"title": title, "quote": a["quote"], "when": a.get("when")}, today, term, {})
+            # the date as the student said it, read by code; the whole message if the
+            # model quoted only part of it ("Email Prof. Kim" from "... by Friday")
+            quote = a["quote"] if ingest.said_when(a["quote"]) or len(acts) > 1 else text
+            when = ingest.said_when(quote) or a.get("when")
+            w = ingest.resolve({"title": title, "quote": quote, "when": when}, today, term, {})
             data = {"title": title}
             if w.value:
-                data[DATE_FIELD[table]] = w.value
+                at = ingest.said_time(quote) or (a.get("start_time") if ingest.time_in_quote(a.get("start_time"), quote) else None)
+                data[DATE_FIELD[table]] = w.value[:10] + (f"T{at}" if at and len(w.value) == 10 else w.value[10:])
             if table == "events" and "start" not in data:
                 table = "tasks"  # an event without a time is something to do on no set date
             if course is not None:
