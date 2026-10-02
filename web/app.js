@@ -173,6 +173,7 @@ const taskItem = t => `<div class="item ${t.status === "done" ? "done" : ""}">
 // ---- the composer --------------------------------------------------------------
 
 let pendingChat = null;  // a message typed on Today, sent once Chat opens
+let sending = false;  // a chat message is on its way: its own renders keep the page current
 
 const composer = (placeholder, onsubmit) => `<form class="composer" onsubmit="${onsubmit}">
   <label class="sr" for="say">Message Almanac</label>
@@ -392,6 +393,7 @@ async function sendChat(text) {
     return $("#live .say");
   };
   let say = live(), reply = "", proposed = 0, replied = false;
+  sending = true;
   // show what's been saved now, keeping a draft in the reply box
   const showSaved = async () => {
     if (!location.hash.startsWith("#chat")) return;
@@ -423,7 +425,8 @@ async function sendChat(text) {
   if (reply && !location.hash.startsWith("#chat"))  // you moved on while it was replying
     toast(`<b>Almanac replied</b><br>${esc(reply.length > 140 ? reply.slice(0, 140) + "…" : reply)} <a href="#chat">Open Chat</a>`);
   else if (proposed === null) toast("I couldn't pick out what to add from that: the model didn't answer in time (another app may be using it). Try again in a bit.");
-  render();
+  sending = false;
+  await render();
 }
 
 // ---- Suggestions ---------------------------------------------------------------
@@ -530,7 +533,7 @@ async function watchReading() {
   const started = readingIds && [...now].some(id => !readingIds.has(id));
   readingIds = now;
   if (finished) await pollNotifications();
-  if ((finished || started) && !$("#say")?.value && /^(#today|#inbox|)$/.test(location.hash)) render();
+  if ((finished || started) && !sending && !$("#say")?.value && /^(#today|#inbox|)$/.test(location.hash)) render();
   else if (finished) refreshBadges();
   if (now.size) readingTimer = setTimeout(watchReading, 4000);
 }
@@ -1066,18 +1069,28 @@ async function refreshBadges() {
   } catch { }
 }
 
-async function render() {
+// Renders can overlap (a reply arriving while the page checks for changes): only
+// the newest one is drawn, so an older one's data never lands on top of it.
+let renderSeq = 0, latestRender = null;
+function render() { return latestRender = drawView(++renderSeq); }
+
+async function drawView(n) {
   toggleSheet(false);
   refreshBadges();
   const route = location.hash.slice(1) || "today";
   const [name, arg] = route.split("/");
   $$("[data-view]").forEach(a => a.classList.toggle("active", a.dataset.view === route || a.dataset.view === name));
+  // the version before the data: a change made while loading is still newer than what's seen
+  const version = await planVersion();
+  let html;
   try {
-    $("#view").innerHTML = await (views[name] || views.today)(arg);
+    html = await (views[name] || views.today)(arg);
   } catch (e) {
-    $("#view").innerHTML = `<div class="page"><div class="notice">I couldn't load this page: ${esc(e.message)}</div></div>`;
+    html = `<div class="page"><div class="notice">I couldn't load this page: ${esc(e.message)}</div></div>`;
   }
-  seenVersion = await planVersion();
+  if (n !== renderSeq) return latestRender;  // a newer render started: wait for it instead
+  $("#view").innerHTML = html;
+  seenVersion = version;
 }
 
 // ---- staying current -------------------------------------------------------------
@@ -1087,7 +1100,7 @@ async function render() {
 
 let seenVersion = null;
 const planVersion = () => api("/api/version").then(r => r.v).catch(() => seenVersion);
-const busy = () => !!($("#say")?.value || $("#editor")?.open || ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName));
+const busy = () => !!(sending || $("#say")?.value ||$("#editor")?.open || ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName));
 
 async function stayCurrent() {
   if (document.visibilityState !== "visible" || seenVersion === null) return;
