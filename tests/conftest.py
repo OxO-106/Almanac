@@ -32,6 +32,7 @@ class FakeLLM:
         self.rows = []
         self.readings = []
         self.lectures, self.lecture_requests = [], []
+        self.notes, self.notes_requests = [], []
         self.requests = []
 
     def status(self):
@@ -40,6 +41,10 @@ class FakeLLM:
         return {"model": "fake", "ready": True, "message": ""}
 
     def chat(self, messages, schema=None, **kw):
+        if messages[0]["content"].startswith(("You write study notes", "You combine the notes")):
+            # lecture notes: scripted with llm.notes, logged apart
+            self.notes_requests.append({"messages": messages, "schema": schema})
+            return self.notes.pop(0) if self.notes else "## Notes\n- (not scripted)"
         if "how this course's class meetings are run" in messages[0]["content"]:
             # the syllabus reader's last step, Lecture kinds: scripted with llm.lectures, logged apart
             self.lecture_requests.append({"messages": messages, "schema": schema})

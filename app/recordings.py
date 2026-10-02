@@ -205,8 +205,10 @@ def finalize(con, llm, clock, transcriber, rec_id, audio: Path):
         with WRITE:
             con.execute("update sources set text = ?, status = 'done' where id = ?",
                         ("\n".join(s["text"] for s in done), rec["source_id"]))
-        notify(con, clock, "recording", "Transcript ready", f"{label}: {round(seconds / 60)} min transcribed.",
+        notify(con, clock, "recording", "Transcript ready", f"{label}: {round(seconds / 60)} min transcribed. Writing the notes now.",
                f"#lecture/{rec_id}")
+        from . import lecture_notes  # it builds on this module
+        lecture_notes.after_transcript(con, llm, clock, rec_id)
     except Exception as e:
         msg = str(e) if isinstance(e, (ValueError, RuntimeError)) else f"{type(e).__name__}: {e}"
         _set(con, rec_id, status="failed", error=msg)
@@ -307,6 +309,8 @@ def retry(id: int, background: BackgroundTasks, request: Request):
         with WRITE:
             s.db.execute("update sources set text = ?, status = 'done', error = null where id = ?",
                          ("\n".join(x["text"] for x in done), r["source_id"]))
+        from . import lecture_notes
+        lecture_notes.after_transcript(s.db, s.llm, s.clock, id)
 
     background.add_task(again)
     return {"id": id, "status": "cleaning"}
@@ -327,6 +331,18 @@ def get_recording(id: int, request: Request):
     if not r:
         raise HTTPException(404)
     return _view(con, r)
+
+
+@router.post("/recordings/{id}/notes/retry", status_code=202)
+def retry_notes(id: int, background: BackgroundTasks, request: Request):
+    """Write the notes again (after a failure)."""
+    s = request.app.state
+    r = s.db.execute("select status, transcript from recordings where id = ?", (id,)).fetchone()
+    if not r or r["status"] != "done" or not r["transcript"]:
+        raise HTTPException(409, "Notes are written from the transcript, which isn't there.")
+    from . import lecture_notes
+    background.add_task(lecture_notes.after_transcript, s.db, s.llm, s.clock, id)
+    return {"id": id, "notes_status": "writing"}
 
 
 @router.delete("/recordings/{id}/transcript", status_code=204)

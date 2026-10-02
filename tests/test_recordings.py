@@ -44,8 +44,8 @@ def test_a_recording_becomes_a_clean_transcript_and_the_audio_is_gone(client, ll
     system = llm.requests[-1]["messages"][0]["content"]
     for term in ("Miodrag Potkonjak", "GQA", "Kimi", "ZeRO-Infinity", "Mamba2"):  # the course's vocabulary goes to the clean-up
         assert term in system
-    note = client.get("/api/notifications").json()[-1]
-    assert (note["title"], note["url"]) == ("Transcript ready", f"#lecture/{rec['id']}")
+    titles = [(n["title"], n["url"]) for n in client.get("/api/notifications").json()]
+    assert ("Transcript ready", f"#lecture/{rec['id']}") in titles and ("Lecture notes ready", f"#lecture/{rec['id']}") in titles
 
 
 def test_the_vocabulary_is_the_courses_names_and_terms_not_common_words(client, llm):

@@ -398,3 +398,15 @@ dialog .why { font: italic 15px/1.45 var(--serif); color: var(--muted); margin: 
 .jotting .icon-btn { width: 24px; height: 24px; opacity: .5; }
 .jot-form { display: flex; gap: 8px; margin-top: 10px; }
 .jot-form input { flex: 1; min-width: 0; font: 15px var(--sans); color: var(--ink); background: var(--ground); border: 1px solid var(--btn-line); border-radius: 8px; padding: 8px 10px; }
+
+/* ---- Lecture notes ---- */
+.notes { display: block; font-size: 16px; line-height: 1.6; }
+.notes h3 { font: 600 19px var(--serif, inherit); margin: 22px 0 6px; }
+.notes h4 { font: 600 15px var(--sans); margin: 14px 0 4px; color: var(--ink-2); }
+.notes ul { margin: 0 0 6px; padding-left: 20px; }
+.notes li { margin: 3px 0; }
+.notes li.jot { list-style: none; margin-left: -20px; font-family: var(--sans); color: #8A5A1B; }
+.notes li.jot .pen { display: inline-block; width: 16px; }
+.notes .almanac { font: 600 13px var(--sans); color: var(--slate); }
+.notes li.almanac-line { color: var(--ink-2); }
+details.later > summary { cursor: pointer; font: 14px var(--sans); color: var(--muted); margin: 8px 0; }

@@ -888,13 +888,46 @@ async function uploadRecording(courseId, files) {
 // "[?]": a word the transcript isn't sure of, underlined rather than asked about
 const unclear = t => esc(t).replace(/(\S+) \[\?\]/g, `<span class="unclear" title="Not sure this was heard right">$1</span>`);
 
+// Lecture notes: "## " sections, "### " subsections, "- " points nested by two
+// spaces, "✎ " the student's own lines, "Almanac: " the assistant's own links.
+function notesMd(text) {
+  const inline = t => unclear(t).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<i>$2</i>")
+    .replace(/`([^`]+)`/g, "<code>$1</code>").replace(/^Almanac:/, `<span class="almanac">Almanac:</span>`);
+  let html = "", depth = 0;
+  const close = to => { while (depth > to) { html += "</ul>"; depth--; } };
+  for (const raw of text.split("\n")) {
+    const line = raw.replace(/\s+$/, "");
+    if (!line.trim()) continue;
+    const head = line.match(/^(#{1,3})\s+(.*)/);
+    if (head) { close(0); html += head[1].length === 3 ? `<h4>${inline(head[2])}</h4>` : `<h3>${inline(head[2])}</h3>`; continue; }
+    const point = line.match(/^(\s*)[-*]\s+(.*)/), jot = line.match(/^(\s*)✎\s*(.*)/);
+    if (point || jot) {
+      const level = Math.floor((point || jot)[1].length / 2) + 1;
+      while (depth < level) { html += "<ul>"; depth++; }
+      close(level);
+      html += jot ? `<li class="jot"><span class="pen" title="You wrote this during the lecture">✎</span> ${/^\(marked\)$/.test(jot[2].trim()) ? "<i>marked</i>" : inline(jot[2])}</li>`
+        : `<li${/^Almanac:/.test(point[2]) ? ' class="almanac-line"' : ""}>${inline(point[2])}</li>`;
+      continue;
+    }
+    close(0);
+    html += `<p>${inline(line.trim())}</p>`;
+  }
+  close(0);
+  return html;
+}
+
 views.lecture = async (id) => {
   const r = await api(`/api/recordings/${id}`);
   await loadLookups();
   const course = lookups.courses.find(c => c.id === r.course_id);
+  const transcript = r.transcript ? `<div class="transcript">${r.transcript.map(s => `<p><span class="ts">${mmss(s.start)}</span><span>${unclear(s.text)}</span></p>`).join("")}</div>`
+    : `<p class="empty">You deleted this transcript.</p>`;
+  const notes = r.notes ? `<section class="notes">${notesMd(r.notes)}</section>`
+    : r.notes_status === "writing" ? `<p class="voice small"><span class="spin"></span> Writing your notes from the transcript${r.jottings.length ? " and your jottings" : ""}…</p>`
+    : r.notes_status === "failed" ? `<div class="notice">I couldn't write the notes: ${esc(r.notes_error || "")}
+        <div class="row-actions"><button class="btn small" onclick="retryNotes(${r.id})">Write again</button></div></div>` : "";
   const body = r.status === "done"
-    ? (r.transcript ? `<div class="transcript">${r.transcript.map(s => `<p><span class="ts">${mmss(s.start)}</span><span>${unclear(s.text)}</span></p>`).join("")}</div>`
-      : `<p class="empty">You deleted this transcript.</p>`)
+    ? `${notes}${r.notes ? `<details class="later"><summary>Transcript</summary>${transcript}</details>` : `<section>${transcript}</section>`}`
     : r.status === "failed" ? `<div class="notice">${esc(r.error || "Something went wrong.")}</div>
         ${r.retry ? `<button class="btn small" onclick="retryLecture(${r.id})">Clean up again</button>` : ""}`
     : `<p class="voice small"><span class="spin"></span> ${esc(LECTURE_STATUS[r.status])} This takes about a minute per 15 minutes of lecture.</p>`;
@@ -902,13 +935,19 @@ views.lecture = async (id) => {
     <header class="head"><div class="dateline">${course ? `<a href="#course/${course.id}">${esc(course.number)} · ${esc(course.instructor)}</a>` : "Lecture"}</div>
       <h1>${esc(fmtLong(r.date))}</h1>
       ${r.kind_name ? `<p class="voice small">${esc(r.kind_name)}${r.papers.length ? `: ${r.papers.map(esc).join("; ")}` : ""}</p>` : ""}
-      ${r.status === "done" && r.transcript ? `<p class="voice small">${Math.max(1, Math.round(r.seconds / 60))} minute${Math.round(r.seconds / 60) > 1 ? "s" : ""}. Underlined words are ones I'm not sure were heard right.</p>
+      ${r.status === "done" && r.transcript ? `<p class="voice small">${Math.max(1, Math.round(r.seconds / 60))} minute${Math.round(r.seconds / 60) > 1 ? "s" : ""}.
+        ${r.notes ? "Lines marked ✎ are yours. " : ""}Underlined words are ones I'm not sure were heard right.</p>
         <div class="row-actions"><button class="btn quiet small" onclick="deleteTranscript(${r.id})">Delete transcript</button></div>` : ""}</header>
-    ${r.jottings.length ? `<section><h2>Your jottings</h2>${r.jottings.map(j => `<div class="jotting"><span class="ts">${mmss(j.at)}</span>
+    ${r.jottings.length && !r.notes ? `<section><h2>Your jottings</h2>${r.jottings.map(j => `<div class="jotting"><span class="ts">${mmss(j.at)}</span>
       <span class="what">${j.text ? esc(j.text) : `<i class="mark">Marked</i>`}</span></div>`).join("")}</section>` : ""}
-    <section>${body}</section>
+    ${body}
   </div>`;
 };
+
+async function retryNotes(id) {
+  try { await api(`/api/recordings/${id}/notes/retry`, { method: "POST" }); } catch (e) { toast(esc(detail(e))); }
+  render();
+}
 
 async function deleteTranscript(id) {
   if (!confirm("Delete this transcript? The lecture stays in the list; the text can't be brought back (the audio is already gone).")) return;

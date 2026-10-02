@@ -137,7 +137,7 @@ def test_it_stops_itself_after_quiet_and_trims_the_silence(client, transcriber, 
     rec = wait_for(lambda: client.get(f"/api/recordings/{rid}").json(), lambda r: r["status"] == "done")
     assert rec["transcript"][0]["text"] == "And that's all for today."
     assert heard == [8.0]  # 3 s of sound + 5 s; the rest of the silence trimmed
-    assert notes(client)[-2][0].startswith("Stopped recording") and "quiet" in notes(client)[-2][1]
+    assert any(t.startswith("Stopped recording") and "quiet" in b for t, b in notes(client))
 
 
 def test_it_stops_when_audio_stops_coming_or_the_class_is_over(client, llm, clock, transcriber):
