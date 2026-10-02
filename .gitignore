@@ -9,3 +9,4 @@ backups/
 # course materials stay local (one is a copy of a login-only Bruin Learn page)
 seed/*.pdf
 seed/*.docx
+.venv-asr/

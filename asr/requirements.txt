@@ -1,0 +1,10 @@
+# The speech worker's environment (.venv-asr), kept apart from the web server's.
+#   py -3.12 -m venv .venv-asr
+#   .venv-asr\Scripts\python -m pip install -r asr\requirements.txt
+# The model goes in data\models\parakeet-tdt-0.6b-v2 as plain files (copied out of the
+# Hugging Face cache: onnxruntime refuses the cache's links to the weights):
+#   istupakov/parakeet-tdt-0.6b-v2-onnx  (the fp32 files; int8 runs on the CPU only, 25x slower)
+onnx-asr[hub]==0.12.0
+onnxruntime-gpu[cuda,cudnn]==1.30.0
+imageio-ffmpeg==0.6.0
+numpy==2.5.3
