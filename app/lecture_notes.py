@@ -186,3 +186,11 @@ def after_transcript(con, llm, clock, rec_id):
         with WRITE:
             con.execute("update recordings set notes_status = 'failed', notes_error = ? where id = ?",
                         (f"{type(e).__name__}: {e}", rec_id))
+    try:  # what the lecturer announced → Proposals and questions (ticket 11)
+        from . import announcements
+        if (n := announcements.to_plan(con, llm, clock, rec, segments)):
+            recordings.notify(con, clock, "recording", "From the lecture, for your plan",
+                              f"{recordings._label(con, rec)}: {n} thing{'s' if n != 1 else ''} the lecturer announced. Check them in Suggestions.",
+                              "#inbox")
+    except Exception as e:
+        print(f"announcements: {type(e).__name__}: {e}")

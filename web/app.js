@@ -918,7 +918,11 @@ function notesMd(text) {
 
 views.lecture = async (id) => {
   const r = await api(`/api/recordings/${id}`);
-  await loadLookups();
+  const [box, questions] = await Promise.all([api("/api/inbox"), api("/api/questions"), loadLookups()]);
+  const mine = box.proposals.filter(p => p.source_id === r.source_id), asked = questions.filter(q => q.source_id === r.source_id && q.status === "open");
+  const forPlan = mine.length || asked.length ? `<section><h2>For your plan</h2>
+    ${mine.map(p => `<div class="when-row"><span class="when">Suggestion</span><a class="what" href="#inbox">${esc(p.summary)}</a></div>`).join("")}
+    ${asked.map(q => `<div class="when-row"><span class="when">Question</span><a class="what" href="#chat">${esc(q.text)}</a></div>`).join("")}</section>` : "";
   const course = lookups.courses.find(c => c.id === r.course_id);
   const transcript = r.transcript ? `<div class="transcript">${r.transcript.map(s => `<p><span class="ts">${mmss(s.start)}</span><span>${unclear(s.text)}</span></p>`).join("")}</div>`
     : `<p class="empty">You deleted this transcript.</p>`;
@@ -940,6 +944,7 @@ views.lecture = async (id) => {
         <div class="row-actions"><button class="btn quiet small" onclick="deleteTranscript(${r.id})">Delete transcript</button></div>` : ""}</header>
     ${r.jottings.length && !r.notes ? `<section><h2>Your jottings</h2>${r.jottings.map(j => `<div class="jotting"><span class="ts">${mmss(j.at)}</span>
       <span class="what">${j.text ? esc(j.text) : `<i class="mark">Marked</i>`}</span></div>`).join("")}</section>` : ""}
+    ${forPlan}
     ${body}
   </div>`;
 };
