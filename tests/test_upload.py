@@ -248,10 +248,13 @@ def test_titles_start_with_a_capital(client, llm):
 def test_a_separate_pass_asks_what_only_the_student_can_answer(client, llm):
     q = json.dumps({"questions": [
         {"question": "Which day did you sign up to present?", "quote": "Select a paper and register"},
-        {"question": "Invented?", "quote": "This sentence is not in the document"}]})
+        {"question": "Invented?", "quote": "This sentence is not in the document"},
+        {"question": "Which slot have you signed up for?", "quote": "This sentence is not in the document either"}]})
     llm.replies = [course_reply(), items_reply(), q]
-    upload(client, "cs239.txt", SYLLABUS.encode())
+    src = upload(client, "cs239.txt", SYLLABUS.encode())
     assert [x["text"] for x in inbox(client)["questions"]] == ["Which day did you sign up to present?"]
+    # a question whose quote isn't in the document isn't asked, nor listed as something left out
+    assert client.get(f"/api/sources/{src['id']}").json()["dropped"] == []
 
 
 def test_regular_lectures_are_not_proposed_as_events(client, llm):

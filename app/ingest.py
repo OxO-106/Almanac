@@ -1611,7 +1611,9 @@ def _source(con, id):
     # (answered, or "not relevant"): dropped is dropped everywhere
     settled = " ".join(q["text"] for q in con.execute(
         "select text from questions where source_id = ? and status != 'open' and text like 'I couldn''t place%'", (id,)))
-    return {**dict(r), "dropped": [d for d in json.loads(r["dropped"] or "[]") if f"“{d['title']}”" not in settled]}
+    # a drafted question whose quote didn't check out isn't something to place, and isn't asked (ask_left_out)
+    return {**dict(r), "dropped": [d for d in json.loads(r["dropped"] or "[]")
+                                   if f"“{d['title']}”" not in settled and not d["title"].rstrip().endswith("?")]}
 
 
 @router.get("/sources")

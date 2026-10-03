@@ -112,7 +112,7 @@ def _ask_next(con, clock):
     """Ask the next question. Right after an answer it opens with a short
     acknowledgement (varied, so it doesn't read like a form); after the
     last one, a closing line."""
-    if _current(con, clock):
+    if _current(con, clock) or _replying[0]:
         return
     recent = [dict(r) for r in con.execute("select m.*, s.about from chat_messages m left join questions q on q.id = m.question_id "
                                            "left join sources s on s.id = q.source_id order by m.id desc limit 2")]
@@ -719,8 +719,25 @@ def _actions(con, llm, clock, text, reply_id, message_id=None, answering=False) 
     return made
 
 
+# Replies being worked on. The next question waits for them: an answer is marked
+# before its suggestions are made, and a page polling in between would otherwise
+# get the next question above the suggestions for this one.
+_replying = [0]
+_replying_lock = threading.Lock()
+
+
 def _reply(con, llm, clock, text, focus=None):
     """Handle one message; yields ("token", text) pieces then ("done", proposed)."""
+    with _replying_lock:
+        _replying[0] += 1
+    try:
+        yield from _reply_to(con, llm, clock, text, focus)
+    finally:
+        with _replying_lock:
+            _replying[0] -= 1
+
+
+def _reply_to(con, llm, clock, text, focus=None):
     if _undo_notes(con, clock, text):
         yield "done", 0
         return

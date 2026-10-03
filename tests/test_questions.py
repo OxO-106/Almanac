@@ -158,6 +158,18 @@ def test_a_sentence_from_the_description_isnt_the_course_title():
     assert not course_title_like("CS 239 investigates the design, verification, and security of autonomous software engineering agents.")
 
 
+def test_the_next_question_waits_while_a_reply_is_being_made(client):
+    from app import chat as chat_mod
+    src = source(client)
+    client.post("/api/questions", json={"source_id": src["id"], "text": "When is the team list due?"})
+    chat_mod._replying[0] += 1  # an answer's suggestions are still being made
+    try:
+        assert chat(client)["current"] is None  # a page polling now doesn't get the next question first
+    finally:
+        chat_mod._replying[0] -= 1
+    assert chat(client)["current"]["text"].endswith("When is the team list due?")
+
+
 def test_rewinding_a_choice_puts_back_what_it_dropped(client):
     src = source(client)
     con, clock = client.app.state.db, client.app.state.clock
