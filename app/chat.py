@@ -249,7 +249,7 @@ Use "change" or "remove", not a new item, when they talk about something already
 "quote": the student's exact words (copied from their message) that state it. Dates, as said: a calendar date → {"type":"date","month":M,"day":D}; "Friday" → {"type":"weekday","weekday":"FR"}; "next Friday" → add "next_week": true; "tomorrow", "in 3 days", "in two weeks" → {"type":"in_days","days":N}; anything else (e.g. "before Thanksgiving") → {"type":"unknown"}.
 Also, when the student said which course or project it belongs to: "course" as they named it (e.g. "Ding's CS 239"), "project" likewise.
 A class or meeting that repeats every week ("MW 2pm - 3:50pm"): one "event" with "days" (e.g. "MO,WE"), "start_time" and "end_time" (24-hour "HH:MM"), as said; no "when".
-Something to do after every class of a course ("watch the recording before the next class"): one "task" with "each_class": true; no "when". Don't ask for dates the schedule already gives.
+Something to do after every class of a course ("watch the recording before the next class"): one "task" with "each_class": true and its "course"; no "when". For several courses, one such task per course, each with its own "course". Don't ask for dates the schedule already gives.
 - "notes": they ask to change the notes of one of their lectures (listed below): "make Monday's CS 259 notes shorter", "add the derivation to my 269 notes". "title" is the change they ask for, in their words; "course" the course as they named it.
 Several dates in one message: one action per date, each quoting its own date ("Oct 8th"); no question asking for times when the item is a class session (its time is the class's).
 When the message answers a question you asked (shown first, in brackets), its dates are for what the question asks about: new items, never a "change" to a class. "Oct 8th, Oct 22nd" to "Which lectures will you write summaries for?" → a "task" per date: "Write a summary of the CS 201 lecture", when that date, course "CS 201".
@@ -330,7 +330,8 @@ def _messages(con, llm, clock, text, focus=None):
         "select role, text from chat_messages where id > ? order by id desc limit ?", (upto, HISTORY + 1))][::-1][:-1]
     system = ("You are Almanac, a personal assistant for a university student. Be brief and warm. Never invent facts "
               "about their courses or dates; if you don't know, ask. When they mention things to do, plans or goals, say "
-              "you'll suggest adding them, for them to confirm; don't claim anything is already scheduled. When they ask "
+              "you'll suggest adding them, for them to confirm (the suggestions show below your reply with their own button: don't ask "
+              "\"is that correct?\" in words); don't claim anything is already scheduled. When they ask "
               "to change, move or remove something in their plan, say you'll suggest that change for them to confirm (the suggestion shows below your reply with its own button: don't ask them to confirm in words). "
               + ("If they ask to change the notes of a lecture, say in a few words that you're making that change now "
                  "(don't say it's done: the result comes in your next message). " if re.search(r"\bnotes?\b", text, re.I) else "")
@@ -510,11 +511,36 @@ def _days_said(days: list[str], quote: str) -> bool:
     return True
 
 
+def _courses_named(con, text) -> list:
+    """Every course a message names by number ("CS 259 and CS 269"); a number two
+    courses share counts only with its instructor's name."""
+    out = []
+    for c in con.execute("select id, number, instructor from courses").fetchall():
+        digits = re.search(r"\d+[a-z]?", c["number"].lower())
+        if not digits or not re.search(rf"(?<!\d){digits.group()}(?![\da-z])", text.lower()):
+            continue
+        same = con.execute("select count(*) from courses where number = ?", (c["number"],)).fetchone()[0]
+        if same == 1 or re.search(rf"\b{re.escape(c['instructor'].split()[-1].lower())}\b", text.lower()):
+            out.append(c["id"])
+    return out
+
+
+def _for_course(con, title, course) -> str:
+    """The title with its course in it: "Watch the recording" → "Watch the CS 259 recording"."""
+    c = con.execute("select number from courses where id = ?", (course,)).fetchone() if isinstance(course, int) else None
+    digits = re.search(r"\d+[a-z]?", c["number"].lower()) if c else None
+    if not digits or re.search(rf"(?<!\d){digits.group()}(?![\da-z])", title.lower()):
+        return title  # already names it ("Watch CS269 recording")
+    if re.search(r"\brecordings?\b", title, re.I):
+        return re.sub(r"\b(recordings?)\b", rf"{c['number']} \1", title, count=1, flags=re.I)
+    return f"{c['number']}: {title}"
+
+
 def _each_class(con, title, course, meeting, today, term):
     """One task per class from today on, each due when the next class starts
     ("watch the recording before the next class")."""
     events = [{"end": None, "until": None, "skip": None, **meeting}] if meeting else [dict(r) for r in con.execute(
-        "select * from events where course_id = ? and repeat is not null", (course,))] if course is not None else []
+        "select * from events where course_id = ? and repeat is not null and lower(title) not like '%office hour%'", (course,))] if course is not None else []
     if not events or not term:
         return []
     occ = plan.occurrences(events, (today - timedelta(days=7)).isoformat(), term["instruction_ends"])
@@ -639,7 +665,7 @@ def _actions(con, llm, clock, text, reply_id, message_id=None, answering=False) 
         title = ingest.capitalize((a.get("title") or "").strip())
         # the same thing listed twice (models sometimes give it as both a task and a deadline);
         # the same title on different days is several things ("a summary of Oct 8th's lecture, of Oct 22nd's")
-        key = (title.lower(), json.dumps(ingest.said_when(a.get("quote") or "") or a.get("when"), sort_keys=True))
+        key = (title.lower(), (a.get("course") or "").lower(), json.dumps(ingest.said_when(a.get("quote") or "") or a.get("when"), sort_keys=True))
         if not title or key in seen or not ingest.quoted(a.get("quote"), text):
             continue
         seen.add(key)
@@ -702,12 +728,22 @@ def _actions(con, llm, clock, text, reply_id, message_id=None, answering=False) 
                         meetings[course] = p["ops"][0]["data"]
                     continue
             if table == "tasks" and a.get("each_class"):
-                ops = _each_class(con, title, course, meetings.get(course), today, term)
-                if ops:
-                    p = inbox.propose(con, clock, source, f"{title} after each class, before the next", ops, a["quote"])
-                    if "id" in p:
-                        made.append(p["id"])
-                    continue
+                # "CS 259 and CS 269 … watch the recording before the next lecture": a series per course
+                several = [course] if course is not None else _courses_named(con, f"{a.get('course') or ''} {a['quote']}")
+                for c in several:
+                    named = _for_course(con, title, c)
+                    ops = _each_class(con, named, c, meetings.get(c), today, term)
+                    if ops:
+                        says_when = re.search(r"\b(before the next|after (each|every))\b", named, re.I)
+                        p = inbox.propose(con, clock, source, named if says_when else f"{named} after each class, before the next", ops, a["quote"])
+                        if "id" in p:
+                            made.append(p["id"])
+                    else:
+                        number = con.execute("select number from courses where id = ?", (c,)).fetchone()
+                        missed.append(f"I don't know when {number['number'] if number else 'that course'} meets yet, so I can't plan “{named}” after each class. Tell me its class times.")
+                if not several:
+                    missed.append(f"Which course is “{title}” for? Then I'll plan it after each of its classes.")
+                continue
             # the date as the student said it, read by code; the whole message if the
             # model quoted only part of it ("Email Prof. Kim" from "... by Friday")
             quote = a["quote"] if ingest.said_when(a["quote"]) or len(acts) > 1 else text
@@ -750,6 +786,18 @@ _replying = [0]
 _replying_lock = threading.Lock()
 
 
+# "Is that correct?" at the end of a reply the suggestion card then asks anyway
+CONFIRM = re.compile(r"\s*(is that (correct|right|ok(ay)?)|does that (sound|look) (right|good)|please confirm|"
+                     r"would you like me to|do you want me to|let me know if)[^.?!]*[.?!]\s*$", re.I)
+
+
+def _drop_ask_to_confirm(con, reply_id):
+    row = con.execute("select text from chat_messages where id = ?", (reply_id,)).fetchone()
+    if row and (cut := CONFIRM.sub("", row["text"]).strip()) and cut != row["text"]:
+        with WRITE:
+            con.execute("update chat_messages set text = ? where id = ?", (cut, reply_id))
+
+
 def _reply(con, llm, clock, text, focus=None):
     """Handle one message; yields ("token", text) pieces then ("done", proposed)."""
     with _replying_lock:
@@ -780,6 +828,7 @@ def _reply_to(con, llm, clock, text, focus=None):
     reply_id = _say(con, clock, "assistant", "".join(parts).strip())
     made = _actions(con, llm, clock, text, reply_id, mid)
     if made:  # the suggestions, right in the conversation
+        _drop_ask_to_confirm(con, reply_id)
         _say(con, clock, "assistant", "Here's what I'd add. Check the dates are right:", proposals=made)
     if cur and (q := con.execute("select * from questions where id = ? and status = 'open'", (cur["question_id"],)).fetchone()):
         _say(con, clock, "assistant", "Back to my question: " + q["text"], q["id"], q["quote"])  # its buttons, below the reply
