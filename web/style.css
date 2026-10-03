@@ -164,7 +164,9 @@ section > h2 .meta { font-weight: 400; }
 
 /* ---- chat ------------------------------------------------------------------- */
 
-.chat-tools { display: flex; justify-content: flex-end; margin: -8px 0 8px; }
+/* Clear chat: pinned at the top while scrolling (the chat opens at its bottom) */
+.chat-tools { position: sticky; top: 12px; z-index: 5; display: flex; justify-content: flex-end; margin: -8px 0 8px; pointer-events: none; }
+.chat-tools .btn { pointer-events: auto; background: var(--ground); border: 1px solid var(--btn-line); box-shadow: 0 1px 4px rgba(0,0,0,.06); }
 .thread { display: flex; flex-direction: column; gap: 26px; }
 .day-sep { text-align: center; font-size: 12px; color: var(--muted); }
 .turn { display: flex; flex-direction: column; gap: 8px; }

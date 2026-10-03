@@ -48,9 +48,37 @@ function Badge($size) {
     return $bmp
 }
 
+function Pixel16 {
+    # The tray's 16px icon, placed pixel by pixel: a drawn italic "A" at this size is
+    # mostly half-grey edge pixels and looks blurred. Same square, letter and rule.
+    $map = @(
+        "..ssssssssssss..",
+        ".ssssssssssssss.",
+        "sssssssWWsssssss",
+        "ssssssWWWWssssss",
+        "ssssssWWWWssssss",
+        "sssssWWssWWsssss",
+        "sssssWWssWWsssss",
+        "ssssWWssssWWssss",
+        "ssssWWWWWWWWssss",
+        "sssWWssssssWWsss",
+        "sssWWssssssWWsss",
+        "ssWWssssssssWWss",
+        "ssssssssssssssss",
+        "ssssrrrrrrrrssss",
+        ".ssssssssssssss.",
+        "..ssssssssssss..")
+    $colors = @{ "s" = (Color "#536B78"); "W" = (Color "#FFFFFF"); "r" = (Color "#ACCBE1") }
+    $bmp = New-Object System.Drawing.Bitmap(16, 16)
+    for ($y = 0; $y -lt 16; $y++) { for ($x = 0; $x -lt 16; $x++) {
+        $c = $map[$y][$x]; if ($c -ne ".") { $bmp.SetPixel($x, $y, $colors[[string]$c]) } } }
+    return $bmp
+}
+
 $pngs = @()
 foreach ($s in 16, 24, 32, 48, 64, 256) {
-    $file = "$env:TEMP\almanac-$s.png"; (Draw $s).Save($file, [System.Drawing.Imaging.ImageFormat]::Png); $pngs += , @($s, $file)
+    $img = if ($s -eq 16) { Pixel16 } else { Draw $s }
+    $file = "$env:TEMP\almanac-$s.png"; $img.Save($file, [System.Drawing.Imaging.ImageFormat]::Png); $pngs += , @($s, $file)
 }
 (Draw 32).Save("$out\favicon-32.png", [System.Drawing.Imaging.ImageFormat]::Png)
 (Draw 180 -Full).Save("$out\apple-touch-icon.png", [System.Drawing.Imaging.ImageFormat]::Png)
