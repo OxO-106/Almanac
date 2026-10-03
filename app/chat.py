@@ -89,6 +89,7 @@ def _course_label(con, q) -> str:
     labels = []
     for part in about.split("; "):
         head, _, title = part.partition(": ")
+        title = title if ingest.course_title_like(title) else ""  # read before titles were checked
         if " · " not in head:
             who = None
             for r in con.execute("select ops, applied, status from proposals where source_id = ? and status != 'rejected'", (q["source_id"],)):
@@ -157,8 +158,13 @@ def _exists(con, proposal_id) -> bool:
 
 
 def _options(con, question_id) -> list[str]:
-    """Answers to offer as buttons, when the question has a fixed set."""
-    return questions.option_labels(con, question_id)
+    """Answers to offer as buttons: the question's fixed set, else the dates its
+    quote states ("Oct 29 — Phase 1 due" → "Thu Oct 29"): what the document
+    says is offered rather than asked for again."""
+    if labels := questions.option_labels(con, question_id):
+        return labels
+    q = con.execute("select quote, purpose from questions where id = ?", (question_id,)).fetchone()
+    return questions.quoted_dates(con, q["quote"]) if q and q["purpose"] in ("other", "date") else []
 
 
 # ---- answering a question -----------------------------------------------------

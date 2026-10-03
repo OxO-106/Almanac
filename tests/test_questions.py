@@ -141,6 +141,23 @@ def test_rewinding_not_relevant_brings_back_what_waited_on_the_question(client):
     assert list(pending(client)) == ["Team list"]
 
 
+def test_a_date_the_quote_states_is_offered_as_a_button(client, llm):
+    src = source(client)
+    client.post("/api/questions", json={"source_id": src["id"], "text": "When is the deadline to submit your Phase 1 project deliverables?",
+                                        "quote": "Oct 29 — Phase 1 due (application + traces + draft requirements.md)."})
+    assert chat(client)["current"]["options"] == ["Thu Oct 29"]
+    llm.replies = [json.dumps({"actions": [{"type": "deadline", "title": "Phase 1 deliverables", "quote": "Thu Oct 29",
+                                            "when": {"type": "date", "month": 10, "day": 29}}]})]
+    client.post("/api/chat", json={"text": "Thu Oct 29"})  # the button
+    assert pending(client)["Phase 1 deliverables"]["ops"][0]["data"]["due"] == "2026-10-29"
+
+
+def test_a_sentence_from_the_description_isnt_the_course_title():
+    from app.ingest import course_title_like
+    assert course_title_like("Large Language Models for Code Intelligence")
+    assert not course_title_like("CS 239 investigates the design, verification, and security of autonomous software engineering agents.")
+
+
 def test_rewinding_a_choice_puts_back_what_it_dropped(client):
     src = source(client)
     con, clock = client.app.state.db, client.app.state.clock

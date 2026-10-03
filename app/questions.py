@@ -101,6 +101,23 @@ def answer(con, llm, clock, question_id, text, reply: Reply):
                    f"{'are' if n > 1 else 'is'} ready in Suggestions." if n else ""))
 
 
+def quoted_dates(con, quote) -> list[str]:
+    """The calendar dates a quote states, as button labels ("Thu Oct 29"), at most three."""
+    out = []
+    for piece in re.split(r"[;,—–(]|\s-\s|\b(?:and|or|to|until)\b", quote or ""):
+        # "Wed Nov 4": the weekday only names the date's day
+        piece = re.sub(r"\b(mon|tues?|wed(nes)?|thu(rs?)?|fri|sat(ur)?|sun)(day)?\.?,?\s+(?=[a-z]{3}|\d)", "", piece, flags=re.I)
+        when = ingest.said_when(piece)
+        if not when or when.get("type") not in ("date", "datetime") or not when.get("month"):
+            continue
+        created = con.execute("select created_at from questions where quote = ? order by id desc", (quote,)).fetchone()
+        today = date.fromisoformat((created["created_at"] if created else date.today().isoformat())[:10])
+        w = ingest.resolve({"title": "", "quote": piece, "when": when}, today, current_term(con, today), {})
+        if w.value and not w.window and (label := _fmt(w.value)) not in out:
+            out.append(label)
+    return out[:3]
+
+
 def _exists(con, pid) -> bool:
     return con.execute("select 1 from proposals where id = ?", (pid,)).fetchone() is not None
 

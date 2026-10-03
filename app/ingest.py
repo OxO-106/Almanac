@@ -914,6 +914,12 @@ TO_DO = re.compile(r"\b(reports?|proposals?|present(s|ing|ations?)?|submi(t|ts|s
                    r"|deliverables?|demos?|write[- ]?ups?|one[- ]pagers?|homeworks?|assignments?|drafts?|slides|essays?|posters?|pitch(es)?)\b", re.I)
 
 
+def course_title_like(t: str) -> bool:
+    """"Large Language Models for Code Intelligence", not "CS 239 investigates the design, … agents."."""
+    t = t.strip()
+    return bool(t) and not t.endswith(".") and len(t.split()) <= 10
+
+
 def deadline_or_event(kind: str, title: str) -> str:
     """An event the student has to produce something for is a deadline."""
     return "deadline" if kind == "event" and TO_DO.search(title or "") else kind
@@ -1031,6 +1037,8 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
         instructor = (c.get("instructor") or "").strip()
         if instructor and not named_as_instructor(instructor, text):
             instructor = c["instructor"] = ""  # e.g. a TA named for one tutorial: ask instead
+        if not course_title_like(c.get("title") or ""):
+            c["title"] = ""  # a sentence from the description, not the course's name
         name = f"{c['number']} · {instructor or 'instructor not stated'}"
         if not keep(c, name):
             continue
