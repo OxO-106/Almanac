@@ -355,10 +355,15 @@ def _match_item(con, title, course=None):
     common (at least half), the named course breaking ties."""
     title = re.sub(r"^\s*\d{4}-\d{2}-\d{2}(T\d\d:\d\d)?\s*:\s*|\s*\(\d{4}-\d{2}-\d{2}[^)]*\)\s*$", "", title)  # as listed to the model
     want = set(ingest._words(title)) - ingest.STOP
+    numbers = lambda words: {w for w in words if re.fullmatch(r"\d+[a-z]?", w)}
     best, score = None, 0.0
     for kind in ("events", "deadlines", "tasks"):
         for r in con.execute(f"select * from {kind}" + (" where status = 'open'" if kind == "tasks" else "")):
+            if course is not None and r["course_id"] is not None and r["course_id"] != course:
+                continue  # another course's: "CS 269 class" isn't the CS 201 class
             have = set(ingest._words(r["title"])) - ingest.STOP
+            if numbers(want) and numbers(have) and not numbers(want) & numbers(have):
+                continue  # "CS 269" and "CS 201": different numbers, different things
             s = len(want & have) / max(1, len(want)) + (0.25 if course is not None and r["course_id"] == course else 0)
             if s > score:
                 best, score = (kind, dict(r)), s

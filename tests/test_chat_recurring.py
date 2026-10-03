@@ -45,3 +45,19 @@ def test_a_surname_inside_another_word_does_not_pick_the_course(client):
     con = client.app.state.db
     assert _match_course(con, "CS269", "watch the recording") == 1
     assert _match_course(con, "Ding's class", "") == 2
+
+
+def test_another_courses_class_is_new_not_a_change_to_one_already_planned(client, llm, clock):
+    clock.set(datetime(2026, 10, 1, 15, 0, tzinfo=LA))
+    c201 = client.post("/api/courses", json={"number": "CS 201", "instructor": "Remy Wang"}).json()
+    client.post("/api/courses", json={"number": "CS 269", "instructor": "Stefano Soatto"})
+    client.post("/api/events", json={"title": "CS 201 class", "course_id": c201["id"], "start": "2026-09-24T12:00", "repeat": "TU,TH", "until": "2026-12-04"})
+    text = "CS 269 meets on Monday and Wednesday, 5PM - 7:50PM"
+    llm.replies = ["Noted.", actions({"type": "event", "title": "CS 269 class", "quote": text, "course": "CS 269",
+                                      "days": "MO,WE", "start_time": "17:00", "end_time": "19:50"})]
+    client.post("/api/chat", json={"text": text})
+    (p,) = client.get("/api/inbox").json()["proposals"]
+    assert p["ops"][0]["op"] == "create"
+    d = p["ops"][0]["data"]
+    assert (d["repeat"], d["start"][11:], d["end"][11:]) == ("MO,WE", "17:00", "19:50")
+    assert client.get("/api/events").json()[0]["start"] == "2026-09-24T12:00"  # the CS 201 seminar as it was
