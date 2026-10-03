@@ -24,7 +24,7 @@ _lock = threading.Lock()
 
 PROMPT = """You are Almanac, a student's personal assistant, writing the short note at the top of their Today page. From the facts given (and nothing else), write:
 - "headline": one short, warm sentence that sums up the day, starting with "Morning.", "Afternoon." or "Evening." as fits the time. Under 10 words.
-- "body": one or two plain sentences on what matters most today and anything due soon. Name things as the facts name them. Never add a fact, a time, a number or advice the facts don't support.
+- "body": one or two plain sentences on what matters most today and anything due soon. If anything is overdue, say so first, naming the oldest and how many, so the student doesn't fall behind; then a day with overdue work isn't "quiet" or "free". Name things as the facts name them. Never add a fact, a time, a number or advice the facts don't support.
 No greetings by name, no emoji, no exclamation marks."""
 SCHEMA = {"type": "object", "properties": {"headline": {"type": "string"}, "body": {"type": "string"}},
           "required": ["headline", "body"]}
@@ -48,7 +48,7 @@ def facts(con, now) -> dict:
     return {
         "now": now,
         "today": q("select title from tasks where status = 'open' and do_date = ? order by id", day),
-        "overdue": q("select title from tasks where status = 'open' and do_date < ? order by do_date", day),
+        "overdue": plan.overdue(con, day),
         "events": plan.occurrences(q("select * from events"), day, day),
         "due": q("select title, due from deadlines where substr(due, 1, 10) between ? and ? order by due", day, soon),
         "questions": con.execute("select count(*) from questions where status = 'open'").fetchone()[0],
@@ -61,13 +61,17 @@ def plain(f) -> dict:
     hello = "Morning." if hour < 12 else "Afternoon." if hour < 17 else "Evening."
     n = len(f["today"])
     what = WORDS[n] if n < len(WORDS) else f"{n} things"
-    headline = f"{hello} {what} on your list today." if n else f"{hello} Nothing on your list today."
+    late = len(f["overdue"])
+    headline = f"{hello} {what} on your list today." if n else \
+        f"{hello} {(WORDS[late] if late < len(WORDS) else f'{late} things')} to catch up on." if late else f"{hello} Nothing on your list today."
     parts = []
     timed = [e for e in f["events"] if len(e["start"]) > 10]
     if timed:
         parts.append(" ".join(f"{e['title']} is at {_fmt_time(e['start'])}." for e in timed[:2]))
     if f["overdue"]:
-        parts.append(f"{f['overdue'][0]['title']} is still open from an earlier day.")
+        n = len(f["overdue"])
+        parts.append(f"{f['overdue'][0]['title']} is overdue." if n == 1 else
+                     f"{n} things are overdue, the oldest {f['overdue'][0]['title']}.")
     if f["due"]:
         d = f["due"][0]
         parts.append(f"Next up: {d['title']}, {_fmt_day(d['due'])}.")
@@ -80,7 +84,8 @@ def _facts_text(f) -> str:
     lines = [f"It is {f['now']:%A, %B} {f['now'].day}, {f['now']:%H:%M}."]
     lines.append("Planned for today: " + ("; ".join(t["title"] for t in f["today"]) or "nothing"))
     if f["overdue"]:
-        lines.append("Still open from earlier days: " + "; ".join(t["title"] for t in f["overdue"]))
+        lines.append(f"Overdue ({len(f['overdue'])}; mention them, so the student doesn't fall behind): " + "; ".join(
+            t["title"] + (f" (due {_fmt_day(t['due'])})" if t.get("due") else "") for t in f["overdue"]))
     lines.append("Today's schedule: " + ("; ".join(
         e["title"] + (f" at {_fmt_time(e['start'])}" if len(e["start"]) > 10 else "") for e in f["events"]) or "nothing"))
     lines.append("Due in the next two weeks: " + ("; ".join(f"{d['title']} ({_fmt_day(d['due'])})" for d in f["due"]) or "nothing"))

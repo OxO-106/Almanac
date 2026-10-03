@@ -128,6 +128,16 @@ def _now(request) -> str:
     return local(request.app.state.clock.now()).strftime("%Y-%m-%dT%H:%M")
 
 
+# Behind: an open task planned for an earlier day, or past its due date (and not
+# planned for today, where it's listed already). Today's page and the daily note.
+OVERDUE = ("status = 'open' and (do_date < :day or (substr(due, 1, 10) < :day and coalesce(do_date, '') != :day))")
+
+
+def overdue(con, day) -> list[dict]:
+    return [dict(r) for r in con.execute(f"select * from tasks where {OVERDUE} "
+                                         "order by coalesce(do_date, substr(due, 1, 10)), id", {"day": day})]
+
+
 @router.get("/today")
 def today(request: Request):
     con = request.app.state.db
@@ -136,7 +146,7 @@ def today(request: Request):
     return {
         "date": day,
         "tasks": q("select * from tasks where status = 'open' and do_date = ? order by id", day),
-        "overdue": q("select * from tasks where status = 'open' and do_date < ? order by do_date, id", day),
+        "overdue": overdue(con, day),
         "done": q("select * from tasks where status = 'done' and substr(done_at, 1, 10) = ? order by done_at", day),
         "events": occurrences(q("select * from events"), day, day),
         "deadlines": q("select * from deadlines where substr(due, 1, 10) = ? order by due", day),

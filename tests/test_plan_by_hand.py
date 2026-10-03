@@ -101,3 +101,13 @@ def test_open_tasks_from_earlier_days_show_as_overdue(client, clock):
     at(clock, "2026-10-07T09:00")
     make(client, "tasks", title="Missed read", do_date="2026-10-05")
     assert [t["title"] for t in client.get("/api/today").json()["overdue"]] == ["Missed read"]
+
+
+def test_a_task_past_its_due_date_is_overdue_too(client, clock):
+    at(clock, "2026-10-02T21:00")
+    make(client, "tasks", title="Read P1. SWE-bench", due="2026-09-28")  # no day planned: its due date has passed
+    make(client, "tasks", title="Read P3. Reflexion", due="2026-10-05")  # not yet
+    make(client, "tasks", title="Read P2. ReAct", due="2026-09-30", do_date="2026-10-02")  # behind, but planned for today
+    t = client.get("/api/today").json()
+    assert [x["title"] for x in t["overdue"]] == ["Read P1. SWE-bench"]
+    assert [x["title"] for x in t["tasks"]] == ["Read P2. ReAct"]

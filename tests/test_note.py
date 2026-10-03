@@ -72,3 +72,14 @@ def test_the_note_is_rewritten_when_the_day_changes(client, clock, llm):
     assert "Read ReAct before class" in llm.requests[-1]["messages"][-1]["content"]
     client.get("/api/note")
     assert len(llm.requests) == 2  # unchanged facts: no new note
+
+
+def test_the_note_mentions_what_is_overdue(client, clock, llm):
+    at(clock, "2026-10-02T21:00")
+    client.post("/api/tasks", json={"title": "Read P1. SWE-bench", "due": "2026-09-28"})
+    client.post("/api/tasks", json={"title": "Read P2. ReAct", "due": "2026-09-30"})
+    llm.replies = ["not json"]
+    n = client.get("/api/note").json()
+    assert n["headline"] == "Evening. Two things to catch up on." and "2 things are overdue, the oldest Read P1. SWE-bench." in n["body"]
+    facts = llm.requests[0]["messages"][-1]["content"]
+    assert "Overdue (2; mention them" in facts and "Read P1. SWE-bench (due Mon, Sep 28)" in facts
