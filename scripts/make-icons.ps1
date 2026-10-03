@@ -80,6 +80,7 @@ foreach ($s in 16, 24, 32, 48, 64, 256) {
     $img = if ($s -eq 16) { Pixel16 } else { Draw $s }
     $file = "$env:TEMP\almanac-$s.png"; $img.Save($file, [System.Drawing.Imaging.ImageFormat]::Png); $pngs += , @($s, $file)
 }
+(Pixel16).Save("$out\favicon-16.png", [System.Drawing.Imaging.ImageFormat]::Png)  # a window's title bar: crisp, not the 32 shrunk
 (Draw 32).Save("$out\favicon-32.png", [System.Drawing.Imaging.ImageFormat]::Png)
 (Draw 180 -Full).Save("$out\apple-touch-icon.png", [System.Drawing.Imaging.ImageFormat]::Png)
 (Draw 192).Save("$out\icon-192.png", [System.Drawing.Imaging.ImageFormat]::Png)
