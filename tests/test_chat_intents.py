@@ -85,3 +85,19 @@ def test_the_model_sees_the_weekly_classes_so_it_need_not_ask(client, llm, plan)
     system = llm.requests[-1]["messages"][0]["content"]
     assert "Weekly classes:\n- CS 259 class: MO,WE 14:00-15:50" in system
     assert "Proposal one-pager (2026-10-21)" in system
+
+
+def test_an_item_can_be_made_another_kind(client, llm, plan):
+    (p,) = say(client, llm, "change the gating test to a task",
+               {"type": "change", "title": "Gating test", "quote": "change the gating test to a task", "new_kind": "task"}).values()
+    assert p["summary"] == "Make “Gating test” a task"
+    client.post(f"/api/proposals/{p['id']}/accept")
+    assert [t["title"] for t in client.get("/api/tasks").json()] == ["Gating test"]
+    assert client.get("/api/tasks").json()[0]["due"] == "2026-10-02"
+    assert [e["title"] for e in client.get("/api/events").json()] == ["CS 259 class"]  # the session is gone, the class stays
+
+
+def test_a_change_that_cant_be_made_is_said_not_silent(client, llm, plan):
+    say(client, llm, "move the reading group to Friday",
+        {"type": "change", "title": "Reading group", "quote": "move the reading group to Friday", "when": {"type": "weekday", "weekday": "FR"}})
+    assert client.get("/api/chat").json()["messages"][-1]["text"] == "I couldn't find “Reading group” in your plan."

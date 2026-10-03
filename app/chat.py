@@ -243,7 +243,7 @@ ACTIONS_PROMPT = """You turn what a student just told their personal assistant i
 - "memory": a lasting fact about the student worth remembering (habits, preferences, constraints, people); "title" is the fact, "topic" a short label.
 - "progress": they finished (or undid) one of their open tasks listed below; "title" is that task's title, "done": true.
 - "question": something the assistant must ask to plan it properly (e.g. a due date they didn't give); "title" is the question.
-- "change": something already in their plan (listed below) changes: moved to another date ("when"), a new time ("start_time", 24-hour "HH:MM"), place or link ("location"), or name ("new_title"). "title" is the item as listed.
+- "change": something already in their plan (listed below) changes: moved to another date ("when"), a new time ("start_time", 24-hour "HH:MM"), place or link ("location"), name ("new_title"), or kind ("new_kind": "task", "event" or "deadline", e.g. "make the gating test a task"). "title" is the item as listed.
 - "remove": they want an item in their plan gone (or a routine stopped); "title" is the item as listed.
 Use "change" or "remove", not a new item, when they talk about something already planned. Statements count, not only requests: "the CS 259 lecture is at 3pm now" is a change (start_time "15:00"); "the gating test moved to Monday" is a change (when); "I dropped the reading group" is a remove.
 "quote": the student's exact words (copied from their message) that state it. Dates, as said: a calendar date → {"type":"date","month":M,"day":D}; "Friday" → {"type":"weekday","weekday":"FR"}; "next Friday" → add "next_week": true; "tomorrow", "in 3 days", "in two weeks" → {"type":"in_days","days":N}; anything else (e.g. "before Thanksgiving") → {"type":"unknown"}.
@@ -262,7 +262,7 @@ ACTIONS_SCHEMA = {"type": "object", "properties": {"actions": {"type": "array", 
     "why": {"type": "string"}, "horizon": {"type": "string"}, "topic": {"type": "string"},
     "course": {"type": "string"}, "project": {"type": "string"},
     "days": {"type": "string"}, "start_time": {"type": "string"}, "end_time": {"type": "string"}, "each_class": {"type": "boolean"},
-    "location": {"type": "string"}, "new_title": {"type": "string"}},
+    "location": {"type": "string"}, "new_title": {"type": "string"}, "new_kind": {"type": "string", "enum": ["task", "event", "deadline"]}},
     "required": ["type", "title", "quote"]}}}, "required": ["actions"]}
 
 
@@ -330,8 +330,11 @@ def _messages(con, llm, clock, text, focus=None):
         "select role, text from chat_messages where id > ? order by id desc limit ?", (upto, HISTORY + 1))][::-1][:-1]
     system = ("You are Almanac, a personal assistant for a university student. Be brief and warm. Never invent facts "
               "about their courses or dates; if you don't know, ask. When they mention things to do, plans or goals, say "
-              "you'll suggest adding them, for them to confirm; don't claim anything is already scheduled. When they "
-              "ask to change the notes of a lecture, say in a few words that you're making the change now (don't say it's done: the result comes in your next message). No emoji.\n\n"
+              "you'll suggest adding them, for them to confirm; don't claim anything is already scheduled. When they ask "
+              "to change, move or remove something in their plan, say you'll suggest that change for them to confirm (the suggestion shows below your reply with its own button: don't ask them to confirm in words). "
+              + ("If they ask to change the notes of a lecture, say in a few words that you're making that change now "
+                 "(don't say it's done: the result comes in your next message). " if re.search(r"\bnotes?\b", text, re.I) else "")
+              + "No emoji.\n\n"
               + _context(con, clock) + goals.focus_text(con, focus)
               + (f"\n\nEarlier in this conversation (summary):\n{summary}" if summary else ""))
     return [{"role": "system", "content": system}, *history, {"role": "user", "content": text}]
@@ -389,7 +392,7 @@ def _change_or_remove(con, clock, source, a, title, text, today, term):
     New dates, times and places must be in the student's words."""
     hit = _match_item(con, title, _match_course(con, a.get("course"), text))
     if not hit:
-        return None
+        return f"I couldn't find “{title}” in your plan."
     kind, row = hit
     quote = a["quote"]
     if a["type"] == "remove":
@@ -399,6 +402,16 @@ def _change_or_remove(con, clock, source, a, title, text, today, term):
                           [{"op": "delete", "kind": kind, "id": i} for i in ids], quote)
         return p if "id" in p else None
     field = DATE_FIELD[kind]
+    new_kind = {"task": "tasks", "event": "events", "deadline": "deadlines"}.get(a.get("new_kind") or "")
+    if new_kind and new_kind != kind and re.search(rf"\b{a['new_kind']}s?\b|\bto-?dos?\b", text, re.I):
+        when = row.get(field)
+        if new_kind == "events" and not when:
+            return f"“{row['title']}” has no date, so it can't be an event; give it a day first."
+        data = {"title": row["title"], **({DATE_FIELD[new_kind]: when} if when else {}),
+                **{k: row[k] for k in ("course_id", "project_id") if row.get(k) is not None and k in plan.KINDS[new_kind][0]}}
+        p = inbox.propose(con, clock, source, f"Make “{row['title']}” a {a['new_kind']}",
+                          [{"op": "create", "kind": new_kind, "data": data}, {"op": "delete", "kind": kind, "id": row["id"]}], quote)
+        return p if "id" in p else None
     data, said = {}, []
     when = ingest.said_when(quote) or a.get("when")  # the date words as code reads them win
     w = ingest.resolve({"title": row["title"], "quote": quote, "when": when}, today, term, {}) if when else None
@@ -424,7 +437,7 @@ def _change_or_remove(con, clock, source, a, title, text, today, term):
         data["title"] = ingest.capitalize(new)
         said.append(f"renamed “{data['title']}”")
     if not data:
-        return None
+        return f"I couldn't tell what to change about “{row['title']}”."
     if "provisional" in row and row["provisional"] and field in data:
         data["provisional"] = False
     if row.get("window") and field in data:
@@ -620,6 +633,7 @@ def _actions(con, llm, clock, text, reply_id, message_id=None, answering=False) 
     made = []
     seen = set()
     meetings = {}  # course → the weekly class event proposed in this message
+    missed = []    # changes asked for that couldn't be made, and why
     acts.sort(key=lambda a: not (a.get("type") == "event" and a.get("days")))  # classes first: "after each class" needs them
     for a in acts:
         title = ingest.capitalize((a.get("title") or "").strip())
@@ -643,7 +657,10 @@ def _actions(con, llm, clock, text, reply_id, message_id=None, answering=False) 
             _change_notes(con, llm, clock, a, text, message_id)
             continue
         if kind in ("change", "remove"):
-            if (p := _change_or_remove(con, clock, source, a, title, text, today, term)):
+            p = _change_or_remove(con, clock, source, a, title, text, today, term)
+            if isinstance(p, str):
+                missed.append(p)  # said after the reply, rather than nothing happening
+            elif p:
                 made.append(p["id"])
             continue
         if kind == "progress":
@@ -668,7 +685,7 @@ def _actions(con, llm, clock, text, reply_id, message_id=None, answering=False) 
             course = _match_course(con, a.get("course"), text)
             if table == "events" and a.get("days") and (hit := _match_item(con, title, course)) and hit[1].get("repeat"):
                 # a class they already have, said again with a new time or place: a change, not a second class
-                if (p := _change_or_remove(con, clock, source, {**a, "type": "change"}, hit[1]["title"], text, today, term)):
+                if (p := _change_or_remove(con, clock, source, {**a, "type": "change"}, hit[1]["title"], text, today, term)) and not isinstance(p, str):
                     made.append(p["id"])
                 continue
             if table == "events" and a.get("days"):
@@ -721,6 +738,8 @@ def _actions(con, llm, clock, text, reply_id, message_id=None, answering=False) 
             made.append(p["id"])
     for pid in made:
         _record(con, message_id, "made", pid)
+    if missed:
+        _say(con, clock, "assistant", " ".join(dict.fromkeys(missed)))
     return made
 
 
