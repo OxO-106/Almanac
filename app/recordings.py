@@ -188,6 +188,18 @@ def _set(con, rec_id, **fields):
         con.execute(f"update recordings set {', '.join(f'{k} = ?' for k in fields)} where id = ?", (*fields.values(), rec_id))
 
 
+def _delete(path: Path):
+    """Delete audio, waiting a moment if something still has it open (Windows
+    refuses then). If it still can't be, a restart deletes it (recover)."""
+    for _ in range(50):
+        try:
+            path.unlink(missing_ok=True)
+            return
+        except PermissionError:
+            time.sleep(0.1)
+    print(f"couldn't delete {path} yet; it goes at the next start")
+
+
 def finalize(con, llm, clock, transcriber, rec_id, audio: Path):
     """The final pass for one Recording. The audio is deleted whatever happens."""
     rec = con.execute("select * from recordings where id = ?", (rec_id,)).fetchone()
@@ -196,7 +208,7 @@ def finalize(con, llm, clock, transcriber, rec_id, audio: Path):
         try:
             segments, seconds = transcriber.file(audio)
         finally:
-            Path(audio).unlink(missing_ok=True)  # ADR 0001: the audio never outlives transcription
+            _delete(Path(audio))  # ADR 0001: the audio never outlives transcription
         if not segments:
             raise ValueError("No speech was found in the recording.")
         _set(con, rec_id, status="cleaning", seconds=seconds, pending=json.dumps(segments))
@@ -452,8 +464,9 @@ def _audio_path(state, rid) -> Path:
 def _live(state, rid) -> Live:
     """The running Recording's state, recreated after a restart (captions start over)."""
     if rid not in state.live:  # app.state.live: the running Recordings of this app
-        state.live[rid] = Live(_audio_path(state, rid))
-        threading.Thread(target=_captioner, args=(state.transcriber, state.live[rid]), daemon=True).start()
+        live = state.live[rid] = Live(_audio_path(state, rid))
+        live.thread = threading.Thread(target=_captioner, args=(state.transcriber, live), daemon=True)
+        live.thread.start()
     return state.live[rid]
 
 
@@ -637,6 +650,9 @@ def _close(state, rid, trim_to=None) -> Path:
     live = state.live.pop(rid, None)
     if live:
         live.stop.set()
+        live.wake.set()
+        if (t := getattr(live, "thread", None)) and t is not threading.current_thread():
+            t.join(timeout=10)  # it reads the audio file; Windows can't delete a file that's open
     pcm = _audio_path(state, rid)
     wav = pcm.with_suffix(".wav")
     left = None if trim_to is None else int(trim_to * SR) * WIDTH
@@ -647,7 +663,7 @@ def _close(state, rid, trim_to=None) -> Path:
         while (left is None or left > 0) and (block := src.read(1 << 20 if left is None else min(1 << 20, left))):
             out.writeframes(block)
             left = None if left is None else left - len(block)
-    pcm.unlink(missing_ok=True)
+    _delete(pcm)
     _set(state.db, rid, status="transcribing")
     return wav
 

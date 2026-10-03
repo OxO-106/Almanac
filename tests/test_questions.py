@@ -27,6 +27,31 @@ def test_an_answer_for_no_item_is_read_like_chat_and_lands_on_the_item(client, l
     assert "You asked: When must you submit your one-page proposal report?" in llm.requests[-1]["messages"][-1]["content"]
 
 
+def test_an_answer_with_several_dates_makes_one_item_each_and_isnt_asked_back(client, llm):
+    src = source(client)
+    client.post("/api/questions", json={"source_id": src["id"], "text": "Which four lectures will you write summaries for?"})
+    chat(client)
+    text = "Oct 8th, Oct 22nd, Nov 3rd, Nov 5th"
+    task = lambda q, m, d: {"type": "task", "title": "Write a summary of the CS 201 lecture", "quote": q, "when": {"type": "date", "month": m, "day": d}}
+    llm.replies = [json.dumps({"actions": [task("Oct 8th", 10, 8), task("Oct 22nd", 10, 22), task("Nov 3rd", 11, 3), task("Nov 5th", 11, 5),
+                                           {"type": "question", "title": "What times are those lectures?", "quote": text}]})]
+    client.post("/api/chat", json={"text": text})
+    dues = sorted(p["ops"][0]["data"]["due"] for p in client.get("/api/inbox").json()["proposals"])
+    assert dues == ["2026-10-08", "2026-10-22", "2026-11-03", "2026-11-05"]  # the same title on four days: four tasks
+    assert [q["text"] for q in client.get("/api/questions").json() if q["status"] == "open"] == []  # not asked back
+
+
+def test_a_session_on_a_class_day_gets_the_class_time(client, llm):
+    c = client.post("/api/courses", json={"number": "CS 201", "instructor": "Remy Wang"}).json()
+    client.post("/api/events", json={"title": "CS 201 class", "course_id": c["id"], "start": "2026-09-24T12:00", "end": "2026-09-24T13:15",
+                                     "repeat": "TU,TH", "until": "2026-12-04"})
+    llm.replies = ["Okay.", json.dumps({"actions": [{"type": "event", "title": "CS 201 guest lecture", "quote": "the CS 201 guest lecture on Oct 8th",
+                                                     "when": {"type": "date", "month": 10, "day": 8}, "course": "CS 201"}]})]
+    client.post("/api/chat", json={"text": "I'm going to the CS 201 guest lecture on Oct 8th"})
+    (p,) = pending(client).values()
+    assert (p["ops"][0]["data"]["start"], p["ops"][0]["data"]["end"]) == ("2026-10-08T12:00", "2026-10-08T13:15")
+
+
 def test_an_answer_for_no_item_fills_in_the_one_already_planned(client, llm):
     src = source(client)
     client.post("/api/deadlines", json={"title": "Proposal one-pager", "due": "2026-10-21"})

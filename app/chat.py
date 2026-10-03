@@ -219,7 +219,7 @@ def _answer(con, llm, clock, question, text, message_id=None):
         return None
 
     def read(said):  # an answer that's for no particular item, read like a chat message
-        made = _actions(con, llm, clock, said, None, message_id)
+        made = _actions(con, llm, clock, said, None, message_id, answering=True)
         if made:
             _say(con, clock, "assistant", "Here's what I'd add. Check the dates are right:", proposals=made)
 
@@ -245,6 +245,8 @@ Also, when the student said which course or project it belongs to: "course" as t
 A class or meeting that repeats every week ("MW 2pm - 3:50pm"): one "event" with "days" (e.g. "MO,WE"), "start_time" and "end_time" (24-hour "HH:MM"), as said; no "when".
 Something to do after every class of a course ("watch the recording before the next class"): one "task" with "each_class": true; no "when". Don't ask for dates the schedule already gives.
 - "notes": they ask to change the notes of one of their lectures (listed below): "make Monday's CS 259 notes shorter", "add the derivation to my 269 notes". "title" is the change they ask for, in their words; "course" the course as they named it.
+Several dates in one message: one action per date, each quoting its own date ("Oct 8th"); no question asking for times when the item is a class session (its time is the class's).
+When the message answers a question you asked (shown first, in brackets), its dates are for what the question asks about: new items, never a "change" to a class. "Oct 8th, Oct 22nd" to "Which lectures will you write summaries for?" → a "task" per date: "Write a summary of the CS 201 lecture", when that date, course "CS 201".
 If the message is just conversation, return no actions."""
 
 ACTIONS_SCHEMA = {"type": "object", "properties": {"actions": {"type": "array", "items": {"type": "object", "properties": {
@@ -266,7 +268,8 @@ def _context(con, clock) -> str:
                  now.date().isoformat(), (now.date() + timedelta(days=14)).isoformat(),
                  now.date().isoformat(), (now.date() + timedelta(days=14)).isoformat())
     open_tasks = q("select title from tasks where status = 'open' order by coalesce(do_date, due, '9999'), id limit 40")
-    weekly = q("select title, start, end, repeat, location from events where repeat is not null")
+    weekly = [{"title": c["title"], "repeat": ",".join(c["days"]), "start": f"2000-01-01T{c['start']}", "end": c["end"] and f"2000-01-01T{c['end']}",
+               "location": (c.get("event") or c["proposal"]["ops"][0]["data"]).get("location")} for c in questions._classes(con)]
     dated = q("select title, start as at from events where repeat is null and substr(start, 1, 10) >= ? "
               "union all select title, due from deadlines where substr(due, 1, 10) >= ? order by at limit 30",
               now.date().isoformat(), now.date().isoformat())
@@ -450,6 +453,10 @@ def _match_course(con, named, text):
         return None
     said = (named + " " + text).lower()
     courses = [dict(r) for r in con.execute("select * from courses")]
+    for r in con.execute("select id, ops from proposals where status = 'pending'").fetchall():  # a course still waiting
+        ops = json.loads(r["ops"])
+        if len(ops) == 1 and ops[0]["op"] == "create" and ops[0]["kind"] == "courses":
+            courses.append({**ops[0]["data"], "instructor": ops[0]["data"].get("instructor") or "Not stated", "id": f"$p{r['id']}.0"})
     # whole words: "recording" doesn't name Ding
     by_name = [c for c in courses if c["instructor"] != "Not stated"
                and re.search(rf"\b{re.escape(c['instructor'].split()[-1].lower())}\b", said)]
@@ -588,7 +595,7 @@ def _undo_notes(con, clock, text) -> bool:
     return mid is not None
 
 
-def _actions(con, llm, clock, text, reply_id, message_id=None) -> list[int] | None:
+def _actions(con, llm, clock, text, reply_id, message_id=None, answering=False) -> list[int] | None:
     """Suggestions from the student's message. Returns the proposals made,
     or None if the model call failed (e.g. Ollama busy with another app)."""
     try:
@@ -605,11 +612,16 @@ def _actions(con, llm, clock, text, reply_id, message_id=None) -> list[int] | No
     acts.sort(key=lambda a: not (a.get("type") == "event" and a.get("days")))  # classes first: "after each class" needs them
     for a in acts:
         title = ingest.capitalize((a.get("title") or "").strip())
-        if not title or title.lower() in seen or not ingest.quoted(a.get("quote"), text):
-            continue  # (models sometimes list one thing as both a task and a deadline)
-        seen.add(title.lower())
+        # the same thing listed twice (models sometimes give it as both a task and a deadline);
+        # the same title on different days is several things ("a summary of Oct 8th's lecture, of Oct 22nd's")
+        key = (title.lower(), json.dumps(ingest.said_when(a.get("quote") or "") or a.get("when"), sort_keys=True))
+        if not title or key in seen or not ingest.quoted(a.get("quote"), text):
+            continue
+        seen.add(key)
         source = source or _chat_source(con, clock, text)
         kind = a.get("type")
+        if kind == "question" and answering:
+            continue  # they just answered one: don't ask it back in other words
         if kind == "question":
             q = inbox.ask(con, clock, source, title, a["quote"])
             _record(con, message_id, "asked", q["id"])
@@ -677,6 +689,12 @@ def _actions(con, llm, clock, text, reply_id, message_id=None) -> list[int] | No
             if w.value:
                 at = ingest.said_time(quote) or (a.get("start_time") if ingest.time_in_quote(a.get("start_time"), quote) else None)
                 data[DATE_FIELD[table]] = w.value[:10] + (f"T{at}" if at and len(w.value) == 10 else w.value[10:])
+            if table == "events" and len(data.get("start") or "") == 10 and course is not None:
+                day = plan.DAYS[date.fromisoformat(data["start"]).weekday()]
+                if (cls := next((c for c in questions._classes(con, course) if day in c["days"]), None)):
+                    data["start"] += f"T{cls['start']}"
+                    if cls["end"]:
+                        data["end"] = data["start"][:11] + cls["end"]
             if table == "events" and "start" not in data:
                 table = "tasks"  # an event without a time is something to do on no set date
             if course is not None:
