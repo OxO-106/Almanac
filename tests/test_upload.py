@@ -144,6 +144,10 @@ def test_a_task_with_no_date_or_lecture_is_left_out_and_asked_about(client, llm)
     assert [(q["text"], q["purpose"]) for q in box["questions"]] == [
         ("I couldn't place “Read papers before lectures”: the document doesn't say when. Is it something you need to do? If so, when?", "other")]
     assert [(d["title"], d["reason"]) for d in src["dropped"]] == [("Read papers before lectures", "no date or lecture stated")]
+    # "not relevant to me": dropped everywhere, not still listed under the document
+    client.get("/api/chat")
+    client.post("/api/chat/dismiss")
+    assert client.get(f"/api/sources/{src['id']}").json()["dropped"] == []
 
 
 def test_several_left_out_things_are_one_question(client, llm):

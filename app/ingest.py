@@ -1599,7 +1599,11 @@ def _source(con, id):
     r = con.execute("select id, kind, title, status, error, dropped, created_at, lineage, url from sources where id = ?", (id,)).fetchone()
     if not r:
         raise HTTPException(404)
-    return {**dict(r), "dropped": json.loads(r["dropped"] or "[]")}
+    # what was left out is listed until the student settles the question about it
+    # (answered, or "not relevant"): dropped is dropped everywhere
+    settled = " ".join(q["text"] for q in con.execute(
+        "select text from questions where source_id = ? and status != 'open' and text like 'I couldn''t place%'", (id,)))
+    return {**dict(r), "dropped": [d for d in json.loads(r["dropped"] or "[]") if f"“{d['title']}”" not in settled]}
 
 
 @router.get("/sources")
