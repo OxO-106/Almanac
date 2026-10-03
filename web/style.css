@@ -120,21 +120,25 @@ section > h2 .meta { font-weight: 400; }
 .offer input { flex: 1; min-width: 0; font: inherit; border: 1px solid var(--btn-line); border-radius: 8px; padding: 8px 12px; background: var(--ground); }
 
 /* lists */
-.item { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 8px 4px; border-bottom: 1px solid var(--line-soft); position: relative; }
-.item .title { flex: 1; min-width: 0; color: inherit; text-decoration: none; cursor: pointer; }
+.item { display: flex; align-items: flex-start; gap: 12px; min-height: 44px; padding: 10px 4px; border-bottom: 1px solid var(--line-soft); position: relative; }
+.item .title { flex: 1; min-width: 0; color: inherit; text-decoration: none; cursor: pointer; line-height: 1.45; }
 .item .title:hover { color: var(--slate); }
 .item.done .title { color: var(--faint); text-decoration: line-through; }
-.item input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--slate); margin: 0; flex: none; }
+.item input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--slate); margin: 2px 0 0; flex: none; }
 .item .course { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); white-space: nowrap; }
-.item .est { font-size: 12px; color: var(--muted); min-width: 48px; text-align: right; }
-.item .play { border: 0; background: none; color: var(--faint); padding: 4px; opacity: 0; }
+.item .est { font-size: 12px; color: var(--muted); width: 48px; flex: none; text-align: right; padding-top: 3px; }
+.item .play { border: 0; background: none; color: var(--faint); padding: 0 4px; opacity: 0; width: 26px; height: 22px; flex: none; }
+/* the course: one fixed column at the end of every row, the same in task lists and "Coming up" */
+.course-col { flex: none; width: 132px; padding-top: 3px; overflow: hidden; text-overflow: ellipsis; }
+.course-col .swatch { flex: none; }
 .item:hover .play, .item .play:focus-visible { opacity: 1; }
 .item .play:hover { color: var(--slate); }
 .add-row { border: 0; background: none; color: var(--muted); text-align: left; padding: 10px 4px; display: flex; gap: 10px; align-items: center; }
 .add-row:hover { color: var(--slate); }
 
-.when-row { display: flex; gap: 16px; padding: 8px 4px; align-items: baseline; }
-.when-row .when { width: 96px; flex: none; font-size: 13px; color: var(--muted); }
+.when-row { display: flex; gap: 16px; padding: 10px 4px; align-items: flex-start; line-height: 1.45; }
+.when-row .course { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.when-row .when { width: 96px; flex: none; font-size: 13px; color: var(--muted); padding-top: 2px; }
 .when-row .when.due { color: var(--due); font-weight: 500; }
 .when-row .what { flex: 1; min-width: 0; }
 .when-row a.what { color: inherit; text-decoration: none; cursor: pointer; }
@@ -329,6 +333,7 @@ dialog .why { font: italic 15px/1.45 var(--serif); color: var(--muted); margin: 
   .item .course { display: none; }
   .item .play { opacity: 1; }
   .when-row .when { width: 80px; }
+  .when-row .course-col { display: none; }
   .when-row .meta { display: none; }
   .turn .say { font-size: 18px; }
   .mine, .mine-wrap { max-width: 85%; }

@@ -57,6 +57,8 @@ const courseColor = id => courseIdx(id) < 0 ? "#C9D3DA" : PALETTE[courseIdx(id) 
 const courseTint = id => courseIdx(id) < 0 ? "#EEF2F5" : TINTS[courseIdx(id) % TINTS.length];
 const courseName = id => { const c = lookups.courses.find(c => c.id === id); return c ? `${c.number} · ${c.instructor.split(" ").pop()}` : ""; };
 const courseTag = id => id ? `<span class="course"><i class="swatch" style="background:${courseColor(id)}"></i>${esc(courseName(id))}</span>` : "";
+// the same, as the fixed last column of a list row (empty when there's no course, so the rows still line up)
+const courseCol = id => `<span class="course course-col">${id ? `<i class="swatch" style="background:${courseColor(id)}"></i>${esc(courseName(id))}` : ""}</span>`;
 
 async function loadLookups() {
   const [courses, goals, projects, terms] = await Promise.all(["courses", "goals", "projects", "terms"].map(k => api(`/api/${k}`)));
@@ -165,9 +167,9 @@ async function toggleTask(id, done) {
 const taskItem = t => `<div class="item ${t.status === "done" ? "done" : ""}">
   <input type="checkbox" ${t.status === "done" ? "checked" : ""} onchange="toggleTask(${t.id}, this.checked)" aria-label="Done: ${esc(t.title)}">
   <a class="title" onclick='edit("tasks", ${t.id})'>${esc(t.title)}</a>
-  ${courseTag(t.course_id)}
   <span class="est">${t.status === "done" ? "done" : esc(est(t.estimate_min))}</span>
-  ${t.status === "done" ? "" : `<button class="play" onclick="startTimer(${t.id})" aria-label="Start a timer on ${esc(t.title)}">${ICON.play}</button>`}
+  ${t.status === "done" ? `<span class="play"></span>` : `<button class="play" onclick="startTimer(${t.id})" aria-label="Start a timer on ${esc(t.title)}">${ICON.play}</button>`}
+  ${courseCol(t.course_id)}
 </div>`;
 
 // ---- the composer --------------------------------------------------------------
@@ -264,7 +266,7 @@ views.today = async () => {
       ${t.overdue.length ? `<div class="meta">Still open from earlier</div>${t.overdue.map(taskItem).join("")}<div class="meta" style="margin-top:8px">Planned for today</div>` : ""}
       ${[...t.tasks, ...t.done].map(taskItem).join("") || `<p class="empty">Nothing planned for today.</p>`}
       ${t.deadlines.map(d => `<div class="item"><span class="when-row" style="padding:0"><span class="when due" style="width:auto">Due today</span></span>
-        <a class="title" onclick='edit("deadlines", ${d.id})'>${esc(d.title)}</a>${courseTag(d.course_id)}</div>`).join("")}
+        <a class="title" onclick='edit("deadlines", ${d.id})'>${esc(d.title)}</a><span class="est"></span><span class="play"></span>${courseCol(d.course_id)}</div>`).join("")}
       <button class="add-row" onclick='openEditor("tasks", null, {do_date: ${js(t.date)}})'>${ICON.plus}Add something for today</button>
     </section>
     ${t.events.length ? `<section aria-labelledby="h-sched"><h2 id="h-sched">Schedule</h2>
@@ -275,7 +277,7 @@ views.today = async () => {
       </div>`).join("")}</section>` : ""}
     <section aria-labelledby="h-next"><h2 id="h-next">Coming up</h2>
       ${comingUp.map(x => `<div class="when-row"><span class="when ${soon(x.at) ? "due" : ""}">${esc(fmtDay(x.at))}</span>
-        <a class="what" onclick='edit("${x.kind}", ${x.id})'>${esc(x.title)}</a><span class="meta">${esc(courseName(x.course_id))}</span></div>`).join("")
+        <a class="what" onclick='edit("${x.kind}", ${x.id})'>${esc(x.title)}</a>${courseCol(x.course_id)}</div>`).join("")
         || `<p class="empty">Nothing due in the next two weeks that I know of.</p>`}
     </section>
     ${notify ? `<p class="meta"><a href="#settings">Turn on notifications</a> on this device for the morning note and check-ins.</p>` : ""}
