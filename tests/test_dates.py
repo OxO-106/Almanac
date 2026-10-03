@@ -343,3 +343,18 @@ def test_what_the_student_produces_is_a_deadline_and_what_they_attend_is_an_even
     upload(client, "ding.txt", doc.encode())
     kinds = {p["summary"]: p["ops"][0]["kind"] for p in inbox(client)["proposals"]}
     assert (kinds["Guest Lecture: Dr. Hengtao Guo"], kinds["Course project proposal"], kinds["Midterm exam"]) == ("events", "deadlines", "events")
+
+
+def test_a_reading_for_a_lecture_already_held_is_suggested_overdue(client, llm):
+    # today is Wed Sep 30 (the test clock): Lecture 1 was Tuesday
+    doc = ("Instructor: Stefano Soatto\nLecture 1: Tuesday, September 29 - Benchmarks\nP1. SWE-bench: Can Language Models Resolve Real-World GitHub Issues?\n"
+           "Lecture 3: Tuesday, October 6 - Refinement\nP3. Reflexion: Language Agents with Verbal Reinforcement Learning\n")
+    reading = lambda title, quote, m, d: item(kind="task", title=title, quote=quote, when={"type": "date", "month": m, "day": d})
+    llm.replies = [course(), items_reply(
+        reading("Read P1. SWE-bench: Can Language Models Resolve Real-World GitHub Issues?",
+                "Lecture 1: Tuesday, September 29 - Benchmarks P1. SWE-bench: Can Language Models Resolve Real-World GitHub Issues?", 9, 29),
+        reading("Read P3. Reflexion: Language Agents with Verbal Reinforcement Learning",
+                "Lecture 3: Tuesday, October 6 - Refinement P3. Reflexion: Language Agents with Verbal Reinforcement Learning", 10, 6))]
+    upload(client, "kim.txt", doc.encode())
+    due = {p["summary"][:8]: data(p)["due"] for p in inbox(client)["proposals"] if p["summary"].startswith("Read")}
+    assert due == {"Read P1.": "2026-09-28", "Read P3.": "2026-10-05"}  # the day before each lecture, the past one too

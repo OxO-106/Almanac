@@ -986,9 +986,8 @@ def _settle(items, text, today, term, lectures):
         if it["kind"] == "task" and not resolved[i].value and not it.get("question"):
             undated.append(i)
             continue
-        last = (resolved[i].window or resolved[i].value or "")[-10:]  # a week's task is open until the week ends
-        if it["kind"] == "task" and last and last < (today - timedelta(days=1)).isoformat():
-            continue  # e.g. the reading for a lecture that has already happened
+        # a task whose day has passed is kept, overdue: the reading for a lecture
+        # that has already happened is still to be done (the student's call)
         keep.append(i)
     return resolved, sorted(keep), sorted(undated)
 
