@@ -253,6 +253,7 @@ Something to do after every class of a course ("watch the recording before the n
 - "notes": they ask to change the notes of one of their lectures (listed below): "make Monday's CS 259 notes shorter", "add the derivation to my 269 notes". "title" is the change they ask for, in their words; "course" the course as they named it.
 Several dates in one message: one action per date, each quoting its own date ("Oct 8th"); no question asking for times when the item is a class session (its time is the class's).
 When the message answers a question you asked (shown first, in brackets), its dates are for what the question asks about: new items, never a "change" to a class. "Oct 8th, Oct 22nd" to "Which lectures will you write summaries for?" → a "task" per date: "Write a summary of the CS 201 lecture", when that date, course "CS 201".
+A request for you, the assistant, to write, draft, explain or answer something now ("write me an email to…", "what is ReAct?", "summarize…") is not an action: it's done in the reply. Return no actions for it.
 If the message is just conversation, return no actions."""
 
 ACTIONS_SCHEMA = {"type": "object", "properties": {"actions": {"type": "array", "items": {"type": "object", "properties": {
@@ -281,13 +282,21 @@ def _context(con, clock) -> str:
               now.date().isoformat(), now.date().isoformat())
     goals = q("select title from goals where status = 'active'")
     memories = q("select text from memories order by id limit 40")
+    courses = q("select number, instructor, title from courses order by number")
+    week_ago = (now.date() - timedelta(days=7)).isoformat()
+    last_met = {}
+    for c in questions._classes(con):
+        if "event" in c:  # in the plan: the latest of its days up to today
+            for o in plan.occurrences([c["event"]], week_ago, now.date().isoformat()):
+                last_met[c["title"]] = o["start"][:10]
     lectures = q("select r.date, c.number, c.instructor from recordings r left join courses c on c.id = r.course_id "
                  "where r.notes is not null order by r.date desc, r.id desc limit 10")
     lines = lambda rows, f: "\n".join(f"- {f(r)}" for r in rows) or "- none"
     return (f"Today is {now:%A, %B %d, %Y}, {now:%H:%M} in Los Angeles.\n\n"
             f"Coming up in the next two weeks:\n{lines(upcoming, lambda r: f'{r['at']}: {r['title']}')}\n\n"
             f"Open tasks:\n{lines(open_tasks, lambda r: r['title'])}\n\n"
-            f"Weekly classes:\n{lines(weekly, lambda r: f'{r['title']}: {r['repeat']} {r['start'][11:16]}' + (f'-{r['end'][11:16]}' if r['end'] else '') + (f' ({r['location']})' if r['location'] else ''))}\n\n"
+            f"Courses (number · instructor: title):\n{lines(courses, lambda r: f'{r['number']} · {r['instructor']}' + (f': {r['title']}' if r['title'] else ''))}\n\n"
+            f"Weekly classes:\n{lines(weekly, lambda r: f'{r['title']}: {r['repeat']} {r['start'][11:16]}' + (f'-{r['end'][11:16]}' if r['end'] else '') + (f' ({r['location']})' if r['location'] else '') + (f'; last met {_fmt_day(last_met[r['title']])}' if r['title'] in last_met else ''))}\n\n"
             f"Planned sessions and deadlines:\n{lines(dated, lambda r: f'{r['title']} ({r['at']})')}\n\n"
             f"Goals:\n{lines(goals, lambda r: r['title'])}\n\n"
             f"What you know about the student:\n{lines(memories, lambda r: r['text'])}\n\n"
@@ -328,14 +337,22 @@ def _messages(con, llm, clock, text, focus=None):
     summary, upto = _summary(con, llm, clock)
     history = [{"role": r["role"], "content": r["text"]} for r in con.execute(
         "select role, text from chat_messages where id > ? order by id desc limit ?", (upto, HISTORY + 1))][::-1][:-1]
-    system = ("You are Almanac, a personal assistant for a university student. Be brief and warm. Never invent facts "
+    system = ("You are Almanac, a personal assistant for a university student. When they tell you about their plans "
+              "(things to do, dates, classes, changes), reply in one or two sentences: the app shows the suggestions below "
+              "your reply, so never list or restate them yourself. When they ask you to write or draft something (an email, "
+              "a message, a request), write it in full, ready to send, with a "
+              "subject line for an email, using what you know below (the course, its instructor, the class dates); put "
+              "[brackets] only where you don't know something (e.g. [Your name]). Don't make up reasons or circumstances "
+              "they didn't give (that they missed or couldn't attend a class, were sick): give only the reason they gave, and if "
+              "they gave none, give none. When they ask a question or for an "
+              "explanation, answer it properly. Otherwise be brief and warm. Never invent facts "
               "about their courses or dates; if you don't know, ask. When they mention things to do, plans or goals, say "
               "you'll suggest adding them, for them to confirm (the suggestions show below your reply with their own button: don't ask "
               "\"is that correct?\" in words); don't claim anything is already scheduled. When they ask "
               "to change, move or remove something in their plan, say you'll suggest that change for them to confirm (the suggestion shows below your reply with its own button: don't ask them to confirm in words). "
               + ("If they ask to change the notes of a lecture, say in a few words that you're making that change now "
                  "(don't say it's done: the result comes in your next message). " if re.search(r"\bnotes?\b", text, re.I) else "")
-              + "No emoji.\n\n"
+              + "Never write buttons, cards or suggestions in brackets yourself: the app shows the real ones. No emoji.\n\n"
               + _context(con, clock) + goals.focus_text(con, focus)
               + (f"\n\nEarlier in this conversation (summary):\n{summary}" if summary else ""))
     return [{"role": "system", "content": system}, *history, {"role": "user", "content": text}]
@@ -403,7 +420,11 @@ def _change_or_remove(con, clock, source, a, title, text, today, term):
                           [{"op": "delete", "kind": kind, "id": i} for i in ids], quote)
         return p if "id" in p else None
     field = DATE_FIELD[kind]
+    if (said := re.search(r"\b(?:to|into|as)\s+(?:an?\s+)?(task|event|deadline)s?\b", text, re.I)):
+        a = {**a, "new_kind": said.group(1).lower()}  # "change the gating test to a task": their word wins
     new_kind = {"task": "tasks", "event": "events", "deadline": "deadlines"}.get(a.get("new_kind") or "")
+    if new_kind == kind and not any(a.get(k) for k in ("when", "start_time", "location", "new_title")):
+        return f"“{row['title']}” is already a {a['new_kind']}."
     if new_kind and new_kind != kind and re.search(rf"\b{a['new_kind']}s?\b|\bto-?dos?\b", text, re.I):
         when = row.get(field)
         if new_kind == "events" and not when:
@@ -791,9 +812,15 @@ CONFIRM = re.compile(r"\s*(is that (correct|right|ok(ay)?)|does that (sound|look
                      r"would you like me to|do you want me to|let me know if)[^.?!]*[.?!]\s*$", re.I)
 
 
+FAKE_BUTTON = re.compile(r"^\s*\[[^\]\n]{2,100}\]\s*$", re.M)  # "[Add “Gating test” to tasks]"
+LISTED = re.compile(r"^\s*\**\s*(suggested (actions|tasks|changes)|suggestions|here'?s what i'?d add)\b.*?(?=\n\s*\n|\Z)", re.I | re.M | re.S)
+
+
 def _drop_ask_to_confirm(con, reply_id):
+    """The reply before suggestions: no "is that correct?", no buttons or lists of its own (the card is below)."""
     row = con.execute("select text from chat_messages where id = ?", (reply_id,)).fetchone()
-    if row and (cut := CONFIRM.sub("", row["text"]).strip()) and cut != row["text"]:
+    cut = row and re.sub(r"\n{3,}", "\n\n", CONFIRM.sub("", LISTED.sub("", FAKE_BUTTON.sub("", row["text"]))).strip())
+    if row and cut and cut != row["text"]:
         with WRITE:
             con.execute("update chat_messages set text = ? where id = ?", (cut, reply_id))
 

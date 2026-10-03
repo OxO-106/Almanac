@@ -101,3 +101,27 @@ def test_a_change_that_cant_be_made_is_said_not_silent(client, llm, plan):
     say(client, llm, "move the reading group to Friday",
         {"type": "change", "title": "Reading group", "quote": "move the reading group to Friday", "when": {"type": "weekday", "weekday": "FR"}})
     assert client.get("/api/chat").json()["messages"][-1]["text"] == "I couldn't find “Reading group” in your plan."
+
+
+def test_a_request_to_write_something_is_answered_with_what_it_needs(client, llm, plan):
+    c = client.post("/api/courses", json={"number": "CS 269", "instructor": "Stefano Soatto", "title": "Agentic Learning"}).json()
+    client.post("/api/events", json={"title": "CS 269 class", "course_id": c["id"], "start": "2026-09-28T18:00", "repeat": "MO,WE", "until": "2026-12-04"})
+    say(client, llm, "write me an email to the CS269 instructor requesting the recording of the last lecture")
+    system = next(r for r in llm.requests if r["messages"][0]["content"].startswith("You are Almanac"))["messages"][0]["content"]
+    assert "write it in full, ready to send" in system
+    assert "CS 269 · Stefano Soatto: Agentic Learning" in system and "CS 269 class: MO,WE 18:00; last met Wed Sep 30" in system
+    assert client.get("/api/inbox").json()["proposals"] == []  # a request to write isn't a task
+
+
+def test_a_reply_doesnt_draw_its_own_buttons_or_lists_above_the_real_ones(client, llm, plan):
+    llm.replies = ["I'll suggest it.\n\n**Suggested Actions:**\n- Add “Read ReAct”\n\n[Add “Read ReAct”]\n\nIs that correct?",
+                   actions({"type": "task", "title": "Read ReAct", "quote": "read ReAct by Friday", "when": {"type": "weekday", "weekday": "FR"}})]
+    client.post("/api/chat", json={"text": "I need to read ReAct by Friday"})
+    texts = [m["text"] for m in client.get("/api/chat").json()["messages"]]
+    assert texts[-2:] == ["I'll suggest it.", "Here's what I'd add. Check the dates are right:"]
+
+
+def test_making_an_item_the_kind_it_already_is_says_so(client, llm, plan):
+    say(client, llm, "make the proposal one-pager a deadline",
+        {"type": "change", "title": "Proposal one-pager", "quote": "make the proposal one-pager a deadline", "new_kind": "deadline"})
+    assert client.get("/api/chat").json()["messages"][-1]["text"] == "“Proposal one-pager” is already a deadline."
