@@ -178,8 +178,8 @@ def _classes(con, course=None) -> list[dict]:
     for r in con.execute("select * from events where repeat is not null"):
         out.append({"title": r["title"], "days": r["repeat"].split(","), "start": r["start"][11:16], "end": (r["end"] or "")[11:16] or None,
                     "course": r["course_id"], "event": dict(r)})
-    for r in con.execute("select id from proposals where status = 'pending' order by id"):
-        p = inbox._proposal(con, r["id"])
+    for r in con.execute("select * from proposals where status = 'pending' order by id").fetchall():
+        p = {**dict(r), "ops": json.loads(r["ops"]), "applied": None}
         o = p["ops"][0]
         if len(p["ops"]) == 1 and o["op"] == "create" and o["kind"] == "events" and o["data"].get("repeat"):
             d = o["data"]
@@ -196,6 +196,8 @@ def _times(con, llm, q, text):
     if wk := ingest.weekly(text) or ingest.weekly(f"{letters} {text}"):
         return wk[1], wk[2]
     classes = _classes(con)
+    if pointed := _same_as(classes, q["target"].get("course"), text):
+        return pointed
     listing = "\n".join(f"- {c['title']}: {','.join(c['days'])} {c['start']}" + (f"-{c['end']}" if c["end"] else "") for c in classes) or "- none"
     try:
         got = json.loads(llm.chat([{"role": "system", "content": MEETING_PROMPT},
@@ -212,6 +214,21 @@ def _times(con, llm, q, text):
     if not same:
         return None  # a time neither said nor anyone's class time
     return start, next((c["end"] for c in same if c["end"] == end), same[0]["end"])
+
+
+SAME_AS = re.compile(r"\b(?:same|like|as)\b.*?\b(mon|tues|wednes|thurs|fri|satur|sun)(?:day)?s?\b", re.I)
+_DAY = {"mon": "MO", "tues": "TU", "wednes": "WE", "thurs": "TH", "fri": "FR", "satur": "SA", "sun": "SU"}
+
+
+def _same_as(classes, course, text):
+    """"same as Tuesday": the time of the one class (this course's, if it has one) on that day."""
+    if not (m := SAME_AS.search(text)) or ingest.said_time(text):
+        return None
+    day = _DAY[m.group(1).lower()]
+    on = [c for c in classes if day in c["days"]]
+    mine = [c for c in on if course is not None and c["course"] == course]
+    times = {(c["start"], c["end"]) for c in (mine or on)}
+    return times.pop() if len(times) == 1 else None
 
 
 def _meeting(con, llm, clock, q, text, reply) -> str | None:

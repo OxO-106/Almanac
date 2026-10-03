@@ -138,16 +138,74 @@ TERMS = [
      "2027-03-26 César Chávez Day\n2027-05-31 Memorial Day"),
 ]
 
-# One connection is shared by the request thread pool and background jobs, so
-# every write (and every multi-statement transaction) holds this lock.
+# Every write (and every multi-statement transaction) holds this lock: one
+# writer at a time across the request thread pool and background jobs.
 WRITE = threading.RLock()
 
 
-def connect(path: Path) -> sqlite3.Connection:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
+def _open(path: Path) -> sqlite3.Connection:
+    con = sqlite3.connect(path, check_same_thread=False, isolation_level=None, timeout=30)
     con.row_factory = sqlite3.Row
     con.execute("pragma foreign_keys = on")
+    return con
+
+
+class _Rows:
+    """A read's rows, as a cursor gives them."""
+
+    def __init__(self, rows):
+        self._rows, self._at = rows, 0
+
+    def fetchone(self):
+        if self._at >= len(self._rows):
+            return None
+        self._at += 1
+        return self._rows[self._at - 1]
+
+    def fetchall(self):
+        rest, self._at = self._rows[self._at:], len(self._rows)
+        return rest
+
+    def __iter__(self):
+        return iter(self.fetchall())
+
+
+class Database:
+    """The database as the app sees it: one connection per thread to the same
+    file. A single shared connection mixed up reads made at the same moment by
+    two threads (a chat reply while the page polls): rows came back empty, and
+    a transaction on it took in other threads' statements. WAL lets readers run
+    beside the one writer."""
+
+    def __init__(self, path: Path):
+        self.path, self._local = path, threading.local()
+
+    @property
+    def con(self) -> sqlite3.Connection:
+        c = getattr(self._local, "con", None)
+        if c is None:
+            c = self._local.con = _open(self.path)
+        return c
+
+    def execute(self, *a):
+        cur = self.con.execute(*a)
+        # a read is taken whole at once: a cursor left half-read keeps its
+        # connection on an old snapshot, and the thread would see stale rows
+        return _Rows(cur.fetchall()) if cur.description is not None else cur
+
+    def executemany(self, *a):
+        return self.con.executemany(*a)
+
+    def executescript(self, *a):
+        return self.con.executescript(*a)
+
+    def __getattr__(self, name):  # backup, row_factory, …
+        return getattr(self.con, name)
+
+
+def connect(path: Path) -> Database:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    con = Database(path)
     con.execute("pragma journal_mode = wal")
     con.executescript(SCHEMA)
     for table, column, decl in COLUMNS:

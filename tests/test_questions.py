@@ -134,13 +134,16 @@ def test_same_as_another_day_adds_that_day_to_the_class(client, llm):
     client.post("/api/chat", json={"text": "10AM to 11:50AM"})  # a written time needs no model
     meeting_question(client, src, ["TH"])
     chat(client)
-    llm.replies = [json.dumps({"start": "10:00", "end": "11:50", "unclear": False})]
+    # another course's class with the same name, on other days (two CS 239s): the model found that unclear
+    client.post("/api/events", json={"title": "CS 239 class", "start": "2026-09-28T16:00", "end": "2026-09-28T17:50",
+                                     "repeat": "MO,WE", "until": "2026-12-04"})
+    asked = len(llm.requests)
     said = client.post("/api/chat", json={"text": "same as tuesday"}).json()["messages"]
     (cls,) = [p for s, p in pending(client).items() if "class" in s]
     data = cls["ops"][0]["data"]
     assert (data["repeat"], data["start"][11:], data["end"][11:]) == ("TU,TH", "10:00", "11:50")  # one class, both days
     assert said[-1]["text"].startswith("Updated CS 239 class: every Tu/Th, 10:00 AM–11:50 AM")
-    assert "CS 239 class: TU 10:00-11:50" in llm.requests[-1]["messages"][-1]["content"]  # the model saw Tuesday's time
+    assert len(llm.requests) == asked  # "same as Tuesday" is read by code: the one class on Tuesday
 
 
 def test_an_answer_with_no_time_is_asked_again_not_closed(client, llm):

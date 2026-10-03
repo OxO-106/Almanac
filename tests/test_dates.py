@@ -289,12 +289,10 @@ def test_the_open_ended_slot_question_is_not_asked_beside_the_one_with_buttons(c
     asked = json.dumps({"questions": [
         {"question": "Which specific date have you signed up for your final project report presentation?", "quote": "Sign up for one presentation slot."},
         {"question": "Which team are you on?", "quote": "Sign up for one presentation slot."}]})
-    llm.replies = [course(), items_reply(*two), asked, json.dumps({"merged": [
-        {"question": "Which specific date have you signed up for your final project report presentation?", "from": [0]},
-        {"question": "Which team are you on?", "from": [1]}]})]
+    llm.replies = [course(), items_reply(*two), asked]
     upload(client, "ding.txt", doc.encode())
-    assert sorted(q["text"] for q in inbox(client)["questions"]) == [
-        "Which day is your “Final project report”: Mon Nov 30 or Wed Dec 2?", "Which team are you on?"]
+    # the open-ended date question is asked with buttons instead; "which team" isn't about a date: not asked
+    assert [q["text"] for q in inbox(client)["questions"]] == ["Which day is your “Final project report”: Mon Nov 30 or Wed Dec 2?"]
 
 
 def test_a_reading_list_by_class_date_becomes_readings_the_day_before(client, llm):

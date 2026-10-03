@@ -181,28 +181,28 @@ def test_a_reading_is_due_the_day_before_its_lecture(client, llm):
 
 
 def test_questions_already_open_for_the_course_are_not_asked_again(client, llm):
-    q1 = json.dumps({"questions": [{"question": "Which paper did you register to present?", "quote": "Select a paper and register"}]})
+    q1 = json.dumps({"questions": [{"question": "Which day did you sign up to present?", "quote": "Select a paper and register"}]})
     llm.replies = [course_reply(), items_reply(), q1]
     upload(client, "cs239.txt", SYLLABUS.encode())
     q2 = json.dumps({"questions": [
-        {"question": "Which paper will you present?", "quote": "Select a paper and register"},
+        {"question": "Which day will you present?", "quote": "Select a paper and register"},
         {"question": "Have you already signed up for a slot?", "quote": "Select a paper and register"}]})
-    merged = json.dumps({"merged": [{"question": "Which paper did you register to present?", "from": [0, 1]}]})
+    merged = json.dumps({"merged": [{"question": "Which day did you sign up to present?", "from": [0, 1]}]})
     llm.replies = [course_reply(), items_reply(), q2, merged]
     upload(client, "cs239 schedule.txt", SYLLABUS.encode())
-    assert [q["text"] for q in inbox(client)["questions"]] == ["Which paper did you register to present?"]
+    assert [q["text"] for q in inbox(client)["questions"]] == ["Which day did you sign up to present?"]
     listing = llm.requests[-1]["messages"][-1]["content"]
-    assert "1. Which paper did you register to present? (already asked)" in listing
+    assert "1. Which day did you sign up to present? (already asked)" in listing
     assert "Have you already" not in listing  # yes/no about something done: not asked
 
 
 def test_a_question_code_must_ask_is_kept_even_if_the_merge_drops_it(client, llm):
-    drafts = json.dumps({"questions": [{"question": "Which paper are you presenting?", "quote": "Select a paper and register"}]})
+    drafts = json.dumps({"questions": [{"question": "Which day are you presenting?", "quote": "Select a paper and register"}]})
     undated = item(title="Final report", quote="Instructor: Robin Ding", when={"type": "unknown"})
-    llm.replies = [course_reply(), items_reply(undated), drafts, json.dumps({"merged": [{"question": "Which paper are you presenting?", "from": [0]}]})]
+    llm.replies = [course_reply(), items_reply(undated), drafts, json.dumps({"merged": [{"question": "Which day are you presenting?", "from": [0]}]})]
     upload(client, "cs239.txt", SYLLABUS.encode())
     assert sorted(q["text"] for q in inbox(client)["questions"]) == [
-        "When is “Final report” due? The document doesn't say.", "Which paper are you presenting?"]
+        "When is “Final report” due? The document doesn't say.", "Which day are you presenting?"]
 
 
 def test_a_course_without_a_named_instructor_is_asked_about(client, llm):
@@ -243,11 +243,11 @@ def test_titles_start_with_a_capital(client, llm):
 
 def test_a_separate_pass_asks_what_only_the_student_can_answer(client, llm):
     q = json.dumps({"questions": [
-        {"question": "Which paper did you register to present?", "quote": "Select a paper and register"},
+        {"question": "Which day did you sign up to present?", "quote": "Select a paper and register"},
         {"question": "Invented?", "quote": "This sentence is not in the document"}]})
     llm.replies = [course_reply(), items_reply(), q]
     upload(client, "cs239.txt", SYLLABUS.encode())
-    assert [x["text"] for x in inbox(client)["questions"]] == ["Which paper did you register to present?"]
+    assert [x["text"] for x in inbox(client)["questions"]] == ["Which day did you sign up to present?"]
 
 
 def test_regular_lectures_are_not_proposed_as_events(client, llm):
@@ -259,19 +259,20 @@ def test_regular_lectures_are_not_proposed_as_events(client, llm):
 
 def test_duplicate_questions_are_merged_and_unneeded_ones_dropped(client, llm):
     drafts = json.dumps({"questions": [
-        {"question": "Which paper did you register to present?", "quote": "Select a paper and register"},
-        {"question": "Which paper will you present in class?", "quote": "Select a paper and register"},
+        {"question": "Which day did you sign up to present?", "quote": "Select a paper and register"},
+        {"question": "Which day will you present in class?", "quote": "Select a paper and register"},
         {"question": "Do you like the course?", "quote": "Select a paper and register"},
         {"question": "Gating test eligibility", "quote": "Select a paper and register"}]})
-    blocked = item(kind="task", title="Prepare presentation", question="What paper are you presenting?", when={"type": "unknown"})
-    merged = json.dumps({"merged": [{"question": "Which paper are you presenting?", "from": [0, 1, 3]}]})
+    blocked = item(kind="task", title="Prepare presentation", question="What day are you presenting?", when={"type": "unknown"})
+    merged = json.dumps({"merged": [{"question": "Which day are you presenting?", "from": [0, 1, 2]}]})
     llm.replies = [course_reply(), items_reply(blocked), drafts, merged]
     upload(client, "cs239.txt", SYLLABUS.encode())
     box = inbox(client)
-    assert [q["text"] for q in box["questions"]] == ["Which paper are you presenting?"]
-    assert "3. What paper are you presenting?" in llm.requests[-1]["messages"][-1]["content"]  # the item's own draft
+    assert [q["text"] for q in box["questions"]] == ["Which day are you presenting?"]
+    assert "2. What day are you presenting?" in llm.requests[-1]["messages"][-1]["content"]  # the item's own draft
+    assert "Do you like the course" not in llm.requests[-1]["messages"][-1]["content"]  # not about a date or time
     assert "Gating test eligibility" not in llm.requests[-1]["messages"][-1]["content"]  # not a question
-    assert next(p for p in box["proposals"] if p["summary"] == "Prepare presentation")["blocked_by"] == "Which paper are you presenting?"
+    assert next(p for p in box["proposals"] if p["summary"] == "Prepare presentation")["blocked_by"] == "Which day are you presenting?"
 
 
 def test_course_numbers_are_normalised(client, llm):
@@ -317,11 +318,11 @@ def test_an_existing_course_is_reused_not_proposed_again(client, llm):
 
 
 def test_questions_from_the_document_go_to_the_inbox(client, llm):
-    q = item(kind="question", title="Which paper will you present?", quote="Select a paper and register",
-             question="Which paper did you register to present in CS 239 · Ding?", when={"type": "unknown"})
+    q = item(kind="question", title="Which day will you present?", quote="Select a paper and register",
+             question="Which day did you sign up to present in CS 239 · Ding?", when={"type": "unknown"})
     llm.replies = [course_reply(), items_reply(q)]
     upload(client, "cs239.txt", SYLLABUS.encode())
-    assert [x["text"] for x in inbox(client)["questions"]] == ["Which paper did you register to present in CS 239 · Ding?"]
+    assert [x["text"] for x in inbox(client)["questions"]] == ["Which day did you sign up to present in CS 239 · Ding?"]
 
 
 def test_the_model_sees_the_document_text_from_a_pdf(client, llm):
@@ -523,3 +524,14 @@ def test_every_spelling_of_computer_science_is_cs():
     from app.plan import course_number
     assert [course_number(x) for x in ["COM SCI 269", "COMSCI269", "Comp Sci 131", "Computer Science 32", "cs  239", "COM SCI M146", "EC ENGR 133A"]] == \
         ["CS 269", "CS 269", "CS 131", "CS 32", "CS 239", "CS M146", "EC ENGR 133A"]
+
+
+def test_only_dates_and_times_are_asked_not_topics_teams_or_choices(client, llm):
+    q = json.dumps({"questions": [
+        {"question": "Which team presentation topic will you choose?", "quote": "Select a paper and register"},
+        {"question": "Which team of 3-5 students have you joined?", "quote": "Select a paper and register"},
+        {"question": "Will you take the oral final or the project?", "quote": "Select a paper and register"},
+        {"question": "Which day did you sign up to present?", "quote": "Select a paper and register"}]})
+    llm.replies = [course_reply(), items_reply(), q]
+    upload(client, "cs239.txt", SYLLABUS.encode())
+    assert [x["text"] for x in inbox(client)["questions"]] == ["Which day did you sign up to present?"]

@@ -114,7 +114,7 @@ Task: list everything in this part of the document the student must attend, subm
 - "event": a scheduled session the student attends that is not a regular lecture (exam, tutorial, presentation day, check-in, guest lecture).
 - "task": a specific piece of work to do before a moment. List each required reading on its own, titled "Read <paper or chapter>", and quote the line that ties it to its lecture or date (e.g. "[Required — Lecture 5]"). Not optional readings (papers teams may choose to present), and not general expectations that apply every week or to whoever presents ("read the papers before class", "participate in discussion", "bring an annotated copy").
 - "project": a multi-part deliverable spanning weeks (a course project, a presentation to prepare).
-- "question": a fact only the student can supply that decides WHEN something happens or WHETHER a task exists for them (which paper they present and so on which date, their team, their presentation slot, a choice between options such as an exam or a project). Not questions about the content of their work. Write the question to ask them, addressed to "you", as a full sentence ending in "?", in "question".
+- "question": a date or time only the student can supply: when something of theirs is due or happens when the document leaves it to them (the day they present, their slot). Ask for the date or time itself ("Which day do you present?"), not for the choice behind it (not their topic, paper, team or option). Write the question to ask them, addressed to "you", as a full sentence ending in "?", in "question".
 Also set "question" on any other item whose date depends on the student's choice or assignment.
 The quote must contain the date you report. When the date is in a heading or table row above the item, quote from the date to the item and mark the skipped middle with "...", e.g. "Lecture 2: Thursday, October 1 ... P2. ReAct".
 - "no_class": a specific date the document says there is no class (holiday, break).
@@ -151,8 +151,11 @@ ITEMS_SCHEMA = {"type": "object", "properties": {"items": {"type": "array", "ite
     "required": ["kind", "title", "quote", "when"]}}}, "required": ["items"]}
 
 QUESTIONS_PROMPT = RULES + """
-Task: a careful personal assistant is turning this course document into the student's plan. List the questions it must ask the student before the plan is complete: facts only the student knows that decide WHEN something happens for them or WHETHER a task applies to them. For example: which paper or topic they were assigned or chose (and so which date they present), which team they are on and their part, which presentation or demo slot they signed up for, which option they take when the document offers a choice (exam or project), and a due date or time the document leaves out for something they must hand in or attend.
+Task: a careful personal assistant is turning this course document into the student's plan. List the questions it must ask the student before the plan is complete: dates and times only. For example: the day they present or the slot they signed up for, a due date or time the document leaves out for something they must hand in or attend, when a class or session meets if the document doesn't say. Ask for the date or time itself ("Which day do you present?"), never for the choice behind it: not their topic, paper, team, role or which option they take.
 Do not ask about course content, grading, or policies. Address the student as "you", one full sentence ending in "?" per question, each with a quote from the document that makes the question necessary. At most 6 questions, most important first."""
+
+# A question the model drafts is asked only if it asks for a date or time.
+SCHEDULE = re.compile(r"\b(when|what time|due|deadline|dates?|days?|times?|schedule[ds]?|meets?|week|slot|sign(ed)? up for)\b", re.I)
 
 QUESTIONS_SCHEMA = {"type": "object", "properties": {"questions": {"type": "array", "items": {"type": "object", "properties": {
     "question": {"type": "string"}, "quote": {"type": "string"}}, "required": ["question", "quote"]}}}, "required": ["questions"]}
@@ -168,7 +171,7 @@ SECOND_LOOK_SCHEMA = {"type": "object", "properties": {"items": {"type": "array"
 
 MERGE_PROMPT = """You help a personal assistant decide what to ask a student about one course document. Below are draft questions, numbered. Many ask the same thing in different words.
 - Merge drafts that ask the same thing into one question, worded clearly, addressed to "you", ending in "?".
-- Drop drafts that aren't needed to know WHEN something happens for the student or WHETHER a task applies to them (course content, grading, whether they already did something, reminders).
+- Drop drafts that don't ask for a date or time (their topic, team, paper, role or choice of option; course content, grading, whether they already did something, reminders).
 - Never drop a draft asking when something is due or which day it happens; merge it only with drafts about the same thing.
 - Questions marked "already asked" are waiting for the student's answer from another document of the same course. If a draft asks the same thing, put it in that question's group and keep that question's wording; never ask it twice.
 - Keep at most 8 questions, most important first.
@@ -1140,6 +1143,8 @@ def _propose_all(con, llm, clock, source_id, text, prior=None):
 
     def draft(q, quote, check=True):
         q = capitalize((q or "").strip())
+        if check and not SCHEDULE.search(q):
+            return None  # only dates and times are asked; not their topic, team or choices
         if (q.endswith("?") or not check and "?" in q) and not re.match(r"(have|did) you\b", q, re.I) and (not check or quoted(quote, text)):
             drafts.append((q, quote))
             return len(drafts) - 1
