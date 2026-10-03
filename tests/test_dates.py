@@ -42,7 +42,7 @@ def test_week_and_weekday_resolve_against_the_term(client, llm):
                                               when={"type": "week", "week": 9, "weekday": "MO"}))]
     upload(client, "cs269.txt", DOC.encode())
     d = data(props(client)["Project presentations"])
-    assert (d["start"], d["provisional"]) == ("2026-11-23", True)
+    assert (d["due"], d["provisional"]) == ("2026-11-23", True)  # presenting is something to do: a deadline
 
 
 def test_a_week_without_a_day_keeps_the_week_and_asks_for_the_day(client, llm):
@@ -233,12 +233,12 @@ def test_presentation_slots_become_one_question_with_the_dates_as_buttons(client
     upload(client, "ding.txt", doc.encode())
     box = inbox(client)
     slots = [p for p in box["proposals"] if p["summary"] == "Final project report"]
-    assert sorted(data(p)["start"] for p in slots) == ["2026-11-30", "2026-12-02"]
+    assert sorted(data(p)["due"] for p in slots) == ["2026-11-30", "2026-12-02"]  # a report: deadlines
     assert all(p["blocked_by"] == "Which day is your “Final project report”: Mon Nov 30 or Wed Dec 2?" for p in slots)
     assert client.get("/api/chat").json()["current"]["options"] == ["Mon Nov 30", "Wed Dec 2"]
     client.post("/api/chat", json={"text": "Wed Dec 2"})
     (left,) = [p for p in inbox(client)["proposals"] if p["summary"] == "Final project report"]
-    assert data(left)["start"] == "2026-12-02" and left["blocked_by"] is None
+    assert data(left)["due"] == "2026-12-02" and left["blocked_by"] is None
 
 
 def test_office_hours_are_offered_unticked_and_a_location_must_be_in_the_document(client, llm):
@@ -332,3 +332,14 @@ def test_a_quote_cant_skip_into_another_dates_row():
     t = "Mon Nov 2\nAgents: Coding Agents\nSWE-agent\nWed Nov 4\nMid-term project report\nMon Nov 9\nFirst half\nMid-term project report\n"
     assert not quoted("Mon Nov 2 ... Mid-term project report", t)  # the report is in the Nov 4 row
     assert quoted("Mon Nov 9 ... Mid-term project report", t) and quoted("Wed Nov 4 Mid-term project report", t)
+
+
+def test_what_the_student_produces_is_a_deadline_and_what_they_attend_is_an_event(client, llm):
+    doc = "Wed Sep 30 Guest Lecture: Dr. Hengtao Guo\nWed Oct 14 Course project proposal\nWed Nov 18 Midterm exam\n"
+    llm.replies = [course(), items_reply(
+        item(kind="event", title="Guest Lecture: Dr. Hengtao Guo", quote="Wed Sep 30 Guest Lecture: Dr. Hengtao Guo", when={"type": "date", "month": 9, "day": 30}),
+        item(kind="event", title="Course project proposal", quote="Wed Oct 14 Course project proposal", when={"type": "date", "month": 10, "day": 14}),
+        item(kind="event", title="Midterm exam", quote="Wed Nov 18 Midterm exam", when={"type": "date", "month": 11, "day": 18}))]
+    upload(client, "ding.txt", doc.encode())
+    kinds = {p["summary"]: p["ops"][0]["kind"] for p in inbox(client)["proposals"]}
+    assert (kinds["Guest Lecture: Dr. Hengtao Guo"], kinds["Course project proposal"], kinds["Midterm exam"]) == ("events", "deadlines", "events")

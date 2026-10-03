@@ -122,14 +122,17 @@ The reader works in fixed steps, each with one rule.
    readings, and deliverables listed in a row.
 4. **Readings.** A required reading for a lecture → a task due the day before
    it. Optional readings (team-presentation choices) are not tasks.
-5. **Deliverables** (submit, register, report, team list): a deadline at the
-   stated date and time; only a week → a deadline over that week, and ask
-   which day.
-6. **Sessions** (exam, presentation, check-in, tutorial, guest lecture): an
-   event on its date. When students pick one of several slots → a question
+5. **Deliverables**: anything that has the student produce or do something
+   (submit, register, a report or proposal, a presentation or demo they give,
+   a team list): a deadline at the stated date and time; only a week → a
+   deadline over that week, and ask which day. The student's rule
+   (2026-10-02), enforced in code by `ingest.deadline_or_event`.
+6. **Sessions** they only attend (exam, tutorial, guest lecture, check-in,
+   others' presentations): an event on its date. When students pick one of several slots → a question
    with those slots as options, not an event per slot.
-7. **Questions.** Only the student's choices and dates the document leaves
-   out, merged per course, at most a handful.
+7. **Questions.** Only dates and times: the day they present, a due date or
+   class time the document leaves out. Never their topic, team or choice of
+   option (2026-10-02). Merged per course, at most a handful.
 8. **Proof.** Every item carries a quote checked against the text by one
    function (word for word, a schedule row, or one dated section). What fails
    gets one second look; what still fails is listed as left out, with the reason.

@@ -637,6 +637,8 @@ def _actions(con, llm, clock, text, reply_id, message_id=None) -> list[int] | No
                   "data": {"title": title, **{k: a[k] for k in ("why", "horizon") if a.get(k)}}}
             summary = title
         else:
+            if not a.get("days"):  # a one-off: presenting, a report… is a deadline; a weekly class stays an event
+                kind = ingest.deadline_or_event(kind, title)
             table = {"task": "tasks", "event": "events", "deadline": "deadlines", "project": "projects"}.get(kind)
             if not table:
                 continue

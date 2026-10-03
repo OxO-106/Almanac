@@ -135,7 +135,7 @@ def to_plan(con, llm, clock, rec, segments) -> int:
                                       [{"op": "update", "kind": "events", "id": e["id"], "data": {"skip": skip}}], quote)
                     made += "id" in p
             continue
-        table = TABLE[it["kind"]]
+        table = TABLE[ingest.deadline_or_event(it["kind"], title)]
         if table == "tasks" and re.match(r"(read|review|skim|watch|prepare)\b", title, re.I) and len(value) == 10 \
                 and value in _class_days(con, rec["course_id"], value, value):
             value = (date.fromisoformat(value) - timedelta(days=1)).isoformat()  # for that class: done the day before

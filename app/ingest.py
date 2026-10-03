@@ -110,8 +110,8 @@ Task: list the course(s) this document is for: course number as department and n
 
 ITEMS_PROMPT = RULES + """
 Task: list everything in this part of the document the student must attend, submit or do:
-- "deadline": something due or submitted by a moment (registration, report, sign-up).
-- "event": a scheduled session the student attends that is not a regular lecture (exam, tutorial, presentation day, check-in, guest lecture).
+- "deadline": something the student has to produce or do by a moment: a report, proposal or other submission, a presentation or demo they give, a registration or sign-up.
+- "event": a scheduled session the student only attends, with nothing of theirs due, that is not a regular lecture (exam, tutorial, guest lecture, others' presentations).
 - "task": a specific piece of work to do before a moment. List each required reading on its own, titled "Read <paper or chapter>", and quote the line that ties it to its lecture or date (e.g. "[Required — Lecture 5]"). Not optional readings (papers teams may choose to present), and not general expectations that apply every week or to whoever presents ("read the papers before class", "participate in discussion", "bring an annotated copy").
 - "project": a multi-part deliverable spanning weeks (a course project, a presentation to prepare).
 - "question": a date or time only the student can supply: when something of theirs is due or happens when the document leaves it to them (the day they present, their slot). Ask for the date or time itself ("Which day do you present?"), not for the choice behind it (not their topic, paper, team or option). Write the question to ask them, addressed to "you", as a full sentence ending in "?", in "question".
@@ -699,7 +699,7 @@ def _expand_choice(it, group):
     so each is planned like any session and one question picks between them."""
     if it.get("kind") != "choice":
         return [it]
-    kind = "deadline" if re.search(r"\b(due|submit)", it.get("title", ""), re.I) else "event"
+    kind = deadline_or_event("event", it.get("title", ""))
     return [{"kind": kind, "title": it.get("title", ""), "course": it.get("course"), "quote": o.get("quote"),
              "when": o.get("when") or {"type": "unknown"}, "slot": group}
             for o in it.get("options") or []]
@@ -907,6 +907,18 @@ def _day_label(when: str) -> str:
     return f"{d:%a %b} {d.day}"
 
 
+# The student's rule: something that has them produce or do something (write a
+# report, give a presentation, register) is a deadline; something they only
+# attend (a guest lecture, an exam) is an event.
+TO_DO = re.compile(r"\b(reports?|proposals?|present(s|ing|ations?)?|submi(t|ts|ssions?)|registration|register|sign[- ]?ups?|due"
+                   r"|deliverables?|demos?|write[- ]?ups?|one[- ]pagers?|homeworks?|assignments?|drafts?|slides|essays?|posters?|pitch(es)?)\b", re.I)
+
+
+def deadline_or_event(kind: str, title: str) -> str:
+    """An event the student has to produce something for is a deadline."""
+    return "deadline" if kind == "event" and TO_DO.search(title or "") else kind
+
+
 def _tidy(it):
     """Normalise one reported item, or None for one that isn't ours to plan."""
     # Regular lectures ("Lecture 10: Thursday, November 5 — …") come with the
@@ -920,6 +932,7 @@ def _tidy(it):
     it["title"] = capitalize(it["title"].strip())
     if re.match(r"no class\b", it["title"], re.I):
         it["kind"] = "no_class"  # a day off, not something to do
+    it["kind"] = deadline_or_event(it["kind"], it["title"])
     return it
 
 
@@ -1247,7 +1260,7 @@ DATE_HEADING = re.compile(
 
 
 ROWS_PROMPT = RULES + """
-Task: each part below is one row of the course schedule, which the first reading found nothing in. These rows were picked because they name something the student submits, takes or presents: a list or report to hand in, a test or exam, a report or presentation day, a check-in, a sign-up. Report each such thing as an item ("deadline" for something handed in, "event" for something taken or presented in class, "choice", or "no_class"), even when the row doesn't say "due", with a quote from the row that includes its date, marking a skipped middle with "...". For example: "Fri Oct 9 No Class Project Team List" → no_class and a deadline "Project team list"; "Wed Nov 4 Mid-term project report" → an event "Mid-term project report"; "Week 1: Introduction, gating test" → an event "Gating test" in week 1. Not lecture topics, readings, or suggested/optional presentations."""
+Task: each part below is one row of the course schedule, which the first reading found nothing in. These rows were picked because they name something the student submits, takes or presents: a list or report to hand in, a test or exam, a report or presentation day, a check-in, a sign-up. Report each such thing as an item ("deadline" for something the student hands in or presents, "event" for something they only attend or take, such as an exam, "choice", or "no_class"), even when the row doesn't say "due", with a quote from the row that includes its date, marking a skipped middle with "...". For example: "Fri Oct 9 No Class Project Team List" → no_class and a deadline "Project team list"; "Wed Nov 4 Mid-term project report" → a deadline "Mid-term project report"; "Week 1: Introduction, gating test" → an event "Gating test" in week 1. Not lecture topics, readings, or suggested/optional presentations."""
 
 ROW_WORDS = re.compile(r"\b(due|deadline|submit\w*|report|proposal|team list|test|exam|quiz|midterm|final|check-?in|"
                        r"registration|register|sign-?up|assessment|deliverables?|demo)\b", re.I)
