@@ -94,7 +94,7 @@ def build_briefing(con, day: date) -> dict:
         "today": q("select * from tasks where status = 'open' and do_date = ? order by id", iso),
         "carried_over": q("select * from tasks where status = 'open' and do_date < ? order by do_date", iso),
         "events": plan.occurrences(q("select * from events"), iso, iso),
-        "coming_up": q("select * from deadlines where substr(due, 1, 10) between ? and ? order by due", iso, soon)
+        "coming_up": q("select * from deadlines where done_at is null and substr(due, 1, 10) between ? and ? order by due", iso, soon)
         + q("select * from tasks where status = 'open' and do_date is null and substr(due, 1, 10) between ? and ? order by due", iso, soon),
         "questions": con.execute("select count(*) from questions where status = 'open'").fetchone()[0],
         "catchup": [c["text"] for c in catchup],

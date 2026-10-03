@@ -46,7 +46,7 @@ def build(con, llm, kind: str, start: date, end: date, now: datetime) -> dict:
     if kind == "weekly":
         ns, ne = (end + timedelta(days=1)).isoformat(), (end + timedelta(days=7)).isoformat()
         data["next"] = q("select title, do_date as at from tasks where status = 'open' and do_date between ? and ? "
-                         "union all select title, due from deadlines where substr(due, 1, 10) between ? and ? order by at",
+                         "union all select title, due from deadlines where done_at is null and substr(due, 1, 10) between ? and ? order by at",
                          ns, ne, ns, ne)
     if kind == "monthly":
         data["goals"] = [{"goal": g["title"], **dict(con.execute(

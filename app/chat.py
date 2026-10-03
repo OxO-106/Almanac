@@ -270,7 +270,7 @@ ACTIONS_SCHEMA = {"type": "object", "properties": {"actions": {"type": "array", 
 def _context(con, clock) -> str:
     now = local(clock.now())
     q = lambda sql, *a: [dict(r) for r in con.execute(sql, a)]
-    upcoming = q("select title, due as at from deadlines where substr(due, 1, 10) between ? and ? "
+    upcoming = q("select title, due as at from deadlines where done_at is null and substr(due, 1, 10) between ? and ? "
                  "union all select title, do_date from tasks where status = 'open' and do_date between ? and ? order by at limit 15",
                  now.date().isoformat(), (now.date() + timedelta(days=14)).isoformat(),
                  now.date().isoformat(), (now.date() + timedelta(days=14)).isoformat())
@@ -278,7 +278,7 @@ def _context(con, clock) -> str:
     weekly = [{"title": c["title"], "repeat": ",".join(c["days"]), "start": f"2000-01-01T{c['start']}", "end": c["end"] and f"2000-01-01T{c['end']}",
                "location": (c.get("event") or c["proposal"]["ops"][0]["data"]).get("location")} for c in questions._classes(con)]
     dated = q("select title, start as at from events where repeat is null and substr(start, 1, 10) >= ? "
-              "union all select title, due from deadlines where substr(due, 1, 10) >= ? order by at limit 30",
+              "union all select title, due from deadlines where done_at is null and substr(due, 1, 10) >= ? order by at limit 30",
               now.date().isoformat(), now.date().isoformat())
     goals = q("select title from goals where status = 'active'")
     memories = q("select text from memories order by id limit 40")

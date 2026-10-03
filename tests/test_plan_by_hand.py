@@ -111,3 +111,16 @@ def test_a_task_past_its_due_date_is_overdue_too(client, clock):
     t = client.get("/api/today").json()
     assert [x["title"] for x in t["overdue"]] == ["Read P1. SWE-bench"]
     assert [x["title"] for x in t["tasks"]] == ["Read P2. ReAct"]
+
+
+def test_a_deadline_can_be_done_early_and_undone(client, clock):
+    at(clock, "2026-10-03T09:00")
+    d = make(client, "deadlines", title="Paper Presentation Registration", due="2026-10-05")
+    client.patch(f"/api/deadlines/{d['id']}", json={"done_at": "2026-10-03T09:05"})
+    assert client.get(f"/api/deadlines/{d['id']}").json()["done_at"] == "2026-10-03T09:05"
+    from app import note
+    assert note.facts(client.app.state.db, clock.now().astimezone())["due"] == []  # not "due Monday" in the note any more
+    client.patch(f"/api/deadlines/{d['id']}", json={"done_at": None})
+    assert client.get(f"/api/deadlines/{d['id']}").json()["done_at"] is None
+    con = client.app.state.db  # both changes are in the item's history (plan.change), like any edit
+    assert [r["op"] for r in con.execute("select op from history where kind = 'deadlines' and item_id = ? order by id", (d["id"],))][-2:] == ["update", "update"]

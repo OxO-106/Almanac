@@ -142,6 +142,9 @@ section > h2 .meta { font-weight: 400; }
 .when-row .when.due { color: var(--due); font-weight: 500; }
 .when-row .what { flex: 1; min-width: 0; }
 .when-row a.what { color: inherit; text-decoration: none; cursor: pointer; }
+.when-row .tick, .item .tick { width: 18px; height: 18px; accent-color: var(--slate); margin: 2px 0 0; flex: none; }
+.when-row.done .what { color: var(--faint); text-decoration: line-through; }
+.when-row.done .when { color: var(--faint); font-weight: 400; }
 .when-row a.what:hover { color: var(--slate); }
 
 .slot { display: flex; gap: 16px; align-items: flex-start; padding: 13px 16px; border: 1px solid var(--line); border-radius: var(--radius); }

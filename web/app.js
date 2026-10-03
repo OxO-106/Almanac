@@ -159,6 +159,18 @@ async function openEditor(kind, item = null, preset = {}) {
 
 async function edit(kind, id) { openEditor(kind, await api(`/api/${kind}/${id}`)); }
 
+// a deadline done early: ticked like a task (it stays, crossed out, until its day passes)
+async function toggleDeadline(id, done) {
+  const now = new Date(), pad = n => String(n).padStart(2, "0");
+  await send("PATCH", `/api/deadlines/${id}`, { done_at: done ? `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}` : null });
+  render();
+}
+const tickBox = x => {
+  const done = x.kind === "deadlines" ? !!x.done_at : x.status === "done";
+  return `<input type="checkbox" class="tick" ${done ? "checked" : ""} aria-label="Done: ${esc(x.title)}"
+    onchange="${x.kind === "deadlines" ? "toggleDeadline" : "toggleTask"}(${x.id}, this.checked)">`;
+};
+
 async function toggleTask(id, done) {
   await send("PATCH", `/api/tasks/${id}`, { status: done ? "done" : "open" });
   render();
@@ -265,7 +277,7 @@ views.today = async () => {
       <h2 id="h-today">Today${todays.length ? ` <span class="meta">${t.done.length} of ${todays.length} done</span>` : ""}</h2>
       ${t.overdue.length ? `<div class="meta">Still open from earlier</div>${t.overdue.map(taskItem).join("")}<div class="meta" style="margin-top:8px">Planned for today</div>` : ""}
       ${[...t.tasks, ...t.done].map(taskItem).join("") || `<p class="empty">Nothing planned for today.</p>`}
-      ${t.deadlines.map(d => `<div class="item"><span class="when-row" style="padding:0"><span class="when due" style="width:auto">Due today</span></span>
+      ${t.deadlines.map(d => `<div class="item ${d.done_at ? "done" : ""}">${tickBox({ ...d, kind: "deadlines" })}<span class="when-row" style="padding:0"><span class="when due" style="width:auto">Due today</span></span>
         <a class="title" onclick='edit("deadlines", ${d.id})'>${esc(d.title)}</a><span class="est"></span><span class="play"></span>${courseCol(d.course_id)}</div>`).join("")}
       <button class="add-row" onclick='openEditor("tasks", null, {do_date: ${js(t.date)}})'>${ICON.plus}Add something for today</button>
     </section>
@@ -276,7 +288,7 @@ views.today = async () => {
           <span class="meta">${[courseName(e.course_id), e.location].filter(Boolean).map(esc).join(" · ")}${e.provisional ? ` <span class="tag-prov">provisional</span>` : ""}</span></div>
       </div>`).join("")}</section>` : ""}
     <section aria-labelledby="h-next"><h2 id="h-next">Coming up</h2>
-      ${comingUp.map(x => `<div class="when-row"><span class="when ${soon(x.at) ? "due" : ""}">${esc(fmtDay(x.at))}</span>
+      ${comingUp.map(x => `<div class="when-row ${(x.kind === "deadlines" ? x.done_at : x.status === "done") ? "done" : ""}">${tickBox(x)}<span class="when ${soon(x.at) ? "due" : ""}">${esc(fmtDay(x.at))}</span>
         <a class="what" onclick='edit("${x.kind}", ${x.id})'>${esc(x.title)}</a>${courseCol(x.course_id)}</div>`).join("")
         || `<p class="empty">Nothing due in the next two weeks that I know of.</p>`}
     </section>
@@ -653,7 +665,7 @@ function weekLine(data, first) {
 
 function chipFor(kind, x) {
   const label = kind === "deadlines" ? `Due: ${x.title}` : kind === "events" ? `${x.start.length > 10 ? fmtTime(x.start) + " " : ""}${x.title}` : `○ ${x.title}`;
-  const cls = ["chip", kind === "tasks" ? "task" : kind === "deadlines" ? "dl" : "ev2", x.status === "done" ? "done" : "", x.provisional || x.window ? "prov" : "", x.unscheduled ? "faint" : ""].join(" ");
+  const cls = ["chip", kind === "tasks" ? "task" : kind === "deadlines" ? "dl" : "ev2", x.status === "done" || x.done_at ? "done" : "", x.provisional || x.window ? "prov" : "", x.unscheduled ? "faint" : ""].join(" ");
   const drag = kind === "tasks" ? `draggable="true" ondragstart="event.dataTransfer.setData('text/plain', ${x.id})"` : "";
   const tip = [x.title, courseName(x.course_id), x.window ? "sometime that week (the day isn't stated)" : "", x.provisional ? "provisional" : "", x.unscheduled ? "no day to do it yet" : ""].filter(Boolean).join(" · ");
   return `<div class="${cls}" ${drag} title="${esc(tip)}" onclick='edit("${kind}", ${x.id})'>${esc(label)}</div>`;

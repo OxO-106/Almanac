@@ -50,7 +50,7 @@ def facts(con, now) -> dict:
         "today": q("select title from tasks where status = 'open' and do_date = ? order by id", day),
         "overdue": plan.overdue(con, day),
         "events": plan.occurrences(q("select * from events"), day, day),
-        "due": q("select title, due from deadlines where substr(due, 1, 10) between ? and ? order by due", day, soon),
+        "due": q("select title, due from deadlines where done_at is null and substr(due, 1, 10) between ? and ? order by due", day, soon),
         "questions": con.execute("select count(*) from questions where status = 'open'").fetchone()[0],
     }
 

@@ -124,7 +124,8 @@ COLUMNS = [
     ("recordings", "notes", "text"),
     ("recordings", "notes_status", "text"),
     ("recordings", "notes_error", "text"),
-    ("recordings", "notes_at", "text"),  # a Recording started during its class: the class's end (auto-stop 15 min after)
+    ("recordings", "notes_at", "text"),
+    ("deadlines", "done_at", "text"),  # done early (or on time) by the student; null = still to do  # a Recording started during its class: the class's end (auto-stop 15 min after)
 ]
 
 # UCLA Registrar, Annual Academic Calendar 2026-27. Week 1 is the first Monday

@@ -79,7 +79,7 @@ KINDS = {
     "events": ({"title": str, "course_id": int, "start": _date_or_time, "end": _date_or_time, "repeat": _days,
                 "until": _date, "skip": _dates, "location": str, "provisional": bool, "window": _window}, {"title", "start"}),
     "deadlines": ({"title": str, "course_id": int, "project_id": int, "due": _date_or_time,
-                   "provisional": bool, "window": _window}, {"title"}),
+                   "provisional": bool, "window": _window, "done_at": _date_or_time}, {"title"}),
     "memories": ({"text": str, "topic": str}, {"text"}),
     "terms": ({"name": str, "starts": _date, "instruction_begins": _date, "week1": _date, "instruction_ends": _date,
                "finals_start": _date, "ends": _date, "holidays": _holidays},
