@@ -243,7 +243,7 @@ ACTIONS_PROMPT = """You turn what a student just told their personal assistant i
 - "memory": a lasting fact about the student worth remembering (habits, preferences, constraints, people); "title" is the fact, "topic" a short label.
 - "progress": they finished (or undid) one of their open tasks listed below; "title" is that task's title, "done": true.
 - "question": something the assistant must ask to plan it properly (e.g. a due date they didn't give); "title" is the question.
-- "change": something already in their plan (listed below) changes: moved to another date ("when"), a new time ("start_time", 24-hour "HH:MM"), place or link ("location"), name ("new_title"), or kind ("new_kind": "task", "event" or "deadline", e.g. "make the gating test a task"). "title" is the item as listed.
+- "change": something already in their plan (listed below) changes: moved to another date ("when"), a new time ("start_time", 24-hour "HH:MM"), place or link ("location"), or name ("new_title"); or it becomes another kind ("make the gating test a task": a "change" with just its "title"). "title" is the item as listed.
 - "remove": they want an item in their plan gone (or a routine stopped); "title" is the item as listed.
 Use "change" or "remove", not a new item, when they talk about something already planned. Statements count, not only requests: "the CS 259 lecture is at 3pm now" is a change (start_time "15:00"); "the gating test moved to Monday" is a change (when); "I dropped the reading group" is a remove.
 "quote": the student's exact words (copied from their message) that state it. Dates, as said: a calendar date → {"type":"date","month":M,"day":D}; "Friday" → {"type":"weekday","weekday":"FR"}; "next Friday" → add "next_week": true; "tomorrow", "in 3 days", "in two weeks" → {"type":"in_days","days":N}; anything else (e.g. "before Thanksgiving") → {"type":"unknown"}.
@@ -263,7 +263,7 @@ ACTIONS_SCHEMA = {"type": "object", "properties": {"actions": {"type": "array", 
     "why": {"type": "string"}, "horizon": {"type": "string"}, "topic": {"type": "string"},
     "course": {"type": "string"}, "project": {"type": "string"},
     "days": {"type": "string"}, "start_time": {"type": "string"}, "end_time": {"type": "string"}, "each_class": {"type": "boolean"},
-    "location": {"type": "string"}, "new_title": {"type": "string"}, "new_kind": {"type": "string", "enum": ["task", "event", "deadline"]}},
+    "location": {"type": "string"}, "new_title": {"type": "string"}},
     "required": ["type", "title", "quote"]}}}, "required": ["actions"]}
 
 
@@ -420,7 +420,8 @@ def _change_or_remove(con, clock, source, a, title, text, today, term):
                           [{"op": "delete", "kind": kind, "id": i} for i in ids], quote)
         return p if "id" in p else None
     field = DATE_FIELD[kind]
-    if (said := re.search(r"\b(?:to|into|as)\s+(?:an?\s+)?(task|event|deadline)s?\b", text, re.I)):
+    if (said := re.search(r"\b(?:to|into|as)\s+(?:an?\s+)?(task|event|deadline)s?\b", text, re.I)
+            or re.search(r"\bmake\b.{1,60}?\b(?:an?\s+)(task|event|deadline)\b", text, re.I)):
         a = {**a, "new_kind": said.group(1).lower()}  # "change the gating test to a task": their word wins
     new_kind = {"task": "tasks", "event": "events", "deadline": "deadlines"}.get(a.get("new_kind") or "")
     if new_kind == kind and not any(a.get(k) for k in ("when", "start_time", "location", "new_title")):

@@ -97,6 +97,24 @@ CASES = [
      and a.get("start_time") == "10:00"),
     ("I need to prepare slides for my paper presentation, it's on Oct 19",
      lambda acts: any(when_is(a, {"type": "date", "month": 10, "day": 19}) for a in acts if a.get("type") in ("task", "event", "deadline"))),
+    ("make the course project proposal a task",  # the kind itself is read by code from "a task"
+     lambda acts: (a := one(acts, "change")) and "proposal" in a["title"].lower()),
+    # requests for the assistant itself: done in the reply, nothing for the plan
+    ("write me an email to the CS269 instructor requesting the recording of the last lecture", lambda acts: acts == []),
+    ("what is the ReAct paper about?", lambda acts: acts == []),
+    ("explain grouped-query attention to me like I'm new to it", lambda acts: acts == []),
+    ("can you draft a message to my project team asking who takes which part", lambda acts: acts == []),
+    ("help me write a reply to Prof. Kim saying I can't make office hours this week", lambda acts: acts == []),
+    ("summarize what I have due in the next two weeks", lambda acts: acts == []),
+    # ...and the close calls that are the student's own to-dos
+    ("remind me to email Prof. Soatto about the recording tomorrow",
+     lambda acts: (a := one(acts, "task")) and when_is(a, {"type": "in_days", "days": 1}, {"type": "date", "month": 10, "day": 2})),
+    ("I have to write a summary of the CS 201 lecture by Monday",
+     lambda acts: (a := one(acts, "task") or one(acts, "deadline")) and when_is(a, {"type": "weekday", "weekday": "MO"}, {"type": "date", "month": 10, "day": 5})),
+    ("write me an email asking Kim for an extension, and remind me to send it Friday",
+     lambda acts: len(acts) == 1 and (a := one(acts, "task")) and when_is(a, {"type": "weekday", "weekday": "FR"}, {"type": "date", "month": 10, "day": 2})),
+    ("I need to email the TA my slides before Wednesday",
+     lambda acts: (a := one(acts, "task") or one(acts, "deadline")) and when_is(a, {"type": "weekday", "weekday": "WE"}, {"type": "date", "month": 10, "day": 7})),
 ]
 
 
