@@ -115,6 +115,32 @@ def test_a_message_thats_none_of_the_options_is_read_as_chat_and_the_question_wa
     assert len(pending(client)) == 2
 
 
+def test_the_buttons_on_a_question_are_the_students_turn_and_can_be_rewound(client):
+    q = slots(client)
+    said = client.post("/api/chat/skip").json()["messages"]
+    assert [(m["role"], m["text"]) for m in said[-2:]][0] == ("user", "Ask me again later")
+    assert said[-1]["text"].startswith("No problem. I'll ask again")
+    client.post(f"/api/chat/rewind/{said[-2]['id']}")
+    assert chat(client)["current"]["question_id"] == q["id"]  # asked again now
+    said = client.post("/api/chat/dismiss").json()["messages"]
+    assert [(m["role"], m["text"]) for m in said[-2:]] == [("user", "Not relevant to me"), ("assistant", "Got it, I'll drop that.")]
+    assert chat(client)["current"] is None
+    client.post(f"/api/chat/rewind/{said[-2]['id']}")
+    assert chat(client)["current"]["question_id"] == q["id"]
+
+
+def test_rewinding_not_relevant_brings_back_what_waited_on_the_question(client):
+    src = source(client)
+    con, clock = client.app.state.db, client.app.state.clock
+    q = inbox_mod.ask(con, clock, src["id"], "When is the team list due?", None, "date")
+    inbox_mod.propose(con, clock, src["id"], "Team list", [{"op": "create", "kind": "deadlines", "data": {"title": "Team list"}}], None, q["id"])
+    chat(client)
+    said = client.post("/api/chat/dismiss").json()["messages"]
+    assert said[-1]["text"] == "Got it, I'll drop that and the 1 item that depended on it." and pending(client) == {}
+    client.post(f"/api/chat/rewind/{said[-2]['id']}")
+    assert list(pending(client)) == ["Team list"]
+
+
 def test_rewinding_a_choice_puts_back_what_it_dropped(client):
     src = source(client)
     con, clock = client.app.state.db, client.app.state.clock

@@ -883,8 +883,18 @@ def skip(request: Request):
     cur = _current(s.db, s.clock)
     if cur:
         q = {"id": cur["question_id"], "text": s.db.execute("select text from questions where id = ?", (cur["question_id"],)).fetchone()["text"]}
+        _button(s.db, s.clock, cur["question_id"], "Ask me again later")
         _snooze(s.db, s.clock, q["id"], 3 if _urgent(s.db, q) else 7)
     return state(s.db, s.clock)
+
+
+def _button(con, clock, question_id, said) -> int:
+    """A button pressed on a question is the student's turn in the conversation,
+    said as a message of theirs, which Rewind can undo like any other."""
+    mid = _say(con, clock, "user", said)
+    q0 = con.execute("select status, answer, answered_at, snoozed_until from questions where id = ?", (question_id,)).fetchone()
+    _record(con, mid, "questions_before", [question_id, dict(q0) if q0 else None])
+    return mid
 
 
 @router.post("/dismiss")
@@ -893,6 +903,9 @@ def dismiss(request: Request):
     s = request.app.state
     cur = _current(s.db, s.clock)
     if cur:
+        mid = _button(s.db, s.clock, cur["question_id"], "Not relevant to me")
+        for r in s.db.execute("select id from proposals where question_id = ? and status = 'pending'", (cur["question_id"],)).fetchall():
+            _record(s.db, mid, "rejected", r["id"])
         with WRITE:
             s.db.execute("update questions set status = 'dismissed' where id = ?", (cur["question_id"],))
             n = s.db.execute("update proposals set status = 'rejected', decided_at = ? where question_id = ? and status = 'pending'",
