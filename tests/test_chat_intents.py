@@ -125,3 +125,14 @@ def test_making_an_item_the_kind_it_already_is_says_so(client, llm, plan):
     say(client, llm, "make the proposal one-pager a deadline",
         {"type": "change", "title": "Proposal one-pager", "quote": "make the proposal one-pager a deadline", "new_kind": "deadline"})
     assert client.get("/api/chat").json()["messages"][-1]["text"] == "“Proposal one-pager” is already a deadline."
+
+
+def test_a_course_can_be_named_from_chat(client, llm, plan):
+    kim = client.post("/api/courses", json={"number": "CS 239", "instructor": "Miryung Kim"}).json()
+    client.post("/api/events", json={"title": "CS 239 class", "course_id": kim["id"], "start": "2026-09-29T10:00", "repeat": "TU,TH", "until": "2026-12-04"})
+    text = "add Agentic Software Engineering to CS239 Kim as the course name"
+    (p,) = say(client, llm, text, {"type": "change", "title": "CS 239 · Miryung Kim", "quote": text, "new_title": "Agentic Software Engineering"}).values()
+    assert p["summary"] == "Name CS 239 · Kim “Agentic Software Engineering”"
+    client.post(f"/api/proposals/{p['id']}/accept")
+    assert client.get(f"/api/courses/{kim['id']}").json()["title"] == "Agentic Software Engineering"
+    assert [e["title"] for e in client.get("/api/events").json() if e["course_id"] == kim["id"]] == ["CS 239 class"]  # the class isn't renamed

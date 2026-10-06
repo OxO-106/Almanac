@@ -243,7 +243,7 @@ ACTIONS_PROMPT = """You turn what a student just told their personal assistant i
 - "memory": a lasting fact about the student worth remembering (habits, preferences, constraints, people); "title" is the fact, "topic" a short label.
 - "progress": they finished (or undid) one of their open tasks listed below; "title" is that task's title, "done": true.
 - "question": something the assistant must ask to plan it properly (e.g. a due date they didn't give); "title" is the question.
-- "change": something already in their plan (listed below) changes: moved to another date ("when"), a new time ("start_time", 24-hour "HH:MM"), place or link ("location"), or name ("new_title"); or it becomes another kind ("make the gating test a task": a "change" with just its "title"). "title" is the item as listed.
+- "change": something already in their plan (listed below) changes: moved to another date ("when"), a new time ("start_time", 24-hour "HH:MM"), place or link ("location"), or name ("new_title"); or it becomes another kind ("make the gating test a task": a "change" with just its "title"). "title" is the item as listed. A course itself (listed under Courses) can get a name: "change" with "title" the course as listed (e.g. "CS 239 · Miryung Kim") and "new_title" the name.
 - "remove": they want an item in their plan gone (or a routine stopped); "title" is the item as listed.
 Use "change" or "remove", not a new item, when they talk about something already planned. Statements count, not only requests: "the CS 259 lecture is at 3pm now" is a change (start_time "15:00"); "the gating test moved to Monday" is a change (when); "I dropped the reading group" is a remove.
 "quote": the student's exact words (copied from their message) that state it. Dates, as said: a calendar date → {"type":"date","month":M,"day":D}; "Friday" → {"type":"weekday","weekday":"FR"}; "next Friday" → add "next_week": true; "tomorrow", "in 3 days", "in two weeks" → {"type":"in_days","days":N}; anything else (e.g. "before Thanksgiving") → {"type":"unknown"}.
@@ -408,6 +408,15 @@ def _change_or_remove(con, clock, source, a, title, text, today, term):
     """"Move the one-pager to Tuesday", "the CS 259 lecture is at 3 now", "delete
     the gating test": a proposal changing or removing what's already planned.
     New dates, times and places must be in the student's words."""
+    new = (a.get("new_title") or "").strip()
+    if a["type"] == "change" and new and set(ingest._words(new)) <= set(ingest._words(text)) \
+            and not re.search(r"\b(class|lecture|office|exam|reading|read|watch|deadline|report|task|session|project)\b", title, re.I) \
+            and (cid := _match_course(con, title, title)) is not None:
+        # "CS 239 Kim" itself: the course's name ("add Agentic Software Engineering to CS 239 Kim")
+        c = con.execute("select * from courses where id = ?", (cid,)).fetchone()
+        p = inbox.propose(con, clock, source, f"Name {c['number']} · {c['instructor'].split()[-1]} “{ingest.capitalize(new)}”",
+                          [{"op": "update", "kind": "courses", "id": cid, "data": {"title": ingest.capitalize(new)}}], a["quote"])
+        return p if "id" in p else None
     hit = _match_item(con, title, _match_course(con, a.get("course"), text))
     if not hit:
         return f"I couldn't find “{title}” in your plan."

@@ -21,6 +21,11 @@ from app.llm import NUM_CTX  # noqa: E402
 
 CONTEXT = """Today is Thursday, October 01, 2026, 23:00 in Los Angeles.
 
+Courses (number · instructor: title):
+- CS 239 · Miryung Kim
+- CS 239 · Robin Ding: Large Language Models and Code Intelligence
+- CS 269 · Stefano Soatto: Advanced Topics in AI: Agentic Learning
+
 Coming up in the next two weeks:
 - 2026-10-05T18:00: Reading group
 - 2026-10-04: Read GQA: Training Generalized Multi-Query Transformer Models
@@ -99,6 +104,11 @@ CASES = [
      lambda acts: any(when_is(a, {"type": "date", "month": 10, "day": 19}) for a in acts if a.get("type") in ("task", "event", "deadline"))),
     ("make the course project proposal a task",  # the kind itself is read by code from "a task"
      lambda acts: (a := one(acts, "change")) and "proposal" in a["title"].lower()),
+    ("add Agentic Software Engineering to CS239 Kim as the course name",
+     lambda acts: (a := one(acts, "change")) and "239" in a["title"] and "kim" in a["title"].lower()
+     and (a.get("new_title") or "").lower() == "agentic software engineering"),
+    ("Kim's CS 239 is called Agentic Software Engineering",
+     lambda acts: (a := one(acts, "change")) and "239" in a["title"] and (a.get("new_title") or "").lower() == "agentic software engineering"),
     # requests for the assistant itself: done in the reply, nothing for the plan
     ("write me an email to the CS269 instructor requesting the recording of the last lecture", lambda acts: acts == []),
     ("what is the ReAct paper about?", lambda acts: acts == []),
