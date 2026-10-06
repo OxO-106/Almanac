@@ -912,32 +912,58 @@ async function uploadRecording(courseId, files) {
 // "[?]": a word the transcript isn't sure of, underlined rather than asked about
 const unclear = t => esc(t).replace(/(\S+) \[\?\]/g, `<span class="unclear" title="Not sure this was heard right">$1</span>`);
 
-// Lecture notes: "## " sections, "### " subsections, "- " points nested by two
-// spaces, "✎ " the student's own lines, "Almanac: " the assistant's own links.
+// Lecture notes, as Markdown (marked: headings, lists, tables, code, links) with math
+// as LaTeX ($…$ inline, $$…$$ on its own, by KaTeX). Almanac's own marks on top:
+// "✎ " lines are the student's own jottings, "Almanac: " the assistant's links, and
+// "word [?]" a word the transcript isn't sure of.
 function notesMd(text) {
-  const inline = t => unclear(t).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<i>$2</i>")
-    .replace(/`([^`]+)`/g, "<code>$1</code>").replace(/^Almanac:/, `<span class="almanac">Almanac:</span>`);
-  let html = "", depth = 0;
-  const close = to => { while (depth > to) { html += "</ul>"; depth--; } };
-  for (const raw of text.split("\n")) {
-    const line = raw.replace(/\s+$/, "");
-    if (!line.trim()) continue;
-    const head = line.match(/^(#{1,3})\s+(.*)/);
-    if (head) { close(0); html += head[1].length === 3 ? `<h4>${inline(head[2])}</h4>` : `<h3>${inline(head[2])}</h3>`; continue; }
-    const point = line.match(/^(\s*)[-*]\s+(.*)/), jot = line.match(/^(\s*)✎\s*(.*)/);
-    if (point || jot) {
-      const level = Math.floor((point || jot)[1].length / 2) + 1;
-      while (depth < level) { html += "<ul>"; depth++; }
-      close(level);
-      html += jot ? `<li class="jot"><span class="pen" title="You wrote this during the lecture">✎</span> ${/^\(marked\)$/.test(jot[2].trim()) ? "<i>marked</i>" : inline(jot[2])}</li>`
-        : `<li${/^Almanac:/.test(point[2]) ? ' class="almanac-line"' : ""}>${inline(point[2])}</li>`;
-      continue;
+  if (!window.marked || !window.katex) return `<pre class="notes-raw">${esc(text)}</pre>`;  // libraries missing: as written
+  const math = [];
+  const hold = (tex, display) => `MATH${math.push([tex, display]) - 1}END`;
+  const src = text
+    .replace(/\$\$([\s\S]+?)\$\$/g, (_, t) => hold(t, true))
+    .replace(/\\\[([\s\S]+?)\\\]/g, (_, t) => hold(t, true))
+    .replace(/\\\(([\s\S]+?)\\\)/g, (_, t) => hold(t, false))
+    // $x$ but not prices ("$5 and $10"): no space just inside the dollars
+    .replace(/(^|[^\\$\w])\$(?=\S)([^$\n]*?\S)\$(?![\w$])/g, (_, pre, t) => pre + hold(t, false))
+    // a jotting is its own list item, so a point under it nests and it never runs into the bullet above
+    .replace(/^(\s*)(?:[-*] )?✎\s*/gm, "$1- ✎ ");
+  const renderer = new marked.Renderer();
+  renderer.html = raw => esc(raw);  // notes are text: raw HTML shows as written
+  renderer.link = (href, title, label) => /^https?:\/\//.test(href || "") ? `<a href="${esc(href)}" target="_blank" rel="noopener">${label}</a>` : label;
+  const box = document.createElement("div");
+  box.innerHTML = marked.parse(src, { gfm: true, renderer }).replace(/MATH(\d+)END/g, (_, i) => {
+    const [tex, display] = math[i];
+    try { return katex.renderToString(tex, { displayMode: display, throwOnError: false }); } catch { return esc(tex); }
+  });
+  for (const li of box.querySelectorAll("li")) {
+    const first = li.firstChild;
+    if (first?.nodeType === 3 && /^\s*✎/.test(first.textContent)) {
+      li.classList.add("jot");
+      first.textContent = first.textContent.replace(/^\s*✎\s*/, "");
+      if (/^\(marked\)\s*$/.test(first.textContent) && !first.nextSibling) first.replaceWith(Object.assign(document.createElement("i"), { textContent: "marked" }));
+      li.insertAdjacentHTML("afterbegin", `<span class="pen" title="You wrote this during the lecture">✎</span> `);
     }
-    close(0);
-    html += `<p>${inline(line.trim())}</p>`;
   }
-  close(0);
-  return html;
+  for (const el of box.querySelectorAll("li, p")) {
+    const first = el.firstChild;
+    if (first?.nodeType === 3 && /^\s*Almanac:/.test(first.textContent)) {
+      el.classList.add("almanac-line");
+      first.textContent = first.textContent.replace(/^\s*Almanac:/, "");
+      el.insertAdjacentHTML("afterbegin", `<span class="almanac">Almanac:</span>`);
+    }
+  }
+  // "word [?]": underlined, outside math and code
+  const walk = document.createTreeWalker(box, NodeFilter.SHOW_TEXT, { acceptNode: n =>
+    /\[\?\]/.test(n.textContent) && !n.parentElement.closest(".katex, code, pre") ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT });
+  const unsure = [];
+  while (walk.nextNode()) unsure.push(walk.currentNode);
+  for (const n of unsure) {
+    const span = document.createElement("span");
+    span.innerHTML = unclear(n.textContent);
+    n.replaceWith(...span.childNodes);
+  }
+  return box.innerHTML;
 }
 
 views.lecture = async (id) => {

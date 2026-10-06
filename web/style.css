@@ -411,9 +411,21 @@ dialog .why { font: italic 15px/1.45 var(--serif); color: var(--muted); margin: 
 
 /* ---- Lecture notes ---- */
 .notes { display: block; font-size: 16px; line-height: 1.6; }
-.notes h3 { font: 600 19px var(--serif, inherit); margin: 22px 0 6px; }
-.notes h4 { font: 600 15px var(--sans); margin: 14px 0 4px; color: var(--ink-2); }
-.notes ul { margin: 0 0 6px; padding-left: 20px; }
+.notes h1, .notes h2 { font: 600 19px var(--serif, inherit); margin: 22px 0 6px; }
+.notes h3, .notes h4 { font: 600 15px var(--sans); margin: 14px 0 4px; color: var(--ink-2); }
+.notes p { margin: 6px 0; }
+.notes ul, .notes ol { margin: 0 0 6px; padding-left: 20px; }
+.notes li > p { margin: 0; }
+.notes code { font: 13.5px ui-monospace, Consolas, monospace; background: #EEF2F5; border-radius: 4px; padding: 1px 4px; }
+.notes pre { background: #EEF2F5; border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
+.notes pre code { background: none; padding: 0; }
+.notes table { border-collapse: collapse; margin: 8px 0; font-size: 14.5px; display: block; overflow-x: auto; }
+.notes th, .notes td { border: 1px solid var(--line-soft); padding: 5px 9px; text-align: left; vertical-align: top; }
+.notes th { background: #F4F6F8; font-weight: 600; }
+.notes blockquote { margin: 8px 0; padding: 2px 12px; border-left: 3px solid var(--line-soft); color: var(--ink-2); }
+.notes .katex { font-size: 1.05em; }
+.notes .katex-display { margin: 8px 0; overflow-x: auto; overflow-y: hidden; padding: 2px 0; }
+.notes-raw { white-space: pre-wrap; font: inherit; }
 .notes li { margin: 3px 0; }
 .notes li.jot { list-style: none; margin-left: -20px; font-family: var(--sans); color: #8A5A1B; }
 .notes li.jot .pen { display: inline-block; width: 16px; }

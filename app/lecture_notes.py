@@ -21,7 +21,7 @@ COMMON = f"""You write study notes for a university student from the transcript 
 - Write only what the transcript says; don't guess what a misheard word meant or add your interpretation (no "likely…", "probably means…"). A word that seems misheard, or marked [?], is kept as it is, with [?].
 - The student's jottings, made during the lecture, are listed with their times. They are the outline: put each one inside the section about what was being said at its time, as its own line, word for word, starting with "{JOT} " (a mark with no text: "{JOT} (marked)"), with the points it refers to indented under it. Don't repeat those points elsewhere. Only the listed jottings start with "{JOT}"; nothing else does.
 - Classmates appear only by role ("a student asked", "the presenter answered"); the instructor by name.
-- Markdown: "## " for sections, "### " for subsections, "- " for points (indent sub-points by two spaces). No tables."""
+- Markdown: "## " for sections, "### " for subsections, "- " for points (indent sub-points by two spaces). A table only where it compares things side by side. Math as LaTeX: inline between single dollar signs, e.g. $K_i \\cdot K_j = 0$; a formula on its own line between double dollar signs."""
 
 KIND_RULES = {
     "paper_session": """This was a paper session: papers presented and discussed. Organize by paper ("## " + the paper's title as on the reading list, if it's one of them), each with:
@@ -107,7 +107,7 @@ def write(llm, con, rec, segments, jots) -> str:
 COMBINE = f"""You combine the notes of a lecture, written a part at a time, into the student's notes for the whole lecture.
 - Keep every point and every detail; only merge what repeats and reorganize into the structure below. Don't add anything new.
 - Lines starting "{JOT} " are the student's own: keep each exactly as it is, inside the section about its topic, with its points indented under it; don't repeat those points elsewhere. Don't start any other line with "{JOT}".
-- Markdown: "## " for sections, "### " for subsections, "- " for points (indent sub-points by two spaces). No tables."""
+- Markdown: "## " for sections, "### " for subsections, "- " for points (indent sub-points by two spaces). A table only where it compares things side by side. Math as LaTeX: inline between single dollar signs, e.g. $K_i \\cdot K_j = 0$; a formula on its own line between double dollar signs."""
 
 
 WINDOW = (30, 15)  # a jotting refers to what was said from 30 s before it to 15 s after
@@ -265,7 +265,7 @@ CHANGE_PROMPT = f"""You change a university student's lecture notes the way they
 - Return only the sections you change, each whole: "replaces" is the heading of the section it replaces, exactly as in the notes without "## " ("" for a new section); "markdown" is the new section, starting with its "## " heading. "before" places a new section: the heading of the section it goes before, e.g. the first section's heading for the top ("" for the end, before "Announced"; "" for a replaced one). To remove a section, return it with "markdown": "". A request about everything ("shorter", "fix the formatting") returns every section.
 - Use the transcript for anything to add ("add the derivation", "what did the student ask about X"): only what it says, no guesses about what was meant. If the lecture didn't cover (part of) what they ask for, add nothing for that part and don't name it in headings or points; say so only in the summary ("He didn't talk about grading."), never in the notes.
 - Lines starting "{JOT} " are the student's own: keep them word for word with their points under them, unless the request is about them. Don't start other lines with "{JOT}".
-- Markdown: "## " sections, "### " subsections, "- " points (sub-points indented by two spaces). No tables.
+- Markdown: "## " sections, "### " subsections, "- " points (sub-points indented by two spaces). A table only where it compares things side by side. Math as LaTeX: inline between single dollar signs, e.g. $K_i \\cdot K_j = 0$; a formula on its own line between double dollar signs.
 - "summary": one short sentence to the student on what you changed ("Turned the GQA section into bullets.")."""
 
 CHANGE_SCHEMA = {"type": "object", "properties": {
