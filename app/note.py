@@ -47,7 +47,7 @@ def facts(con, now) -> dict:
     q = lambda sql, *a: [dict(r) for r in con.execute(sql, a)]
     return {
         "now": now,
-        "today": q("select title from tasks where status = 'open' and do_date = ? order by id", day),
+        "today": plan.on_day(con, day),
         "overdue": plan.overdue(con, day),
         "events": plan.occurrences(q("select * from events"), day, day),
         "due": q("select title, due from deadlines where done_at is null and substr(due, 1, 10) between ? and ? order by due", day, soon),

@@ -665,9 +665,9 @@ function weekLine(data, first) {
 
 function chipFor(kind, x) {
   const label = kind === "deadlines" ? `Due: ${x.title}` : kind === "events" ? `${x.start.length > 10 ? fmtTime(x.start) + " " : ""}${x.title}` : `○ ${x.title}`;
-  const cls = ["chip", kind === "tasks" ? "task" : kind === "deadlines" ? "dl" : "ev2", x.status === "done" || x.done_at ? "done" : "", x.provisional || x.window ? "prov" : "", x.unscheduled ? "faint" : ""].join(" ");
+  const cls = ["chip", kind === "tasks" ? "task" : kind === "deadlines" ? "dl" : "ev2", x.status === "done" || x.done_at ? "done" : "", x.provisional || x.window ? "prov" : "", ""].join(" ");
   const drag = kind === "tasks" ? `draggable="true" ondragstart="event.dataTransfer.setData('text/plain', ${x.id})"` : "";
-  const tip = [x.title, courseName(x.course_id), x.window ? "sometime that week (the day isn't stated)" : "", x.provisional ? "provisional" : "", x.unscheduled ? "no day to do it yet" : ""].filter(Boolean).join(" · ");
+  const tip = [x.title, courseName(x.course_id), x.window ? "sometime that week (the day isn't stated)" : "", x.provisional ? "provisional" : ""].filter(Boolean).join(" · ");
   return `<div class="${cls}" ${drag} title="${esc(tip)}" onclick='edit("${kind}", ${x.id})'>${esc(label)}</div>`;
 }
 

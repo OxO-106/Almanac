@@ -128,6 +128,17 @@ def _now(request) -> str:
     return local(request.app.state.clock.now()).strftime("%Y-%m-%dT%H:%M")
 
 
+# The day a task is done: its do date (the day planned to work on it), else its
+# due day. A reading from a syllabus has only a due date (the day before its
+# class): it's on Today that day, not only once it's overdue.
+ON_DAY = "(do_date = :day or (do_date is null and substr(due, 1, 10) = :day))"
+
+
+def on_day(con, day, status="open") -> list[dict]:
+    return [dict(r) for r in con.execute(f"select * from tasks where status = :status and {ON_DAY} order by id",
+                                         {"day": day, "status": status})]
+
+
 # Behind: an open task planned for an earlier day, or past its due date (and not
 # planned for today, where it's listed already). Today's page and the daily note.
 OVERDUE = ("status = 'open' and (do_date < :day or (substr(due, 1, 10) < :day and coalesce(do_date, '') != :day))")
@@ -145,7 +156,7 @@ def today(request: Request):
     q = lambda sql, *a: [dict(r) for r in con.execute(sql, a)]
     return {
         "date": day,
-        "tasks": q("select * from tasks where status = 'open' and do_date = ? order by id", day),
+        "tasks": on_day(con, day),
         "overdue": overdue(con, day),
         "done": q("select * from tasks where status = 'done' and substr(done_at, 1, 10) = ? order by done_at", day),
         "events": occurrences(q("select * from events"), day, day),

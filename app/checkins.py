@@ -20,7 +20,7 @@ WHATS_NEW = "Anything new today? New deadlines, plans, something mentioned in cl
 
 
 def _open_today(con, day: date):
-    return [dict(r) for r in con.execute("select * from tasks where status = 'open' and do_date = ? order by id", (day.isoformat(),))]
+    return plan.on_day(con, day.isoformat())
 
 
 def _say(con, clock, text):

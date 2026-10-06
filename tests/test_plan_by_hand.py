@@ -124,3 +124,11 @@ def test_a_deadline_can_be_done_early_and_undone(client, clock):
     assert client.get(f"/api/deadlines/{d['id']}").json()["done_at"] is None
     con = client.app.state.db  # both changes are in the item's history (plan.change), like any edit
     assert [r["op"] for r in con.execute("select op from history where kind = 'deadlines' and item_id = ? order by id", (d["id"],))][-2:] == ["update", "update"]
+
+
+def test_a_task_without_a_do_date_is_on_today_on_its_due_day(client, clock):
+    at(clock, "2026-10-04T09:00")
+    make(client, "tasks", title="Read GQA", due="2026-10-04")  # from a syllabus: due the day before class, no do date
+    make(client, "tasks", title="Read P3. Reflexion", due="2026-10-05")  # tomorrow's
+    make(client, "tasks", title="Slides draft", due="2026-10-09", do_date="2026-10-04")  # planned for today
+    assert [t["title"] for t in client.get("/api/today").json()["tasks"]] == ["Read GQA", "Slides draft"]
