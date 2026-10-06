@@ -48,37 +48,10 @@ function Badge($size) {
     return $bmp
 }
 
-function PixelIcon($size) {
-    # The small icons, placed pixel by pixel: the tray (16) and the taskbar (24, the
-    # size Windows 11 draws it at). A drawn italic "A" this small is mostly half-grey
-    # edge pixels and looks blurred. Same square, letter and rule.
-    $maps = @{}
-    $maps[24] = @(
-        "...ssssssssssssssssss...",
-        "..ssssssssssssssssssss..",
-        ".ssssssssssssssssssssss.",
-        "ssssssssssWWWWssssssssss",
-        "ssssssssssWWWWssssssssss",
-        "sssssssssWWWWWWsssssssss",
-        "ssssssssWWWssWWWssssssss",
-        "ssssssssWWWssWWWssssssss",
-        "sssssssWWWssssWWWsssssss",
-        "sssssssWWWssssWWWsssssss",
-        "ssssssWWWssssssWWWssssss",
-        "ssssssWWWWWWWWWWWWssssss",
-        "sssssWWWWWWWWWWWWWWsssss",
-        "sssssWWWssssssssWWWsssss",
-        "ssssWWWssssssssssWWWssss",
-        "ssssWWWssssssssssWWWssss",
-        "sssWWWssssssssssssWWWsss",
-        "ssssssssssssssssssssssss",
-        "ssssssssssssssssssssssss",
-        "ssssssrrrrrrrrrrrrssssss",
-        "ssssssrrrrrrrrrrrrssssss",
-        ".ssssssssssssssssssssss.",
-        "..ssssssssssssssssssss..",
-        "...ssssssssssssssssss...")
-    $maps[16] = @(
+function Pixel16 {
+    # The tray's 16px icon, placed pixel by pixel: a drawn italic "A" at this size is
+    # mostly half-grey edge pixels and looks blurred. Same square, letter and rule.
+    $map = @(
         "..ssssssssssss..",
         ".ssssssssssssss.",
         "sssssssWWsssssss",
@@ -95,22 +68,19 @@ function PixelIcon($size) {
         "ssssrrrrrrrrssss",
         ".ssssssssssssss.",
         "..ssssssssssss..")
-    $map = $maps[$size]
     $colors = @{ "s" = (Color "#536B78"); "W" = (Color "#FFFFFF"); "r" = (Color "#ACCBE1") }
-    $bmp = New-Object System.Drawing.Bitmap($size, $size)
-    for ($y = 0; $y -lt $size; $y++) { for ($x = 0; $x -lt $size; $x++) {
+    $bmp = New-Object System.Drawing.Bitmap(16, 16)
+    for ($y = 0; $y -lt 16; $y++) { for ($x = 0; $x -lt 16; $x++) {
         $c = $map[$y][$x]; if ($c -ne ".") { $bmp.SetPixel($x, $y, $colors[[string]$c]) } } }
     return $bmp
 }
 
 $pngs = @()
 foreach ($s in 16, 24, 32, 48, 64, 256) {
-    $img = if ($s -le 24) { PixelIcon $s } else { Draw $s }
+    $img = if ($s -eq 16) { Pixel16 } else { Draw $s }
     $file = "$env:TEMP\almanac-$s.png"; $img.Save($file, [System.Drawing.Imaging.ImageFormat]::Png); $pngs += , @($s, $file)
 }
-(PixelIcon 16).Save("$out\favicon-16.png", [System.Drawing.Imaging.ImageFormat]::Png)  # a window's title bar: crisp, not the 32 shrunk
-(PixelIcon 24).Save("$out\favicon-24.png", [System.Drawing.Imaging.ImageFormat]::Png)  # the Windows 11 taskbar's size
-(Draw 48).Save("$out\favicon-48.png", [System.Drawing.Imaging.ImageFormat]::Png)
+(Pixel16).Save("$out\favicon-16.png", [System.Drawing.Imaging.ImageFormat]::Png)  # a window's title bar: crisp, not the 32 shrunk
 (Draw 32).Save("$out\favicon-32.png", [System.Drawing.Imaging.ImageFormat]::Png)
 (Draw 180 -Full).Save("$out\apple-touch-icon.png", [System.Drawing.Imaging.ImageFormat]::Png)
 (Draw 192).Save("$out\icon-192.png", [System.Drawing.Imaging.ImageFormat]::Png)
