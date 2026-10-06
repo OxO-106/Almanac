@@ -113,13 +113,14 @@ def find(llm, segments, rec_date: str) -> list[dict]:
     return out
 
 
-def to_plan(con, llm, clock, rec, segments) -> int:
-    """Proposals and questions for what the lecture announced. Returns how many."""
+def to_plan(con, llm, clock, rec, segments, items=None) -> int:
+    """Proposals and questions for what the lecture announced (`items`: what
+    find() returned, if already asked). Returns how many."""
     lecture = date.fromisoformat(rec["date"])
     c = con.execute("select * from courses where id = ?", (rec["course_id"],)).fetchone() if rec["course_id"] else None
     who = f"Prof. {c['instructor'].split()[-1]}" if c else "The lecturer"
     made = 0
-    for it in find(llm, segments, rec["date"]):
+    for it in (find(llm, segments, rec["date"]) if items is None else items):
         title, quote = ingest.capitalize(it["title"].strip()), it["quote"]
         value = _when(con, it, lecture) if it.get("clear", True) else None
         if not value or value[:10] < lecture.isoformat():

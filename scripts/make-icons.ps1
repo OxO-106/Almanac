@@ -37,55 +37,26 @@ function Draw($size, [switch]$Full) {
     return $bmp
 }
 
-function Badge($size) {
-    # Android's small notification icon: the letter alone, white on transparent
-    $bmp = New-Object System.Drawing.Bitmap($size, $size)
-    $g = [System.Drawing.Graphics]::FromImage($bmp); $g.SmoothingMode = "AntiAlias"; $s = [single]$size
-    $a = New-Object System.Drawing.Drawing2D.GraphicsPath
-    $fmt = New-Object System.Drawing.StringFormat; $fmt.Alignment = "Center"; $fmt.LineAlignment = "Center"
-    $a.AddString("A", $fonts.Families[0], [int][System.Drawing.FontStyle]::Italic, $s * 0.95, (New-Object System.Drawing.RectangleF(0, 0, $s, $s)), $fmt)
-    $g.FillPath([System.Drawing.Brushes]::White, $a); $g.Dispose()
-    return $bmp
-}
-
-function Pixel16 {
-    # The tray's 16px icon, placed pixel by pixel: a drawn italic "A" at this size is
-    # mostly half-grey edge pixels and looks blurred. Same square, letter and rule.
-    $map = @(
-        "..ssssssssssss..",
-        ".ssssssssssssss.",
-        "sssssssWWsssssss",
-        "ssssssWWWWssssss",
-        "ssssssWWWWssssss",
-        "sssssWWssWWsssss",
-        "sssssWWssWWsssss",
-        "ssssWWssssWWssss",
-        "ssssWWWWWWWWssss",
-        "sssWWssssssWWsss",
-        "sssWWssssssWWsss",
-        "ssWWssssssssWWss",
-        "ssssssssssssssss",
-        "ssssrrrrrrrrssss",
-        ".ssssssssssssss.",
-        "..ssssssssssss..")
-    $colors = @{ "s" = (Color "#536B78"); "W" = (Color "#FFFFFF"); "r" = (Color "#ACCBE1") }
+function Scaled16 {
+    # Use the same artwork as favicon-32 for the tray and window title bar.
+    $source = New-Object System.Drawing.Bitmap("$out\favicon-32.png")
     $bmp = New-Object System.Drawing.Bitmap(16, 16)
-    for ($y = 0; $y -lt 16; $y++) { for ($x = 0; $x -lt 16; $x++) {
-        $c = $map[$y][$x]; if ($c -ne ".") { $bmp.SetPixel($x, $y, $colors[[string]$c]) } } }
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.InterpolationMode = "HighQualityBicubic"
+    $g.PixelOffsetMode = "HighQuality"
+    $g.DrawImage($source, 0, 0, 16, 16)
+    $g.Dispose(); $source.Dispose()
     return $bmp
 }
 
+(Draw 32).Save("$out\favicon-32.png", [System.Drawing.Imaging.ImageFormat]::Png)
 $pngs = @()
 foreach ($s in 16, 24, 32, 48, 64, 256) {
-    $img = if ($s -eq 16) { Pixel16 } else { Draw $s }
+    $img = if ($s -eq 16) { Scaled16 } else { Draw $s }
     $file = "$env:TEMP\almanac-$s.png"; $img.Save($file, [System.Drawing.Imaging.ImageFormat]::Png); $pngs += , @($s, $file)
 }
-(Pixel16).Save("$out\favicon-16.png", [System.Drawing.Imaging.ImageFormat]::Png)  # a window's title bar: crisp, not the 32 shrunk
-(Draw 32).Save("$out\favicon-32.png", [System.Drawing.Imaging.ImageFormat]::Png)
-(Draw 180 -Full).Save("$out\apple-touch-icon.png", [System.Drawing.Imaging.ImageFormat]::Png)
 (Draw 192).Save("$out\icon-192.png", [System.Drawing.Imaging.ImageFormat]::Png)
 (Draw 512).Save("$out\icon-512.png", [System.Drawing.Imaging.ImageFormat]::Png)
-(Badge 96).Save("$out\badge-96.png", [System.Drawing.Imaging.ImageFormat]::Png)
 (Draw 512 -Full).Save("$out\icon-maskable-512.png", [System.Drawing.Imaging.ImageFormat]::Png)
 
 # ICO: 256px as PNG, smaller sizes as 32-bit bitmaps (System.Drawing.Icon,

@@ -127,3 +127,78 @@ def test_words_moved_across_a_segment_boundary_are_kept(client, llm, transcriber
         {"n": 1, "text": ""}]})]  # the sentence finished in segment 0
     rec = record(client, course)
     assert [s["text"] for s in rec["transcript"]] == ["So this is the same lecture which we had on Monday, or on graduate study at the department."]
+
+
+# ---- one lecture recorded in two parts ------------------------------------------------
+
+def two_parts(client, llm, transcriber):
+    """Two live Recordings of one lecture (a break between): 60 s then 30 s, a jotting in each."""
+    from test_live_recording import send, start, tone
+    course = a_course(client, llm)
+    ids = []
+    for seg, secs, jot in (([{"start": 0.0, "end": 60.0, "text": "Part one: GQA."}], 60.0, (10, "first idea")),
+                           ([{"start": 0.0, "end": 30.0, "text": "Part two: Kimi Linear."}], 30.0, (5, "second idea"))):
+        transcriber.segments, transcriber.seconds = seg, secs
+        llm.replies = [json.dumps({"segments": [{"n": 0, "text": seg[0]["text"]}]})]
+        rid = start(client, course, date="2026-10-05")
+        send(client, rid, 0, tone(1))
+        client.post(f"/api/recordings/{rid}/jottings", json={"at": jot[0], "text": jot[1]})
+        client.post(f"/api/recordings/{rid}/stop")
+        from test_live_recording import wait_for
+        wait_for(lambda: client.get(f"/api/recordings/{rid}").json(), lambda r: r["notes_status"] in ("done", "failed"))
+        ids.append(rid)
+    return course, ids
+
+
+def test_two_parts_of_a_lecture_join_into_one_transcript_and_new_notes(client, llm, transcriber):
+    from test_live_recording import wait_for
+    _, (a, b) = two_parts(client, llm, transcriber)
+    assert [o["id"] for o in client.get(f"/api/recordings/{a}").json()["same_day"]] == [b]  # the page can offer to join them
+    proposal = client.app.state.db.execute("select source_id from recordings where id = ?", (b,)).fetchone()["source_id"]
+    llm.notes = ["## Joined notes\n✎ first idea\n✎ second idea"]
+    r = client.post(f"/api/recordings/{b}/join", json={"with": a})  # from either one: the earlier is kept
+    assert r.status_code == 202 and r.json()["id"] == a
+    rec = wait_for(lambda: client.get(f"/api/recordings/{a}").json(), lambda r: r["notes_status"] == "done")
+    assert rec["seconds"] == 90.0
+    assert [(s["start"], s["end"], s["text"]) for s in rec["transcript"]] == [(0.0, 60.0, "Part one: GQA."), (60.0, 90.0, "Part two: Kimi Linear.")]
+    assert [(j["at"], j["text"]) for j in rec["jottings"]] == [(10, "first idea"), (65, "second idea")]  # the second part's moments shifted
+    assert rec["notes"].startswith("## Joined notes") and rec["same_day"] == []
+    sent = llm.notes_requests[-1]["messages"][1]["content"]
+    assert "[1:00] Part two: Kimi Linear." in sent and "[1:05] second idea" in sent
+    assert client.get(f"/api/recordings/{b}").status_code == 404
+    con = client.app.state.db
+    assert not con.execute("select 1 from sources where id = ?", (proposal,)).fetchone()
+    assert [n["url"] for n in client.get("/api/notifications").json() if n["title"] == "Transcript ready"] == [f"#lecture/{a}"] * 2
+
+
+def test_what_hangs_off_the_later_part_moves_to_the_kept_one(client, llm, transcriber):
+    _, (a, b) = two_parts(client, llm, transcriber)
+    con = client.app.state.db
+    later = con.execute("select source_id from recordings where id = ?", (b,)).fetchone()["source_id"]
+    kept = con.execute("select source_id from recordings where id = ?", (a,)).fetchone()["source_id"]
+    con.execute("insert into questions (source_id, text, status, created_at) values (?, 'Is the proposal due Oct 14?', 'open', '2026-10-05T18:00')", (later,))
+    assert client.post(f"/api/recordings/{a}/join", json={"with": b}).status_code == 202
+    assert con.execute("select source_id from questions").fetchone()["source_id"] == kept
+    assert con.execute("select text from sources where id = ?", (kept,)).fetchone()["text"] == "Part one: GQA.\nPart two: Kimi Linear."
+
+
+def test_only_two_finished_parts_of_one_lecture_can_be_joined(client, llm, transcriber):
+    course, (a, b) = two_parts(client, llm, transcriber)
+    other_day = record(client, course)  # uploaded for 2026-10-02
+    for x, y in ((a, other_day["id"]), (a, a)):
+        assert client.post(f"/api/recordings/{x}/join", json={"with": y}).status_code in (404, 409)
+    assert client.post(f"/api/recordings/{a}/join", json={}).status_code == 422
+    client.put(f"/api/recordings/{b}/notes", json={"notes": "my own words"})  # the student's edit is theirs
+    r = client.post(f"/api/recordings/{a}/join", json={"with": b})
+    assert r.status_code == 409 and "edited" in r.json()["detail"]
+    assert client.get(f"/api/recordings/{b}").json()["notes"] == "my own words"  # nothing was joined
+    client.delete(f"/api/recordings/{a}/transcript")
+    assert client.get(f"/api/recordings/{b}").json()["same_day"] == []  # a deleted transcript isn't a part
+
+
+def test_a_save_that_changed_nothing_doesnt_stop_a_join_and_old_undo_history_goes(client, llm, transcriber):
+    _, (a, b) = two_parts(client, llm, transcriber)
+    notes = client.get(f"/api/recordings/{a}").json()["notes"]
+    client.put(f"/api/recordings/{a}/notes", json={"notes": notes})  # Edit, Save, nothing typed
+    assert client.post(f"/api/recordings/{b}/join", json={"with": a}).status_code == 202
+    assert client.get(f"/api/recordings/{a}").json()["undo"] is None

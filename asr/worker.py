@@ -1,12 +1,18 @@
-"""Speech to text with NVIDIA Parakeet TDT 0.6B v2 (ONNX, on the GPU).
+"""Speech to text with NVIDIA Parakeet TDT 0.6B v2 (ONNX, on the GPU), or
+Qwen3-ASR 1.7B (PyTorch; being compared, scripts/asr_eval.py).
 
-Runs in its own environment (.venv-asr: the speech runtime is large and kept
-out of the web server) as a small HTTP server on 127.0.0.1. Almanac starts it
+  python worker.py [port] [parakeet|qwen]
+
+Runs in its own environment (.venv-asr for Parakeet, .venv-qwen-asr for Qwen:
+the speech runtimes are large and kept out of the web server) as a small HTTP
+server on 127.0.0.1. Almanac starts it
 when a Recording needs it (app/transcriber.py); it exits after IDLE seconds
 unused, which frees the GPU.
 
   POST /window  body: 16 kHz mono int16 PCM      → {"text"}       (Captions)
   POST /file    {"path": any audio or video}     → {"segments": [{"start", "end", "text"}], "seconds"}
+  Qwen also takes a `context` (?context= on /window, a key on /file): text it
+  reads first, such as the course's vocabulary. Parakeet ignores it.
   GET  /health                                   → {"ready": true}
 
 Measured on the 4070 Ti Super with the 35B loaded (ticket 01): a 3 s window
@@ -26,7 +32,7 @@ WINDOW = 20      # a long recording is transcribed in windows of about this many
 SPREAD = 8       # each cut at the quietest moment within this many seconds of the target
 BATCH = 16
 IDLE = int(os.environ.get("ALMANAC_ASR_IDLE", 300))  # seconds unused before it stops
-MODEL_DIR = Path(__file__).resolve().parent.parent / "data" / "models" / "parakeet-tdt-0.6b-v2"
+MODELS = Path(__file__).resolve().parent.parent / "data" / "models"
 
 
 def quiet_cuts(energy: list[float], frame: float = FRAME, window: float = WINDOW, spread: float = SPREAD) -> list[int]:
@@ -42,16 +48,30 @@ def quiet_cuts(energy: list[float], frame: float = FRAME, window: float = WINDOW
     return cuts
 
 
-def main(port: int):
-    import numpy as np
+def load(engine: str):
+    """recognize(list of 16 kHz float arrays, context) → their texts."""
+    if engine == "qwen":
+        import torch
+        from qwen_asr import Qwen3ASRModel
+        model = Qwen3ASRModel.from_pretrained(str(MODELS / "qwen3-asr-1.7b"), dtype=torch.bfloat16,
+                                              device_map="cuda:0", max_inference_batch_size=BATCH)
+        return lambda audios, context="": [r.text for r in model.transcribe(
+            [(a, SR) for a in audios], context=context, language="English")]
     import onnxruntime as ort
     ort.preload_dlls()  # CUDA and cuDNN from pip
-    import imageio_ffmpeg
     import onnx_asr
-
-    model = onnx_asr.load_model("nemo-parakeet-tdt-0.6b-v2", str(MODEL_DIR),
+    model = onnx_asr.load_model("nemo-parakeet-tdt-0.6b-v2", str(MODELS / "parakeet-tdt-0.6b-v2"),
                                 providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
-    model.recognize(np.zeros(SR, np.float32), sample_rate=SR)  # load the GPU kernels now, not on the first caption
+    return lambda audios, context="": model.recognize(audios, sample_rate=SR)
+
+
+def main(port: int, engine: str = "parakeet"):
+    import numpy as np
+    import imageio_ffmpeg
+    from urllib.parse import parse_qs, urlparse
+
+    recognize = load(engine)
+    recognize([np.zeros(SR, np.float32)])  # load the GPU kernels now, not on the first caption
     gpu = threading.Lock()  # one job on the GPU at a time
     last = [time.time()]
 
@@ -63,7 +83,7 @@ def main(port: int):
             raise ValueError(f"ffmpeg couldn't read the audio: {r.stderr.decode(errors='replace').strip()[-300:]}")
         return np.frombuffer(r.stdout, dtype=np.int16).astype(np.float32) / 32768
 
-    def transcribe(audio) -> list[dict]:
+    def transcribe(audio, context="") -> list[dict]:
         step = int(FRAME * SR)
         frames = len(audio) // step
         energy = (audio[: frames * step].reshape(frames, step) ** 2).mean(axis=1).tolist() if frames else []
@@ -73,7 +93,7 @@ def main(port: int):
         for i in range(0, len(pieces), BATCH):
             batch = pieces[i:i + BATCH]
             with gpu:
-                texts = model.recognize([audio[a:b] for a, b in batch], sample_rate=SR)
+                texts = recognize([audio[a:b] for a, b in batch], context)
             segments += [{"start": round(a / SR, 2), "end": round(b / SR, 2), "text": t.strip()}
                          for (a, b), t in zip(batch, texts) if t.strip()]
         return segments
@@ -97,14 +117,17 @@ def main(port: int):
             last[0] = time.time()
             body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
             try:
-                if self.path == "/window":
+                url = urlparse(self.path)
+                if url.path == "/window":
                     audio = np.frombuffer(body, dtype=np.int16).astype(np.float32) / 32768
+                    context = parse_qs(url.query).get("context", [""])[0]
                     with gpu:
-                        text = model.recognize(audio, sample_rate=SR) if len(audio) > SR // 10 else ""
+                        text = recognize([audio], context)[0] if len(audio) > SR // 10 else ""
                     self.reply(200, {"text": text.strip()})
-                elif self.path == "/file":
-                    audio = decode(json.loads(body)["path"])
-                    self.reply(200, {"segments": transcribe(audio), "seconds": round(len(audio) / SR, 2)})
+                elif url.path == "/file":
+                    job = json.loads(body)
+                    audio = decode(job["path"])
+                    self.reply(200, {"segments": transcribe(audio, job.get("context", "")), "seconds": round(len(audio) / SR, 2)})
                 else:
                     self.reply(404, {"error": "not found"})
             except Exception as e:
@@ -123,4 +146,4 @@ def main(port: int):
 
 
 if __name__ == "__main__":
-    main(int(sys.argv[1]) if len(sys.argv) > 1 else 8011)
+    main(int(sys.argv[1]) if len(sys.argv) > 1 else 8011, sys.argv[2] if len(sys.argv) > 2 else "parakeet")

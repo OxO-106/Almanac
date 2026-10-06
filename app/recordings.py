@@ -18,7 +18,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, UploadFile
 
-from . import plan
+from . import papers, plan
 from .clock import local
 from .db import WRITE
 from .scheduler import WATCHERS, notify
@@ -69,6 +69,7 @@ def vocabulary(con, course_id) -> list[str]:
             proper = w[0].isupper() and w[1:].islower() and len(w) > 2 and w.lower() not in lower and w in inside
             if distinctive or proper:
                 terms.append(w)
+    terms += papers.vocabulary(c)  # the course's papers in Papercut: titles and topics
     seen, out = set(), []
     for t in terms:
         if t and t.lower() not in seen:
@@ -267,6 +268,7 @@ def _view(con, r) -> dict:
     d["kind_name"] = KIND_NAMES.get(d["kind"] or "")
     v = con.execute("select why from note_versions where recording_id = ? order by id desc limit 1", (r["id"],)).fetchone()
     d["undo"] = v and v["why"]  # what Undo would take back
+    d["same_day"] = [{"id": o["id"], "at": o["created_at"][11:16], "seconds": o["seconds"]} for o in _same_day(con, r)]
     return d
 
 
@@ -421,6 +423,70 @@ def delete_transcript(id: int, request: Request):
     with WRITE:
         con.execute("update sources set text = '' where id = (select source_id from recordings where id = ?)", (id,))
 
+
+# ---- one lecture recorded in parts -------------------------------------------------
+# Stopping and starting again (a break, a dropped connection) makes two Recordings
+# of one lecture. Joining puts the later Transcript after the earlier one (its times
+# shifted by the earlier's length, since pauses between aren't in the audio), moves
+# what hangs off the later one to the earlier, and writes the notes again from the
+# whole. The audio is long gone (ADR 0001), so it is the Transcripts that are joined.
+
+def _same_day(con, r) -> list:
+    """Other finished Recordings of this course on this day, with a Transcript: possible other parts."""
+    return con.execute("select * from recordings where id != ? and course_id is ? and date = ? and status = 'done' "
+                       "and transcript is not null order by created_at, id", (r["id"], r["course_id"], r["date"])).fetchall()
+
+
+def join(con, id_a: int, id_b: int) -> int:
+    """Join two Recordings of one lecture into the earlier one; returns its id. Raises
+    HTTPException (said to the student) when they aren't two finished parts of one lecture.
+    The notes are cleared and marked as being written: the caller writes them again."""
+    from . import lecture_notes
+    rows = [con.execute("select * from recordings where id = ?", (i,)).fetchone() for i in (id_a, id_b)]
+    if id_a == id_b or not all(rows):
+        raise HTTPException(404, "Pick two different recordings.")
+    first, second = sorted(rows, key=lambda r: (r["created_at"], r["id"]))
+    if (first["course_id"], first["date"]) != (second["course_id"], second["date"]):
+        raise HTTPException(409, "Those are from different lectures (another course or day).")
+    if any(r["status"] != "done" or not r["transcript"] for r in rows):
+        raise HTTPException(409, "Both need a finished transcript; wait for it, or upload the missing one again.")
+    if any(r["notes_status"] in lecture_notes.BUSY for r in rows):
+        raise HTTPException(409, "The notes are being written or changed; try again when that's done.")
+    if any(con.execute("select 1 from note_versions where recording_id = ? and notes != ?", (r["id"], r["notes"] or "")).fetchone() for r in rows):  # a save that changed nothing isn't an edit
+        raise HTTPException(409, "You've edited the notes of one of them, and joining writes new notes from the whole lecture. "
+                                 "Copy your edits somewhere first.")
+    shift = first["seconds"] or 0.0
+    segments = json.loads(first["transcript"]) + [{**s, "start": round(s["start"] + shift, 2), "end": round(s["end"] + shift, 2)}
+                                                  for s in json.loads(second["transcript"])]
+    jots = json.loads(first["jottings"] or "[]")
+    top = max((j["id"] for j in jots), default=0)
+    for n, j in enumerate(json.loads(second["jottings"] or "[]"), 1):
+        jots.append({**j, "id": top + n, "at": round(j["at"] + shift, 1), "key": None})
+    with WRITE:
+        con.execute("update recordings set seconds = ?, transcript = ?, jottings = ?, notes = null, notes_status = 'writing', "
+                    "notes_error = null where id = ?",
+                    ((first["seconds"] or 0) + (second["seconds"] or 0), json.dumps(segments), json.dumps(jots) if jots else None, first["id"]))
+        con.execute("update sources set text = ? where id = ?", ("\n".join(s["text"] for s in segments), first["source_id"]))
+        con.execute("update proposals set source_id = ? where source_id = ?", (first["source_id"], second["source_id"]))
+        con.execute("update questions set source_id = ? where source_id = ?", (first["source_id"], second["source_id"]))
+        con.execute("update notifications set url = ? where url = ?", (f"#lecture/{first['id']}", f"#lecture/{second['id']}"))
+        con.execute("delete from note_versions where recording_id in (?, ?)", (id_a, id_b))  # Undo would bring back notes of one part
+        con.execute("delete from recordings where id = ?", (second["id"],))
+        con.execute("delete from sources where id = ?", (second["source_id"],))
+    return first["id"]
+
+
+@router.post("/recordings/{id}/join", status_code=202)
+async def join_recordings(id: int, background: BackgroundTasks, request: Request):
+    """{"with": the other part's id}: both become one Recording (the earlier one); its notes are written again."""
+    from . import lecture_notes
+    s = request.app.state
+    other = (await request.json()).get("with")
+    if not isinstance(other, int):
+        raise HTTPException(422, "Say which recording to join it with.")
+    kept = join(s.db, id, other)
+    background.add_task(lecture_notes.after_transcript, s.db, s.llm, s.clock, kept)
+    return {"id": kept, "notes_status": "writing"}
 
 
 # ---- live: recording in the browser, Captions while it runs ----------------------

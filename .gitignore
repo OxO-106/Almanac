@@ -10,3 +10,4 @@ backups/
 seed/*.pdf
 seed/*.docx
 .venv-asr/
+.venv-qwen-asr/

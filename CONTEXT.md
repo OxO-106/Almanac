@@ -57,7 +57,7 @@ _Avoid_: Raw transcript (there is none kept), minutes
 
 **Lecture kind**:
 What a lecture is, which decides what its Lecture notes capture. Read from the syllabus: the schedule row for that date, else the course's usual kind.
-- **Paper session**: papers presented and discussed: each paper's points, the questions and answers, connections between papers.
+- **Paper session**: papers presented and discussed: takeaways of each of the lecture's papers (also one not presented), a comparison, their connections, background, the questions and answers, and a one-paragraph summary; what each paper says comes from Papercut's library.
 - **Concept lecture**: the instructor teaches ideas: concepts, definitions, walk-throughs.
 - **Presentation day**: projects or talks presented: feedback on the user's own, a line on each other one.
 

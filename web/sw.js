@@ -3,7 +3,7 @@ self.addEventListener("push", event => {
   let n = { title: "Almanac", body: "", url: "#today" };
   try { n = { ...n, ...event.data.json() }; } catch { }
   event.waitUntil(self.registration.showNotification(n.title, {
-    body: n.body, icon: "/static/icons/icon-192.png?v=2", badge: "/static/icons/badge-96.png", data: { url: n.url },
+    body: n.body, icon: "/static/icons/icon-192.png?v=2", data: { url: n.url },
   }));
 });
 

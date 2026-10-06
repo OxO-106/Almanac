@@ -34,6 +34,7 @@ class FakeLLM:
         self.lectures, self.lecture_requests = [], []
         self.notes, self.notes_requests, self.announced, self.announce_requests = [], [], [], []
         self.changes, self.change_requests = [], []
+        self.questions, self.question_requests, self.paper_answers, self.paper_answer_requests = [], [], [], []
         self.requests = []
 
     def status(self):
@@ -50,6 +51,14 @@ class FakeLLM:
             # a change request to a lecture's notes: scripted with llm.changes (the sections changed)
             self.change_requests.append({"messages": messages, "schema": schema})
             return self.changes.pop(0) if self.changes else json.dumps({"summary": "", "sections": []})
+        if messages[0]["content"].startswith("You list the questions asked"):
+            # a paper session's questions, a part at a time: scripted with llm.questions
+            self.question_requests.append({"messages": messages, "schema": schema})
+            return self.questions.pop(0) if self.questions else json.dumps({"questions": []})
+        if messages[0]["content"].startswith("You add what the papers say"):
+            # the papers' answers to those questions: scripted with llm.paper_answers
+            self.paper_answer_requests.append({"messages": messages, "schema": schema})
+            return self.paper_answers.pop(0) if self.paper_answers else json.dumps({"answers": []})
         if messages[0]["content"].startswith(("You write study notes", "You combine the notes")):
             # lecture notes: scripted with llm.notes, logged apart
             self.notes_requests.append({"messages": messages, "schema": schema})
@@ -95,6 +104,16 @@ class FakeTranscriber:
 
     def window(self, pcm16):
         return self.caption(pcm16)
+
+
+@pytest.fixture(autouse=True)
+def papercut(tmp_path, monkeypatch):
+    """Papercut's library, empty unless a test puts papers in it (never the real one)."""
+    from app import papers
+    root = tmp_path / "papercut"
+    (root / "papers").mkdir(parents=True)
+    monkeypatch.setattr(papers, "LIBRARY", root)
+    return root
 
 
 @pytest.fixture

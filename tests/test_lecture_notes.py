@@ -1,6 +1,9 @@
 """Lecture notes: built on the Jottings, shaped by the Lecture kind, every Jotting kept."""
+import json
+
 from test_lecture_kinds import ding
 from test_live_recording import send, start, tone, wait_for
+from test_papers import shelve
 
 
 def lecture(client, transcriber, segments, course=None, kind=None, jots=()):
@@ -25,7 +28,7 @@ def test_notes_are_built_on_the_jottings_and_keep_every_one(client, llm, transcr
     (req,) = llm.notes_requests
     sent = req["messages"][1]["content"]
     assert "[0:31] KV cache!!" in sent and "[0:30] That shrinks the KV cache a lot." in sent
-    assert "## Announced" in req["messages"][0]["content"]
+    assert "## Announced" not in req["messages"][0]["content"]  # written by code, from announcements.find's quotes
 
 
 def test_a_long_lecture_is_written_in_parts_then_combined(client, llm, transcriber):
@@ -42,17 +45,115 @@ def test_a_long_lecture_is_written_in_parts_then_combined(client, llm, transcrib
     assert rec["notes"] == "## Combined\n✎ remember this\n\n## More of your jottings\n✎ (marked) (85:00)"  # no point to put the mark on
 
 
-def test_a_paper_session_knows_its_papers_and_the_reading_list(client, llm, transcriber):
+def paper_session(client, llm, transcriber, said):
     c = ding(client, llm)
-    transcriber.segments = [{"start": 0.0, "end": 9.0, "text": "Today's paper is GQA."}]
+    transcriber.segments = [{"start": i * 10.0, "end": i * 10.0 + 10, "text": t} for i, t in enumerate(said)]
     rid = client.post("/api/recordings/start", json={"course_id": c, "date": "2026-10-05"}).json()["id"]
     send(client, rid, 0, tone(1))
     client.post(f"/api/recordings/{rid}/stop")
-    wait_for(lambda: client.get(f"/api/recordings/{rid}").json(), lambda r: r["notes_status"] == "done")
-    system, user = (m["content"] for m in llm.notes_requests[-1]["messages"])
-    assert "paper session" in system and '"Almanac: "' in system
-    assert "Papers for this lecture on the reading list: GQA: Training Generalized Multi-Query Transformer" in user
+    return wait_for(lambda: client.get(f"/api/recordings/{rid}").json(), lambda r: r["notes_status"] in ("done", "failed"))
+
+
+COMPOSED = ("## Takeaways\n### GQA: Training Generalized Multi-Query Transformer\n**In class**\n- Groups share K and V.\n"
+            "**From the paper**\n- Uptraining costs 5% of pre-training.\n\n## Comparison\n| Paper | Idea |\n|---|---|\n| GQA | shared K/V |\n\n"
+            "## Summary\nThe class covered GQA.\n\n## Announced\n- Assignment 3 is due October 12.\n\n## Questions Asked in Class\n- Why groups?")
+
+
+def test_a_paper_session_is_written_from_class_then_with_the_papers(client, llm, transcriber, papercut):
+    shelve(papercut, "ba9094fe73db9bf5", "GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints", "CS 239 Ding")
+    llm.notes = ["## GQA\n- Groups share K and V.", COMPOSED]
+    rec = paper_session(client, llm, transcriber, ["Today's paper is GQA.", "Groups of heads share keys and values."])
+    part, composed = llm.notes_requests
+    assert "Papers for this lecture on the reading list: GQA: Training" in part["messages"][1]["content"]
+    assert "Abstract" not in part["messages"][1]["content"]  # what was said in class comes from the transcript alone
+    system, user = (m["content"] for m in composed["messages"])
+    assert "paper session" in system and "also one not presented" in system
+    assert all(h in system for h in ("## Takeaways", "## Comparison", "## Connections", "## Background", "## Summary"))
+    assert "1. GQA: Training Generalized Multi-Query Transformer\nPresented in class: yes" in user
+    assert "Abstract (the paper's words): We introduce grouped-query attention." in user and "TL;DR: Share K/V heads per group." in user
+    assert "The class notes:\n\n--- Notes, part 1 ---\n## GQA\n- Groups share K and V." in user
     assert "Course: CS 239" in user and "Robin Ding" in user
+    # nothing was announced: the model's own Announced section is dropped, as are sections not asked for
+    assert rec["notes"] == COMPOSED.split("\n\n## Announced")[0]
+
+
+def test_a_paper_not_in_the_library_is_known_by_its_title_only(client, llm, transcriber):
+    paper_session(client, llm, transcriber, ["Today's paper is GQA."])
+    user = llm.notes_requests[-1]["messages"][1]["content"]
+    assert ("1. GQA: Training Generalized Multi-Query Transformer\nPresented in class: yes (named in the transcript).\n"
+            "Not in the student's library: only its title is known.") in user
+
+
+def test_questions_are_checked_against_the_transcript_then_answered_from_the_paper(client, llm, transcriber, papercut):
+    shelve(papercut, "ba9094fe73db9bf5", "GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints", "CS 239 Ding")
+    llm.notes = ["## GQA\n- Groups.", COMPOSED.split("\n\n## Announced")[0]]
+
+    def q(**k):
+        return {"time": "0:10", "asker": "a student", "question": "", "question_quote": "", "answered": False,
+                "answerer": "", "answer": "", "answer_quote": "", "paper": "", **k}
+    llm.questions = [json.dumps({"questions": [
+        q(time="0:20", question="Can Top-K be trained?", question_quote="how can you train all the Top-K models"),
+        q(question="Why not map all queries to one set of keys?", question_quote="why not just have all queries mapped to one key",
+          answered=True, answerer="the presenter", answer="Grouped-query attention keeps the computation graph simple.",
+          answer_quote="it keeps the computational graph simple", paper="GQA: Training Generalized Multi-Query Transformer"),
+        q(time="0:30", question="What happens with GQA and NSA together?", question_quote="what happens if we use GQA with NSA"),  # never asked
+        q(time="0:30", question="Is it fast?", question_quote="is it fast though really", answered=True, answer="Yes, ten times.",
+          answer_quote="ten times faster than anything"),  # the answer isn't in the transcript
+    ]})]
+    llm.paper_answers = [json.dumps({"answers": [
+        {"n": 1, "answer": "The paper introduces grouped-query attention as a middle ground.", "quote": "We introduce grouped-query attention",
+         "paper": "GQA", "section": "Abstract"},
+        {"n": 3, "answer": "The passages do not explain whether it is fast.", "quote": "We introduce grouped-query attention",
+         "paper": "GQA", "section": "Abstract"},  # says what the paper doesn't say: not an answer
+        {"n": 2, "answer": "Top-K is made differentiable.", "quote": "top-k is made differentiable by design", "paper": "GQA", "section": ""},  # not in its passages
+    ]})]
+    rec = paper_session(client, llm, transcriber, [
+        "Today's paper is GQA.", "Why not just have all queries mapped to one key? Well, it keeps the computational graph simple.",
+        "And how can you train all the Top-K models? I'll be back to that.", "Is it fast though really?"])
+    assert rec["notes"].split("## Questions\n")[1].split("\n\n## Summary")[0] == (
+        "- **Q** (a student, 0:10): Why not map all queries to one set of keys?\n"
+        "  - **A** (the presenter): Grouped-query attention keeps the computation graph simple.\n"
+        "  - **From the paper** (GQA, Abstract): The paper introduces grouped-query attention as a middle ground.\n"
+        "- **Q** (a student, 0:20): Can Top-K be trained?\n"
+        "  - Not answered in class.\n"
+        "- **Q** (a student, 0:30): Is it fast?\n"
+        "  - The answer couldn't be matched to the transcript.")
+    asked = llm.paper_answer_requests[0]["messages"][1]["content"]
+    assert "Question 1: Why not map all queries to one set of keys?\nAnswer in class: Grouped-query attention keeps the computation graph simple." in asked
+    assert "- [GQA, Abstract] We introduce grouped-query attention." in asked
+
+
+def test_a_paper_never_named_in_class_is_marked_not_presented():
+    from app.lecture_notes import _mark_not_presented
+    notes = ("## Takeaways\n### GQA: Training\n**In class**\n- Shared K/V.\n### Kimi Linear: An Expressive, Efficient Attention Architecture\n"
+             "**In class**\n- Was covered, says the model.\n**From the paper**\n- KDA extends Gated DeltaNet.\n"
+             "### Native Sparse Attention\n**From the paper**\n- Three branches.\n\n## Summary\nThe class covered GQA.")
+    out = _mark_not_presented(notes, [("Kimi Linear: An Expressive, Efficient Attention Architecture", {"title": "Kimi Linear"}),
+                                      ("Native Sparse Attention", None)])
+    assert out == ("## Takeaways\n### GQA: Training\n**In class**\n- Shared K/V.\n### Kimi Linear: An Expressive, Efficient Attention Architecture\n"
+                   "*Not presented in class; from the paper.*\n**From the paper**\n- KDA extends Gated DeltaNet.\n"
+                   "### Native Sparse Attention\n*Not presented in class, and not in your library.*\n\n## Summary\nThe class covered GQA.")
+
+
+def test_announced_is_only_what_the_transcript_says(client, llm, transcriber):
+    llm.notes = ["## Topic\n- A point.\n\n## Announced\n- Office hours moved to Thursday."]
+    llm.announced = [json.dumps({"items": [
+        {"kind": "task", "title": "read the Mamba paper", "quote": "read the Mamba paper for next Monday",
+         "when": {"type": "weekday", "weekday": "MO", "next_week": True}, "clear": True},
+        {"kind": "deadline", "title": "Assignment 3 due", "quote": "assignment three is due October 12th",
+         "when": {"type": "date", "month": 10, "day": 12}, "clear": True}]})]
+    rec = lecture(client, transcriber, [{"start": 0.0, "end": 9.0, "text": "A point. Please read the Mamba paper for next Monday."}])
+    assert rec["notes"] == "## Topic\n- A point.\n\n## Announced\n- Read the Mamba paper: “read the Mamba paper for next Monday”"
+    assert len(llm.announce_requests) == 1  # asked once, for the notes and the plan
+
+
+def test_a_paper_is_named_by_its_short_name_first_words_or_initials():
+    from app import papers
+    said = "Today GQA, then native sparse attention, and the gated delta rule."
+    assert papers.named("GQA: Training Generalized", said)
+    assert papers.named("Gated Delta Networks: Improving Mamba2", said)  # its first two words
+    assert papers.named("Native Sparse Attention: Hardware-Aligned", "we read NSA")  # its initials
+    assert not papers.named("Kimi Linear: An Expressive, Efficient Attention Architecture", said)
 
 
 def test_notes_that_fail_can_be_written_again(client, llm, transcriber):
@@ -100,3 +201,13 @@ def test_a_replay_ticks_off_the_task_for_that_lecture(client, llm, transcriber):
     (pid,) = [r["id"] for r in con.execute("select id from proposals where summary like 'Mark “Watch%' and status = 'accepted'")]
     inbox.withdraw(con, pid)
     assert client.get(f"/api/tasks/{t1['id']}").json()["status"] == "open"
+
+
+def test_a_point_from_class_with_an_amount_class_never_said_is_left_out():
+    from app.lecture_notes import _drop_unsaid_numbers
+    said = "At sixty-four K the cache is about 5GB. Decoding takes most of the time. We got five percent."
+    notes = ("### GQA\n**In class**\n- The cache is ~5 GB at 64k.\n- Loading it takes 70-80% of decoding time.\n- Uptraining costs 5% of compute.\n"
+             "**From the paper**\n- Loading it takes 70-80% of decoding time.\n## Background\n### From class\n- Attention is $O(N^2)$; a 10x cache.\n")
+    assert _drop_unsaid_numbers(notes, said) == (
+        "### GQA\n**In class**\n- The cache is ~5 GB at 64k.\n- Uptraining costs 5% of compute.\n"
+        "**From the paper**\n- Loading it takes 70-80% of decoding time.\n## Background\n### From class")

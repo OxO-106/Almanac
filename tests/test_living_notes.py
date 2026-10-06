@@ -5,13 +5,18 @@ import json
 from test_live_recording import send, tone, wait_for
 
 NOTES = ("## Grouped-query attention\n✎ KV cache!!\n- Keys and values are shared across groups of heads.\n- It shrinks the KV cache.\n\n"
-         "## Mamba\n- A state-space model with selective scan.\n\n## Announced\n- Read the Mamba paper for Monday.")
+         "## Mamba\n- A state-space model with selective scan.\n\n## Announced\n- Read the Mamba paper: “Read the Mamba paper for Monday”")
+READING = {"kind": "task", "title": "Read the Mamba paper", "quote": "Read the Mamba paper for Monday",
+           "when": {"type": "weekday", "weekday": "MO", "next_week": True}, "clear": True}
 
 
 def lecture(client, llm, transcriber, course=None, day="2026-09-28", notes=NOTES):
-    llm.notes = [notes]
+    # the model writes the notes; the Announced section is made from what announcements.find quoted
+    llm.notes = [notes.split("\n\n## Announced\n")[0]]
+    llm.announced = [json.dumps({"items": [READING] if "## Announced" in notes else []})]
     transcriber.segments = [{"start": 0.0, "end": 30.0, "text": "Grouped-query attention shares keys and values across groups."},
-                            {"start": 30.0, "end": 60.0, "text": "That shrinks the KV cache a lot. GQA interpolates between MHA and MQA."}]
+                            {"start": 30.0, "end": 60.0, "text": "That shrinks the KV cache a lot. GQA interpolates between MHA and MQA."},
+                            {"start": 60.0, "end": 65.0, "text": "Read the Mamba paper for Monday."}]
     rid = client.post("/api/recordings/start", json={"course_id": course, "date": day}).json()["id"]
     send(client, rid, 0, tone(1))
     client.post(f"/api/recordings/{rid}/jottings", json={"at": 31, "text": "KV cache!!"})

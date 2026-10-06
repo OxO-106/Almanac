@@ -19,14 +19,14 @@ START_TIMEOUT = 90  # seconds: loading the model onto the GPU
 
 
 class Parakeet:
-    def __init__(self, port: int = PORT):
+    def __init__(self, port: int = PORT, engine: str = "parakeet", python: Path = PYTHON):
         self.url = f"http://127.0.0.1:{port}"
-        self.port = port
+        self.port, self.engine, self.python = port, engine, python
         self._starting = threading.Lock()
         self._client = httpx.Client()  # one kept-alive connection: Captions call it every second
 
     def status(self) -> dict:
-        if not PYTHON.exists():
+        if not self.python.exists():
             return {"ready": False, "message": "The speech environment (.venv-asr) isn't installed."}
         try:
             httpx.get(f"{self.url}/health", timeout=2).raise_for_status()
@@ -42,10 +42,10 @@ class Parakeet:
                 return
             except httpx.HTTPError:
                 pass
-            if not PYTHON.exists():
+            if not self.python.exists():
                 raise RuntimeError("The speech environment (.venv-asr) isn't installed.")
             flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            proc = subprocess.Popen([str(PYTHON), str(WORKER), str(self.port)], cwd=ROOT, creationflags=flags,
+            proc = self.proc = subprocess.Popen([str(self.python), str(WORKER), str(self.port), self.engine], cwd=ROOT, creationflags=flags,
                                     stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             deadline = time.time() + START_TIMEOUT
             while time.time() < deadline:
@@ -70,13 +70,13 @@ class Parakeet:
             raise RuntimeError(r.json().get("error") or r.text)
         return r.json()
 
-    def window(self, pcm16: bytes) -> str:
+    def window(self, pcm16: bytes, context: str = "") -> str:
         """Text of a few seconds of 16 kHz mono int16 audio (Captions)."""
-        return self._post("/window", 30, content=pcm16)["text"]
+        return self._post("/window", 30, content=pcm16, params={"context": context} if context else None)["text"]
 
-    def file(self, path) -> tuple[list[dict], float]:
+    def file(self, path, context: str = "") -> tuple[list[dict], float]:
         """([{"start", "end", "text"}], seconds) for a whole audio or video file."""
-        r = self._post("/file", 1800, json={"path": str(Path(path).resolve())})
+        r = self._post("/file", 1800, json={"path": str(Path(path).resolve()), "context": context})
         return r["segments"], r["seconds"]
 
 

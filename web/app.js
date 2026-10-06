@@ -264,7 +264,7 @@ views.today = async () => {
   const todays = [...t.overdue, ...t.tasks, ...t.done];
   const notify = !["localhost", "127.0.0.1"].includes(location.hostname) && !pushOn() && "Notification" in window && Notification.permission === "default";
   if (n.written_by === "plain") setTimeout(() => location.hash.startsWith("#today") || !location.hash ? refreshNote() : 0, 15000);
-  return `<div class="page">
+  return `<div class="page today-page">
     <header class="head">
       <div class="dateline">${esc(fmtLong(t.date))}${week ? ` · ${week}` : ""}</div>
       <h1 id="note-h">${esc(n.headline)}</h1>
@@ -608,7 +608,7 @@ views.inbox = async () => {
     <div class="group-head"><h2>${esc(g.source?.title || "From planning")}</h2>
       ${g.source && g.items.length > 1 ? `<button class="btn small" onclick="acceptAll(${g.source.id})">Add all ${g.items.length}</button>` : ""}</div>
     ${g.items.map(card).join("")}</section>`).join("");
-  return `<div class="page">
+  return `<div class="page suggestions-page">
     <header class="head"><h1>Suggestions</h1>
       <p class="voice small">${ready.length ? `${ready.length} thing${ready.length > 1 ? "s" : ""} I'd like to add. Nothing changes until you say yes.` : "Nothing waiting. Send me a syllabus or tell me in Chat, and I'll suggest what to add."}</p></header>
     <section>
@@ -876,16 +876,17 @@ views.course = async (id) => {
       <div class="row-actions"><button class="btn small" onclick='edit("courses", ${id})'>Edit course</button></div></header>
     ${meets.length ? `<section><h2>Class</h2>${meets.map(e => `<div class="when-row"><span class="when">${esc(e.repeat.split(",").map(x => x[0] + x[1].toLowerCase()).join("/"))}</span>
       <a class="what" onclick='edit("events", ${e.id})'>${esc(fmtTime(e.start))}${e.end ? `–${esc(fmtTime(e.end))}` : ""}${e.location ? ` · ${esc(e.location)}` : ""}</a></div>`).join("")}</section>` : ""}
-    <section><h2>Coming up</h2>
-      ${upcoming.map(x => `<div class="when-row"><span class="when ${x.kind === "deadlines" ? "due" : ""}">${x.at === "9999" ? "No date" : esc(fmtDay(x.at))}</span>
-        <a class="what" onclick='edit("${x.kind}", ${x.id})'>${x.kind === "deadlines" ? "Due: " : ""}${esc(x.title)}</a></div>`).join("") || `<p class="empty">Nothing coming up.</p>`}</section>
-    ${projects.length ? `<section><h2>Projects</h2>${projects.map(p => `<div class="when-row"><span class="when">${p.deadline ? esc(fmtDay(p.deadline)) : ""}</span>
-      <a class="what" onclick='edit("projects", ${p.id})'>${esc(p.title)}</a></div>`).join("")}</section>` : ""}
     <section><div class="group-head"><h2>Lectures</h2>
       <a class="btn small" href="#record/${id}">Record a lecture</a>
       <label class="btn small quiet" title="A recording made with the laptop's recorder, a phone voice memo or a Zoom download">Upload a recording
         <input type="file" accept="audio/*,video/*" hidden onchange="uploadRecording(${id}, this.files)"></label></div>
       ${lectures.map(lectureRow).join("") || `<p class="empty">No lectures yet. Upload a recording, and I'll write it up as a clean transcript.</p>`}</section>
+    <section><h2>Coming up</h2>
+      ${upcoming.map(x => `<div class="when-row"><span class="when ${x.kind === "deadlines" ? "due" : ""}">${x.at === "9999" ? "No date" : esc(fmtDay(x.at))}</span>
+        <a class="what" onclick='edit("${x.kind}", ${x.id})'>${x.kind === "deadlines" ? "Due: " : ""}${esc(x.title)}</a></div>`).join("") || `<p class="empty">Nothing coming up.</p>`}</section>
+    ${projects.length ? `<section><h2>Projects</h2>${projects.map(p => `<div class="when-row"><span class="when">${p.deadline ? esc(fmtDay(p.deadline)) : ""}</span>
+      <a class="what" onclick='edit("projects", ${p.id})'>${esc(p.title)}</a></div>`).join("")}</section>` : ""}
+
   </div>`;
 };
 
@@ -966,6 +967,56 @@ function notesMd(text) {
   return box.innerHTML;
 }
 
+// Reading preferences stay on this browser; the Markdown itself is unchanged.
+const NOTES_DEFAULTS = { size: 16, lineHeight: 1.6, spacing: 6 };
+const NOTES_RANGES = { size: [12, 28, 1], lineHeight: [1.2, 2.4, .1], spacing: [0, 24, 1] };
+function normalizeNotesAppearance(value) {
+  const result = { ...NOTES_DEFAULTS };
+  for (const [key, [min, max, step]] of Object.entries(NOTES_RANGES)) {
+    if (typeof value?.[key] === "number" && Number.isFinite(value[key]))
+      result[key] = Number((Math.round(Math.max(min, Math.min(max, value[key])) / step) * step).toFixed(1));
+  }
+  return result;
+}
+let notesAppearance = { ...NOTES_DEFAULTS };
+const NOTES_APPEARANCE_KEY = "almanac.notesAppearance.v2";
+try {
+  const saved = localStorage.getItem(NOTES_APPEARANCE_KEY);
+  // Retain size and spacing from either version; obsolete font choices are ignored.
+  notesAppearance = normalizeNotesAppearance(JSON.parse(saved ?? localStorage.getItem("almanac.notesAppearance")));
+} catch { }
+function applyNotesAppearance() {
+  const style = document.documentElement.style;
+  style.setProperty("--notes-size", notesAppearance.size + "px");
+  style.setProperty("--notes-line-height", notesAppearance.lineHeight);
+  style.setProperty("--notes-spacing", notesAppearance.spacing + "px");
+}
+applyNotesAppearance();
+function updateNotesAppearance(key, value) {
+  notesAppearance = normalizeNotesAppearance({ ...notesAppearance, [key]: value });
+  applyNotesAppearance();
+  const output = $(`#notes-${key}-value`);
+  if (output) output.textContent = notesAppearance[key] + (key === "lineHeight" ? "×" : " px");
+  try { localStorage.setItem(NOTES_APPEARANCE_KEY, JSON.stringify(notesAppearance)); }
+  catch { toast("Appearance updated, but this browser couldn't save it for next time."); }
+}
+function resetNotesAppearance() {
+  notesAppearance = { ...NOTES_DEFAULTS };
+  updateNotesAppearance("size", NOTES_DEFAULTS.size);
+  $(".notes-appearance-controls").innerHTML = notesAppearanceControls();
+}
+function notesAppearanceControls() {
+  return `<p class="meta">Applies to all recording notes in this browser. Changes save automatically.</p>
+    <div class="notes-appearance-grid">
+      ${[["size", "Font size"], ["lineHeight", "Line height"], ["spacing", "Paragraph spacing"]].map(([key, label]) => {
+        const [min, max, step] = NOTES_RANGES[key];
+        return `<label for="notes-${key}">${label} <output id="notes-${key}-value" for="notes-${key}">${notesAppearance[key]}${key === "lineHeight" ? "×" : " px"}</output>
+          <input id="notes-${key}" type="range" min="${min}" max="${max}" step="${step}" value="${notesAppearance[key]}"
+            oninput="updateNotesAppearance('${key}', Number(this.value))"></label>`;
+      }).join("")}
+    </div><button type="button" class="btn quiet small" onclick="resetNotesAppearance()">Reset appearance</button>`;
+}
+
 views.lecture = async (id) => {
   const r = await api(`/api/recordings/${id}`);
   const [box, questions] = await Promise.all([api("/api/inbox"), api("/api/questions"), loadLookups()]);
@@ -983,6 +1034,7 @@ views.lecture = async (id) => {
             placeholder="Ask for a change: shorter, add the derivation, bullets for one part…"><button class="btn small">Change</button></form>`}
       <div class="row-actions">${changing ? "" : `<button class="btn quiet small" onclick="editNotes(${r.id})">Edit</button>`}
         ${r.undo && !changing ? `<button class="btn quiet small" onclick="undoNotes(${r.id})">${ICON.undo} Undo ${esc(r.undo)}</button>` : ""}</div>
+      <details class="notes-appearance"><summary>Appearance</summary><div class="notes-appearance-controls">${notesAppearanceControls()}</div></details>
       ${r.notes_error && r.notes_status === "done" ? `<div class="notice">${esc(r.notes_error)}</div>` : ""}</div>`;
   const notes = r.notes && editingNotes === r.id ? `<section class="notes-edit"><textarea id="notes-text" spellcheck="true">${esc(r.notes)}</textarea>
       <p class="meta">“## ” starts a section, “- ” a point (two spaces more for a sub-point), “✎ ” one of your own lines.</p>
@@ -1003,7 +1055,8 @@ views.lecture = async (id) => {
       ${r.kind_name ? `<p class="voice small">${esc(r.kind_name)}${r.papers.length ? `: ${r.papers.map(esc).join("; ")}` : ""}</p>` : ""}
       ${r.status === "done" && r.transcript ? `<p class="voice small">${Math.max(1, Math.round(r.seconds / 60))} minute${Math.round(r.seconds / 60) > 1 ? "s" : ""}.
         ${r.notes ? "Lines marked ✎ are yours. " : ""}Underlined words are ones I'm not sure were heard right.</p>
-        <div class="row-actions"><button class="btn quiet small" onclick="deleteTranscript(${r.id})">Delete transcript</button></div>` : ""}</header>
+        <div class="row-actions"><button class="btn quiet small" onclick="deleteTranscript(${r.id})">Delete transcript</button>
+          ${r.same_day.map(o => `<button class="btn quiet small" onclick="joinLecture(${r.id}, ${o.id})">Join with the ${esc(o.at)} recording (${Math.max(1, Math.round(o.seconds / 60))} min)</button>`).join("")}</div>` : ""}</header>
     ${r.jottings.length && !r.notes ? `<section><h2>Your jottings</h2>${r.jottings.map(j => `<div class="jotting"><span class="ts">${mmss(j.at)}</span>
       <span class="what">${j.text ? esc(j.text) : `<i class="mark">Marked</i>`}</span></div>`).join("")}</section>` : ""}
     ${forPlan}
@@ -1048,6 +1101,13 @@ async function retryNotes(id) {
 async function deleteTranscript(id) {
   if (!confirm("Delete this transcript? The lecture stays in the list; the text can't be brought back (the audio is already gone).")) return;
   await api(`/api/recordings/${id}/transcript`, { method: "DELETE" });
+  render();
+}
+
+async function joinLecture(id, other) {
+  if (!confirm("Join these two recordings into one lecture? The earlier one keeps the lecture; its notes are written again from both transcripts.")) return;
+  try { const r = await send("POST", `/api/recordings/${id}/join`, { with: other }); location.hash = `#lecture/${r.id}`; }
+  catch (e) { toast(esc(detail(e))); }
   render();
 }
 
@@ -1297,7 +1357,7 @@ async function drawView(n) {
 
 let seenVersion = null;
 const planVersion = () => api("/api/version").then(r => r.v).catch(() => seenVersion);
-const busy = () => !!(sending || /^#(record|follow)/.test(location.hash) || $("#say")?.value ||$("#editor")?.open || editingNotes !== null && location.hash.startsWith("#lecture/") || ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName));
+const busy = () => !!(sending || /^#(record|follow)/.test(location.hash) || $("#say")?.value ||$("#editor")?.open || $(".notes-appearance[open]") || editingNotes !== null && location.hash.startsWith("#lecture/") || ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName));
 
 async function stayCurrent() {
   if (document.visibilityState !== "visible" || seenVersion === null) return;

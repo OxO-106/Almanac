@@ -63,11 +63,26 @@ team meetings) are out of scope: consent.
 - **Lecture notes**, built on the Jottings: the student's lines kept as written
   (shown as theirs) and filled in from the Transcript, plus what they didn't
   jot. Keep everything important; length doesn't matter (one-pagers and other
-  artifacts come later). They end with what was announced. By Lecture kind:
-  - **Paper session** (CS 259, both CS 239s this quarter): per paper, the
-    presenter's points (problem, method, results, limits), each question and
-    its answer, and connections between papers: those said in the room, and
-    the assistant's own from the reading list, labelled as such.
+  artifacts come later). They end with what was announced, if anything was. By Lecture kind:
+  - **Paper session** (CS 259, both CS 239s this quarter), in this order
+    (changed 2026-10-06 at the student's request): **Takeaways** of each of
+    the lecture's papers, also those not presented; a **Comparison** table of
+    all of them; their **Connections** (each says whether it was stated in
+    class or in a paper); **Background** from class and from the papers;
+    **Questions** asked in class with their answers; a one-paragraph
+    **Summary** of the lecture; **Announced**, only if anything was. What a
+    paper says comes from Papercut's library, read-only (`app/papers.py`:
+    its abstract, summary and section headings); a paper not in the library
+    is known by its title only.
+    What must be true is settled by code (2026-10-06, after the model invented
+    an assignment, office hours and a Q&A answer): class notes are written from
+    the Transcript alone, then composed with the papers (Takeaways split into
+    **In class** / **From the paper**); a paper the Transcript never names is
+    marked "Not presented in class"; each Question's words, and its answer's,
+    must be found in the Transcript, followed by **From the paper**, an answer
+    from the paper's own passages, quoted and checked; **Announced** is built
+    from `announcements.find` (the same quote-checked items that become
+    Proposals), never written by the notes model.
   - **Concept lecture** (CS 269): concepts, definitions, walk-throughs.
   - **Presentation day**: feedback on the student's own work (actionable
     points become Proposals), a line or two on each other project.
