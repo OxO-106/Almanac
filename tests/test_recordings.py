@@ -202,3 +202,66 @@ def test_a_save_that_changed_nothing_doesnt_stop_a_join_and_old_undo_history_goe
     client.put(f"/api/recordings/{a}/notes", json={"notes": notes})  # Edit, Save, nothing typed
     assert client.post(f"/api/recordings/{b}/join", json={"with": a}).status_code == 202
     assert client.get(f"/api/recordings/{a}").json()["undo"] is None
+
+
+# ---- a transcript made elsewhere (Zoom) ---------------------------------------
+
+VTT = """WEBVTT
+
+1
+00:00:01.200 --> 00:00:04.500
+Miodrag Potkonjak: Okay, I will slowly start.
+
+2
+00:00:04.500 --> 00:00:12.000
+Miodrag Potkonjak: It is Computer Science 259, Seminal Achievement in Computer Science.
+
+3
+00:00:31.000 --> 00:00:36.000
+Jane Doe: Will the slides be posted?
+"""
+
+
+def a_transcript(client, course_id, **kw):
+    r = client.post(f"/api/recordings/transcript?course_id={course_id}&date=2026-09-30", **kw)
+    assert r.status_code == 202, r.text
+    return client.get(f"/api/recordings/{r.json()['id']}").json()
+
+
+def test_a_zoom_transcript_is_cleaned_and_written_up_without_audio(client, llm, transcriber):
+    course = a_course(client, llm)
+    llm.replies = [json.dumps({"segments": [
+        {"n": 0, "text": "Okay, I will slowly start. It is Computer Science 259, Seminal Achievement in Computer Science."},
+        {"n": 1, "text": "Will the slides be posted?"}]})]
+    rec = a_transcript(client, course, files={"file": ("GMT20260930-Recording.transcript.vtt", VTT.encode("utf-8-sig"), "text/vtt")})
+    assert transcriber.files == []  # nothing to transcribe
+    assert rec["status"] == "done" and rec["date"] == "2026-09-30" and rec["seconds"] == 36.0
+    assert [(s["start"], s["end"]) for s in rec["transcript"]] == [(1.2, 12.0), (31.0, 36.0)]
+    sent = llm.requests[-1]["messages"][1]["content"]
+    assert "Okay, I will slowly start." in sent and "Potkonjak:" not in sent and "Jane Doe" not in sent  # speakers by role only
+    assert "Miodrag Potkonjak" in llm.requests[-1]["messages"][0]["content"]  # the vocabulary still goes to the clean-up
+    titles = [n["title"] for n in client.get("/api/notifications").json()]
+    assert "Transcript ready" in titles and "Lecture notes ready" in titles
+
+
+def test_zoom_saved_text_and_pasted_lines_are_read_too():
+    saved = "[Miodrag Potkonjak] 14:02:03\nOkay, I will slowly start.\n\n[Miodrag Potkonjak] 14:02:40\nSo let me start.\n"
+    assert recordings.read_transcript(saved) == ([{"start": 0.0, "end": 37.0, "text": "Okay, I will slowly start."},
+                                                  {"start": 37.0, "end": 38.6, "text": "So let me start."}], 38.6)
+    pasted = "* Okay, I will slowly start.\n* So, welcome to… This class is online.\n"
+    segments, seconds = recordings.read_transcript(pasted)
+    assert seconds is None  # no times in it: the length isn't known
+    assert [s["text"] for s in segments] == ["Okay, I will slowly start. So, welcome to… This class is online."]
+
+
+def test_a_pasted_transcript_is_taken_and_a_wrong_one_is_refused(client, llm, transcriber):
+    course = a_course(client, llm)
+    llm.replies = [json.dumps({"segments": [{"n": 0, "text": "Okay, I will slowly start."}]})]
+    rec = a_transcript(client, course, data={"text": "* Okay, I will slowly start.\n"})
+    assert rec["status"] == "done" and rec["seconds"] is None
+    assert client.get("/api/notifications").json()[-2]["body"].endswith("transcript cleaned up. Writing the notes now.")
+    bad = [{"files": {"file": ("talk.docx", b"PK", "application/octet-stream")}}, {"data": {"text": "  "}},
+           {"files": {"file": ("talk.txt", "WEBVTT\n\n1\n".encode(), "text/plain")}}, {"files": {"file": ("talk.txt", b"\xff\xfe\x00x", "text/plain")}}]
+    for kw in bad:
+        r = client.post(f"/api/recordings/transcript?course_id={course}", **kw)
+        assert r.status_code == 422, (kw, r.text)

@@ -182,6 +182,22 @@ def test_the_models_guesses_about_meaning_are_taken_out(client, llm, transcriber
     assert rec["notes"] == '## Patents\n- Apple\'s patent for "penny-free climbs" is an example.'
 
 
+def test_the_models_own_instructions_copied_into_the_notes_are_taken_out(client, llm, transcriber):
+    # CS 259, 2026-10-06: the combined notes ended with the combine prompt's rules
+    segments = [{"start": m * 60.0, "end": m * 60.0 + 60, "text": f"Minute {m} of the lecture."} for m in range(50)]
+    llm.notes = ["part one", "part two", "## Upcoming lecture topics\n- Next Monday: Nobel Prizes.\n\n"
+                 "- Keep every point and every detail; only merge what repeats and reorganize into the structure below. "
+                 "Don't add anything that isn't in the part notes or in the papers' information given.\n"
+                 '  - Markdown: "## " for sections, "### " for subsections, "- " for points (indent sub-points by two spaces). '
+                 "A table only where it compares things side by side. Math as LaTeX: inline between single dollar signs, "
+                 "e.g. $K_i \\cdot K_j = 0$; a formula on its own line between double dollar signs.\n"
+                 '  - This was a lecture teaching concepts. Organize by concept ("## " + the concept), with its definition, '
+                 "the reasoning or derivation walked through step by step, and the examples given.\n\n"
+                 "- Students should keep every point of their reports short."]
+    rec = lecture(client, transcriber, segments, kind="concept_lecture")
+    assert rec["notes"] == "## Upcoming lecture topics\n- Next Monday: Nobel Prizes.\n\n- Students should keep every point of their reports short."
+
+
 def test_a_replay_ticks_off_the_task_for_that_lecture(client, llm, transcriber):
     cid = client.post("/api/courses", json={"number": "CS 269", "instructor": "Stefano Soatto"}).json()["id"]
     t1 = client.post("/api/tasks", json={"title": "Watch the CS 269 recording", "due": "2026-10-06", "course_id": cid}).json()

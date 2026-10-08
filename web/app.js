@@ -879,7 +879,8 @@ views.course = async (id) => {
     <section><div class="group-head"><h2>Lectures</h2>
       <a class="btn small" href="#record/${id}">Record a lecture</a>
       <label class="btn small quiet" title="A recording made with the laptop's recorder, a phone voice memo or a Zoom download">Upload a recording
-        <input type="file" accept="audio/*,video/*" hidden onchange="uploadRecording(${id}, this.files)"></label></div>
+        <input type="file" accept="audio/*,video/*" hidden onchange="uploadRecording(${id}, this.files)"></label>
+      <button class="btn small quiet" title="Zoom's transcript (.vtt, or the saved .txt), or its text pasted in" onclick="uploadTranscript(${id})">Upload a transcript</button></div>
       ${lectures.map(lectureRow).join("") || `<p class="empty">No lectures yet. Upload a recording, and I'll write it up as a clean transcript.</p>`}</section>
     <section><h2>Coming up</h2>
       ${upcoming.map(x => `<div class="when-row"><span class="when ${x.kind === "deadlines" ? "due" : ""}">${x.at === "9999" ? "No date" : esc(fmtDay(x.at))}</span>
@@ -895,7 +896,7 @@ views.course = async (id) => {
 const LECTURE_STATUS = { transcribing: "transcribing…", cleaning: "cleaning up the text…", failed: "couldn't transcribe" };
 const mmss = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 const lectureRow = r => `<div class="when-row"><span class="when">${esc(fmtDay(r.date))}</span>
-  <a class="what" href="#lecture/${r.id}">${r.kind_name ? `${esc(r.kind_name)} · ` : ""}${r.status === "done" ? (r.transcript ? `${Math.max(1, Math.round(r.seconds / 60))} min transcript` : "Transcript deleted")
+  <a class="what" href="#lecture/${r.id}">${r.kind_name ? `${esc(r.kind_name)} · ` : ""}${r.status === "done" ? (r.transcript ? (r.seconds ? `${Math.max(1, Math.round(r.seconds / 60))} min transcript` : "Transcript") : "Transcript deleted")
     : `${r.status === "failed" ? "" : `<span class="spin"></span> `}${esc(LECTURE_STATUS[r.status] || r.status)}`}</a></div>`;
 
 async function uploadRecording(courseId, files) {
@@ -908,6 +909,34 @@ async function uploadRecording(courseId, files) {
   const r = await fetch(`/api/recordings?course_id=${courseId}&date=${day}`, { method: "POST", body });
   toast(r.ok ? `Transcribing ${esc(f.name)}. I'll let you know when the transcript is ready; the audio is deleted once it is.` : esc(detail(new Error(`${r.status} ${await r.text()}`))));
   render();
+}
+
+// A transcript made elsewhere (Zoom): a file or pasted text, and the lecture's date,
+// asked because a downloaded file's date is the download's, not the lecture's.
+function uploadTranscript(courseId) {
+  const dlg = $("#editor"), d = new Date(), today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  dlg.innerHTML = `<form method="dialog">
+    <h2>Upload a transcript</h2>
+    <p class="why">Zoom's transcript (.vtt, or the saved .txt). I'll clean it up against the course's names and terms, then write the notes.</p>
+    <label>File<input type="file" name="file" accept=".vtt,.srt,.txt"></label>
+    <label>Or paste the text<textarea name="text" rows="6"></textarea></label>
+    <label>Lecture date<input type="date" name="date" value="${today}" required></label>
+    <p class="error" hidden></p>
+    <div class="actions"><span class="grow"></span>
+      <button type="button" class="btn" data-act="cancel">Cancel</button><button class="btn primary">Upload</button></div></form>`;
+  const form = $("form", dlg);
+  $("[data-act=cancel]", form).onclick = () => dlg.close();
+  form.onsubmit = async e => {
+    e.preventDefault();
+    const body = new FormData(), f = form.file.files[0];
+    if (f) body.append("file", f); else body.append("text", form.text.value);
+    const r = await fetch(`/api/recordings/transcript?course_id=${courseId}&date=${form.date.value}`, { method: "POST", body });
+    if (!r.ok) { const p = $(".error", form); p.hidden = false; p.textContent = detail(new Error(`${r.status} ${await r.text()}`)); return; }
+    dlg.close();
+    toast(`Cleaning up ${esc(f ? f.name : "the transcript")}. I'll let you know when the notes are ready.`);
+    render();
+  };
+  dlg.showModal();
 }
 
 // "[?]": a word the transcript isn't sure of, underlined rather than asked about
@@ -1053,10 +1082,10 @@ views.lecture = async (id) => {
     <header class="head"><div class="dateline">${course ? `<a href="#course/${course.id}">${esc(course.number)} · ${esc(course.instructor)}</a>` : "Lecture"}</div>
       <h1>${esc(fmtLong(r.date))}</h1>
       ${r.kind_name ? `<p class="voice small">${esc(r.kind_name)}${r.papers.length ? `: ${r.papers.map(esc).join("; ")}` : ""}</p>` : ""}
-      ${r.status === "done" && r.transcript ? `<p class="voice small">${Math.max(1, Math.round(r.seconds / 60))} minute${Math.round(r.seconds / 60) > 1 ? "s" : ""}.
+      ${r.status === "done" && r.transcript ? `<p class="voice small">${r.seconds ? `${Math.max(1, Math.round(r.seconds / 60))} minute${Math.round(r.seconds / 60) > 1 ? "s" : ""}. ` : ""}
         ${r.notes ? "Lines marked ✎ are yours. " : ""}Underlined words are ones I'm not sure were heard right.</p>
         <div class="row-actions"><button class="btn quiet small" onclick="deleteTranscript(${r.id})">Delete transcript</button>
-          ${r.same_day.map(o => `<button class="btn quiet small" onclick="joinLecture(${r.id}, ${o.id})">Join with the ${esc(o.at)} recording (${Math.max(1, Math.round(o.seconds / 60))} min)</button>`).join("")}</div>` : ""}</header>
+          ${r.same_day.map(o => `<button class="btn quiet small" onclick="joinLecture(${r.id}, ${o.id})">Join with the ${esc(o.at)} recording${o.seconds ? ` (${Math.max(1, Math.round(o.seconds / 60))} min)` : ""}</button>`).join("")}</div>` : ""}</header>
     ${r.jottings.length && !r.notes ? `<section><h2>Your jottings</h2>${r.jottings.map(j => `<div class="jotting"><span class="ts">${mmss(j.at)}</span>
       <span class="what">${j.text ? esc(j.text) : `<i class="mark">Marked</i>`}</span></div>`).join("")}</section>` : ""}
     ${forPlan}

@@ -172,6 +172,7 @@ def write(llm, con, rec, segments, jots, announced=()) -> str:
             notes = llm.chat([{"role": "system", "content": COMBINE + "\n" + KIND_RULES.get(kind, KIND_RULES[None])},
                               {"role": "user", "content": context + "\n\n" + _combined(_part_notes(llm, context, parts, jots))}],
                              temperature=0, max_tokens=12000, timeout=1200)
+    notes = _drop_instructions(notes)
     # the model's guesses about what was meant aren't what was said: "(likely referring to touch interfaces)"
     notes = re.sub(r"\s*\((?:likely|probably|possibly|presumably|perhaps)\b[^)]*\)", "", notes, flags=re.I)
     # what was announced is only what announcements.find quoted from the Transcript
@@ -179,6 +180,16 @@ def write(llm, con, rec, segments, jots, announced=()) -> str:
     if announced:
         notes += "\n\n## Announced\n" + "\n".join(f"- {ingest.capitalize(a['title'].strip())}: “{a['quote'].strip()}”" for a in announced)
     return _keep_jottings(notes.strip(), jots, segments)
+
+
+def _drop_instructions(notes: str) -> str:
+    """Lines the model copied from its own instructions aren't notes (it once
+    ended a lecture's notes with the combine prompt's rules)."""
+    norm = lambda t: re.sub(r"\s+", " ", re.sub(r"^\s*(?:[-*]|\d+[.)])\s+", "", t)).strip().lower()
+    rules = {norm(l) for p in (COMMON, COMBINE, PAPER_SESSION, CHANGE_PROMPT, *KIND_RULES.values()) for l in p.splitlines()}
+    rules = {r for r in rules if len(r) >= 40}
+    copied = lambda n: len(n) >= 40 and any(n in r or r in n for r in rules)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(l for l in notes.splitlines() if not copied(norm(l))))
 
 
 def _paper_session(llm, con, rec, segments, parts, jots) -> str:
@@ -653,7 +664,7 @@ def change(con, llm, clock, rec_id, request: str) -> dict:
                                 + (f"Transcript:\n{_transcript_for(segments, request)}\n\n" if segments else "")
                                 + f"The student asks: {request}"}],
                               schema=CHANGE_SCHEMA, temperature=0, max_tokens=10000, timeout=1200))
-    new = apply_sections(old, got.get("sections") or [])
+    new = _drop_instructions(apply_sections(old, got.get("sections") or []))
     new = re.sub(r"\s*\((?:likely|probably|possibly|presumably|perhaps)\b[^)]*\)", "", new, flags=re.I)
     # what the lecture didn't cover is for the summary, not a point in the notes
     had = set(old.splitlines())

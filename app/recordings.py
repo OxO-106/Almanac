@@ -5,7 +5,8 @@ The final pass: the transcriber (Parakeet) turns the audio into timed
 segments, the audio is deleted, then the model cleans the text a few segments
 at a time (fillers, stutters and repeats out, broken sentences completed),
 correcting names and terms against the course's vocabulary. The uncleaned
-text is kept only until the clean-up is done."""
+text is kept only until the clean-up is done. A transcript made elsewhere
+(Zoom's) skips the transcriber: its text becomes the segments."""
 import json
 import re
 import threading
@@ -16,7 +17,7 @@ from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Form, HTTPException, Request, UploadFile
 
 from . import papers, plan
 from .clock import local
@@ -25,6 +26,7 @@ from .scheduler import WATCHERS, notify
 
 router = APIRouter(prefix="/api")
 
+TRANSCRIPT = {".vtt", ".srt", ".txt"}
 AUDIO = {".m4a", ".mp3", ".wav", ".webm", ".ogg", ".opus", ".flac", ".aac", ".mp4", ".mov", ".mkv"}
 CHUNK_CHARS = 2500  # uncleaned text per clean-up call: a few minutes of speech
 KEPT = 0.5          # a cleaned segment keeping fewer of its words than this lost content: the uncleaned one is used
@@ -201,24 +203,92 @@ def _delete(path: Path):
     print(f"couldn't delete {path} yet; it goes at the next start")
 
 
+# ---- a transcript made elsewhere (Zoom) ---------------------------------------
+# WebVTT and SRT (Zoom's cloud-recording transcript) carry times; Zoom's saved
+# .txt has "[Name] 14:02:33" before each turn; pasted lines may have none, and
+# then times are estimated from the words (they only order and group the text).
+# Speaker names are dropped: speakers are by role only (spec).
+
+_CUE = re.compile(r"^(?:(\d+):)?(\d{1,2}):(\d{2})[.,](\d{1,3})\s*-->\s*(?:(\d+):)?(\d{1,2}):(\d{2})[.,](\d{1,3})")
+_TURN = re.compile(r"^\[[^\]]+\]\s+(\d{1,2}):(\d{2}):(\d{2})\s*$")  # Zoom's saved transcript: "[Name] 14:02:33"
+_SPEAKER = re.compile(r"^(?:[A-Z][\w'.-]*\s){0,3}[A-Z][\w'.-]*:\s+")    # "Miodrag Potkonjak: what was said"
+_BULLET = re.compile(r"^(?:[*•-]|\d+[.)])\s+")
+WORDS_PER_SECOND = 2.5  # speaking pace, for a transcript without times
+SEGMENT = 20.0          # seconds per segment, as the transcriber cuts audio
+
+
+def read_transcript(text: str) -> tuple[list[dict], float | None]:
+    """A transcript file's text → (segments of about SEGMENT seconds, the
+    lecture's length in seconds, or None when the file has no times)."""
+    cues = []  # [start or None, end or None, what was said]
+    first_turn = None
+    for line in text.replace("﻿", "").splitlines():
+        line = line.strip()
+        if m := _CUE.match(line):
+            g = [int(x or 0) for x in m.groups()]
+            cues.append([g[0] * 3600 + g[1] * 60 + g[2] + g[3] / 1000, g[4] * 3600 + g[5] * 60 + g[6] + g[7] / 1000, ""])
+        elif m := _TURN.match(line):
+            t = int(m[1]) * 3600 + int(m[2]) * 60 + int(m[3])
+            first_turn = t if first_turn is None else first_turn
+            cues.append([float(t - first_turn), None, ""])
+        elif not line or line == "WEBVTT" or line.isdigit() or line.startswith(("NOTE", "Kind:", "Language:")):
+            continue
+        else:
+            said = _SPEAKER.sub("", _BULLET.sub("", line), count=1)
+            if not cues or (cues[-1][0] is None and cues[-1][2]):
+                cues.append([None, None, ""])  # untimed: each line is a cue
+            cues[-1][2] = f"{cues[-1][2]} {said}".strip()
+    cues = [c for c in cues if c[2]]
+    if not cues:
+        raise ValueError("No text was found in the transcript.")
+    timed = cues[0][0] is not None
+    at = 0.0
+    for i, c in enumerate(cues):
+        if not timed:
+            c[0] = at
+        at = c[0] + len(c[2].split()) / WORDS_PER_SECOND
+        if c[1] is None:
+            c[1] = cues[i + 1][0] if timed and i + 1 < len(cues) else at
+    segments = []
+    for start, end, said in cues:
+        if segments and start - segments[-1]["start"] < SEGMENT:
+            segments[-1]["end"], segments[-1]["text"] = round(end, 2), f"{segments[-1]['text']} {said}"
+        else:
+            segments.append({"start": round(start, 2), "end": round(end, 2), "text": said})
+    return segments, (segments[-1]["end"] if timed else None)
+
+
 def finalize(con, llm, clock, transcriber, rec_id, audio: Path):
     """The final pass for one Recording. The audio is deleted whatever happens."""
-    rec = con.execute("select * from recordings where id = ?", (rec_id,)).fetchone()
-    label = _label(con, rec)
-    try:
+    def read():
         try:
             segments, seconds = transcriber.file(audio)
         finally:
             _delete(Path(audio))  # ADR 0001: the audio never outlives transcription
         if not segments:
             raise ValueError("No speech was found in the recording.")
+        return segments, seconds
+    _final_pass(con, llm, clock, rec_id, read)
+
+
+def finalize_transcript(con, llm, clock, rec_id, text: str):
+    """The final pass for a transcript made elsewhere: no transcriber; clean-up and notes as for audio."""
+    _final_pass(con, llm, clock, rec_id, lambda: read_transcript(text), "read")
+
+
+def _final_pass(con, llm, clock, rec_id, read, verb="transcribe"):
+    rec = con.execute("select * from recordings where id = ?", (rec_id,)).fetchone()
+    label = _label(con, rec)
+    try:
+        segments, seconds = read()
         _set(con, rec_id, status="cleaning", seconds=seconds, pending=json.dumps(segments))
         done = clean(llm, segments, vocabulary(con, rec["course_id"]))
         _set(con, rec_id, status="done", transcript=json.dumps(done), pending=None)
         with WRITE:
             con.execute("update sources set text = ?, status = 'done' where id = ?",
                         ("\n".join(s["text"] for s in done), rec["source_id"]))
-        notify(con, clock, "recording", "Transcript ready", f"{label}: {round(seconds / 60)} min transcribed. Writing the notes now.",
+        notify(con, clock, "recording", "Transcript ready",
+               f"{label}: {f'{round(seconds / 60)} min transcribed' if seconds else 'transcript cleaned up'}. Writing the notes now.",
                f"#lecture/{rec_id}")
         from . import lecture_notes  # it builds on this module
         lecture_notes.after_transcript(con, llm, clock, rec_id)
@@ -227,7 +297,7 @@ def finalize(con, llm, clock, transcriber, rec_id, audio: Path):
         _set(con, rec_id, status="failed", error=msg)
         with WRITE:
             con.execute("update sources set status = 'failed', error = ? where id = ?", (msg, rec["source_id"]))
-        notify(con, clock, "recording", f"Couldn't transcribe {label}", msg, f"#lecture/{rec_id}")
+        notify(con, clock, "recording", f"Couldn't {verb} {label}", msg, f"#lecture/{rec_id}")
 
 
 def _label(con, rec) -> str:
@@ -282,6 +352,24 @@ def get_suggestion(request: Request):
     return {**out, "kind": lk and lk["kind"], "papers": lk["papers"] if lk else []}
 
 
+def _new_recording(s, title, course_id, date, status) -> int:
+    if course_id is not None and not s.db.execute("select 1 from courses where id = ?", (course_id,)).fetchone():
+        raise HTTPException(404, "That course isn't in your plan.")
+    now = local(s.clock.now())
+    day = date or now.date().isoformat()
+    with WRITE:
+        src = s.db.execute("insert into sources (kind, title, text, status, created_at) values ('recording', ?, '', 'processing', ?)",
+                           (title, now.strftime("%Y-%m-%dT%H:%M"))).lastrowid
+        rid = s.db.execute("insert into recordings (source_id, course_id, date, status, created_at) values (?, ?, ?, ?, ?)",
+                           (src, course_id, day, status, now.strftime("%Y-%m-%dT%H:%M"))).lastrowid
+    rec = s.db.execute("select * from recordings where id = ?", (rid,)).fetchone()
+    lk = lecture_kind(s.db, course_id, day)
+    with WRITE:
+        s.db.execute("update sources set about = ? where id = ?", (_label(s.db, rec), src))
+        s.db.execute("update recordings set kind = ? where id = ?", (lk and lk["kind"], rid))
+    return rid
+
+
 @router.post("/recordings", status_code=202)
 async def upload(file: UploadFile, background: BackgroundTasks, request: Request, course_id: int | None = None,
                  date: str | None = None):
@@ -290,20 +378,7 @@ async def upload(file: UploadFile, background: BackgroundTasks, request: Request
     ext = Path(file.filename or "").suffix.lower()
     if ext not in AUDIO:
         raise HTTPException(422, f"Can't read {ext or 'that'} files as a recording. Upload audio or video ({', '.join(sorted(AUDIO))}).")
-    if course_id is not None and not s.db.execute("select 1 from courses where id = ?", (course_id,)).fetchone():
-        raise HTTPException(404, "That course isn't in your plan.")
-    now = local(s.clock.now())
-    day = date or now.date().isoformat()
-    with WRITE:
-        src = s.db.execute("insert into sources (kind, title, text, status, created_at) values ('recording', ?, '', 'processing', ?)",
-                           (file.filename, now.strftime("%Y-%m-%dT%H:%M"))).lastrowid
-        rid = s.db.execute("insert into recordings (source_id, course_id, date, status, created_at) values (?, ?, ?, 'transcribing', ?)",
-                           (src, course_id, day, now.strftime("%Y-%m-%dT%H:%M"))).lastrowid
-    rec = s.db.execute("select * from recordings where id = ?", (rid,)).fetchone()
-    lk = lecture_kind(s.db, course_id, day)
-    with WRITE:
-        s.db.execute("update sources set about = ? where id = ?", (_label(s.db, rec), src))
-        s.db.execute("update recordings set kind = ? where id = ?", (lk and lk["kind"], rid))
+    rid = _new_recording(s, file.filename, course_id, date, "transcribing")
     folder = s.db_path.parent / "recording-audio"
     folder.mkdir(exist_ok=True)
     audio = folder / f"{rid}{ext}"
@@ -312,6 +387,32 @@ async def upload(file: UploadFile, background: BackgroundTasks, request: Request
             out.write(chunk)
     background.add_task(finalize, s.db, s.llm, s.clock, s.transcriber, rid, audio)
     return {"id": rid, "status": "transcribing"}
+
+
+@router.post("/recordings/transcript", status_code=202)
+async def upload_transcript(background: BackgroundTasks, request: Request, file: UploadFile | None = None,
+                            text: str | None = Form(None), course_id: int | None = None, date: str | None = None):
+    """A transcript made elsewhere (Zoom's .vtt or saved .txt, or pasted text): cleaned up and written up as a recording's is."""
+    s = request.app.state
+    title = "Pasted transcript"
+    if file is not None and file.filename:
+        title, ext = file.filename, Path(file.filename).suffix.lower()
+        if ext not in TRANSCRIPT:
+            raise HTTPException(422, f"Can't read {ext or 'that'} files as a transcript. Upload {', '.join(sorted(TRANSCRIPT))}, or paste the text.")
+        data = await file.read()
+        try:
+            text = data.decode("utf-8-sig")
+        except UnicodeDecodeError as e:
+            raise HTTPException(422, f"{file.filename} isn't UTF-8 text: {e}")
+    if not (text or "").strip():
+        raise HTTPException(422, "Choose a transcript file or paste its text.")
+    try:
+        read_transcript(text)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    rid = _new_recording(s, title, course_id, date, "cleaning")
+    background.add_task(finalize_transcript, s.db, s.llm, s.clock, rid, text)
+    return {"id": rid, "status": "cleaning"}
 
 
 @router.post("/recordings/{id}/retry", status_code=202)
