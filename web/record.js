@@ -15,9 +15,11 @@ const WORKLET = URL.createObjectURL(new Blob([`
 class PCM16 extends AudioWorkletProcessor {
   constructor() { super(); this.buf = new Int16Array(16000); this.n = 0; }
   process(inputs) {
-    const ch = inputs[0] && inputs[0][0];
-    if (ch) for (let i = 0; i < ch.length; i++) {
-      const v = Math.max(-1, Math.min(1, ch[i]));
+    // No input this quantum (some devices send nothing while it's quiet, or the
+    // track is muted): count it as silence, so the audio keeps to real time.
+    const ch = inputs[0] && inputs[0][0], n = ch ? ch.length : 128;
+    for (let i = 0; i < n; i++) {
+      const v = ch ? Math.max(-1, Math.min(1, ch[i])) : 0;
       this.buf[this.n++] = v < 0 ? v * 0x8000 : v * 0x7fff;
       if (this.n === this.buf.length) { this.port.postMessage(this.buf.buffer, [this.buf.buffer]); this.buf = new Int16Array(16000); this.n = 0; }
     }
@@ -42,7 +44,7 @@ async function captureAudio(source) {
   const ctx = new AudioContext({ sampleRate: 16000 });  // the browser resamples to what the transcriber takes
   await ctx.audioWorklet.addModule(WORKLET);
   const node = new AudioWorkletNode(ctx, "pcm16");
-  node.port.onmessage = e => { if (!rec.paused) { rec.queue.push({ seq: rec.seq++, data: e.data }); pump(); } };
+  node.port.onmessage = e => addPiece(e.data);
   const mute = ctx.createGain();
   mute.gain.value = 0;  // pulled through the graph, never played back
   ctx.createMediaStreamSource(new MediaStream(stream.getAudioTracks())).connect(node).connect(mute).connect(ctx.destination);
@@ -55,12 +57,39 @@ async function captureAudio(source) {
   };
   rec.stream = stream;
   rec.ctx = ctx;
+  ctx.onstatechange = keepTime;
+  startClock();
 }
+
+function addPiece(data) {
+  if (!rec.paused) { rec.queue.push({ seq: rec.seq++, data }); pump(); }
+}
+
+// The audio's clock is the AudioContext's. If the browser or the system
+// suspends it (the device sleeping, another app taking the microphone), time
+// passes with no audio: fill that time with silence, so the recording's length
+// and the jottings' moments match the lecture. A pause by the student isn't
+// counted: the clock restarts when they resume.
+function startClock() {
+  rec.clock = rec.ctx ? { wall: performance.now(), audio: rec.ctx.currentTime, filled: 0 } : null;
+}
+
+function keepTime() {
+  const ctx = rec.ctx, c = rec.clock;
+  if (!recording() || rec.paused || !ctx || !c) return;
+  if (ctx.state !== "running") { ctx.resume().catch(() => {}); return; }
+  const behind = (performance.now() - c.wall) / 1000 - (ctx.currentTime - c.audio) - c.filled;
+  if (behind < 2) return;
+  const secs = Math.floor(behind);
+  for (let i = 0; i < secs; i++) addPiece(new Int16Array(16000).buffer);
+  c.filled += secs;
+}
+setInterval(keepTime, 5000);
 
 function releaseCapture() {
   rec.stream?.getTracks().forEach(t => t.stop());
   rec.ctx?.close().catch(() => {});
-  rec.stream = rec.ctx = null;
+  rec.stream = rec.ctx = rec.clock = null;
 }
 
 // Send queued pieces in order; keep any the PC hasn't confirmed and try again.
@@ -151,7 +180,8 @@ async function resumeRecording(id, source) {
 
 function pauseRecording() {
   rec.paused = !rec.paused;
-  rec.paused ? rec.ctx?.suspend() : rec.ctx?.resume();
+  if (rec.paused) { rec.clock = null; rec.ctx?.suspend(); }
+  else rec.ctx?.resume().then(startClock);
   drawLive();
 }
 
